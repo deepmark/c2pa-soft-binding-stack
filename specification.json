@@ -1,0 +1,1332 @@
+{
+   "openapi": "3.1.1",
+   "info": {
+      "title": "C2PA Soft Binding Resolution API",
+      "description": "This is the OpenAPI specification of the C2PA Soft Binding Resolution API. This document specifies a web service API endpoint for matching soft bindings (e.g., watermarks or fingerprints) to C2PA Manifests",
+      "version": "2.3.0",
+      "license": {
+         "name": "Creative Commons Attribution 4.0 International",
+         "url": "https://creativecommons.org/licenses/by/4.0/"
+      }
+   },
+   "externalDocs": {
+      "description": "C2PA Specification",
+      "url": "https://c2pa.org/specifications"
+   },
+   "servers": [
+      {
+         "url": "https://c2pa.example.org/v1"
+      }
+   ],
+   "security": [
+      {
+         "auth": [
+            "fetch:manifests"
+         ]
+      },
+      {}
+   ],
+   "paths": {
+      "/matches/byBinding": {
+         "get": {
+            "tags": [
+               "query"
+            ],
+            "summary": "Returns C2PA Manifest identifiers corresponding to a soft binding",
+            "description": "Given one soft binding, find zero or more C2PA Manifests identifiers within the manifest repository matching the soft binding",
+            "operationId": "queryByBinding",
+            "parameters": [
+               {
+                  "name": "value",
+                  "in": "query",
+                  "description": "A base64-encoded string describing, in algorithm specific format, the value of the soft binding to be used as the query. Note: if the value is expected to be too large to fit in a URL then the POST method may be used",
+                  "required": true,
+                  "schema": {
+                     "type": "string"
+                  }
+               },
+               {
+                  "name": "alg",
+                  "in": "query",
+                  "description": "A string identifying the soft binding algorithm and version of that algorithm used as per the authoritative list of C2PA soft binding algorithm names available at: https://github.com/c2pa-org/softbinding-algorithm-list",
+                  "required": true,
+                  "schema": {
+                     "type": "string"
+                  }
+               },
+               {
+                  "name": "maxResults",
+                  "in": "query",
+                  "description": "The maximum number of manifest identifiers to return for each query",
+                  "schema": {
+                     "type": "integer",
+                     "minimum": 1,
+                     "default": 10
+                  }
+               }
+            ],
+            "responses": {
+               "200": {
+                  "description": "Successful operation",
+                  "content": {
+                     "application/json": {
+                        "schema": {
+                           "$ref": "#/components/schemas/c2pa.softBindingQueryResult"
+                        }
+                     }
+                  }
+               },
+               "400": {
+                  "description": "Invalid query value",
+                  "content": {}
+               },
+               "414": {
+                  "description": "Query too long, consider using POST instead",
+                  "content": {}
+               },
+               "403": {
+                  "description": "Client not allowed to perform this operation",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure",
+                  "content": {}
+               }
+            },
+            "security": [
+               {
+                  "auth": [
+                     "fetch:manifests"
+                  ]
+               }
+            ]
+         },
+         "post": {
+            "tags": [
+               "query"
+            ],
+            "summary": "Returns C2PA Manifest identifiers corresponding to a large soft binding value",
+            "description": "Given a large soft binding value, find zero or more matching manifest identifiers. Use this method if the size of the soft binding value is expected to be large too large to fit in a URL, otherwise favor the use of GET",
+            "operationId": "queryByLargeBinding",
+            "parameters": [
+               {
+                  "name": "maxResults",
+                  "in": "query",
+                  "description": "The maximum number of manifests to return for each query",
+                  "schema": {
+                     "type": "integer",
+                     "minimum": 1,
+                     "default": 10
+                  }
+               }
+            ],
+            "requestBody": {
+               "description": "Soft binding query JSON document",
+               "content": {
+                  "application/json": {
+                     "schema": {
+                        "$ref": "#/components/schemas/c2pa.softBindingQuery"
+                     }
+                  }
+               },
+               "required": true
+            },
+            "responses": {
+               "200": {
+                  "description": "Successful operation",
+                  "content": {
+                     "application/json": {
+                        "schema": {
+                           "$ref": "#/components/schemas/c2pa.softBindingQueryResult"
+                        }
+                     }
+                  }
+               },
+               "400": {
+                  "description": "Invalid request body",
+                  "content": {}
+               },
+               "403": {
+                  "description": "Client not allowed to perform this operation",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure",
+                  "content": {}
+               }
+            },
+            "security": [
+               {
+                  "auth": [
+                     "fetch:manifests"
+                  ]
+               }
+            ]
+         }
+      },
+      "/bindings": {
+         "post": {
+            "tags": [
+               "store"
+            ],
+            "summary": "Binds a C2PA Manifest Store to a soft binding value",
+            "description": "Associates the active C2PA Manifest of a C2PA Manifest Store with the given soft binding value",
+            "operationId": "associateManifest",
+            "requestBody": {
+               "description": "New C2PA Manifest Store for the given soft binding value",
+               "content": {
+                  "application/json": {
+                     "schema": {
+                        "$ref": "#/components/schemas/c2pa.bindings"
+                     }
+                  }
+               },
+               "required": true
+            },
+            "responses": {
+               "204": {
+                  "description": "Manifest bound successfully",
+                  "content": {}
+               },
+               "400": {
+                  "description": "Invalid request body",
+                  "content": {}
+               },
+               "404": {
+                  "description": "Soft binding id or C2PA Manifest id not found",
+                  "content": {}
+               },
+               "403": {
+                  "description": "Client not allowed to perform this operation",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure",
+                  "content": {}
+               }
+            },
+            "security": [
+               {
+                  "auth": [
+                     "store:bindings"
+                  ]
+               }
+            ]
+         },
+         "put": {
+            "tags": [
+               "store"
+            ],
+            "summary": "Update the C2PA Manifest Store for a soft binding value",
+            "description": "Replaces the C2PA Manifest Store associated with the given soft binding value with an updated C2PA Manifest Store referenced by the active C2PA Manifest id",
+            "operationId": "updateAssociatedManifest",
+            "requestBody": {
+               "description": "Identifier of the updated active C2PA Manifest in a C2PA Manifest Store for the given soft binding value",
+               "content": {
+                  "application/json": {
+                     "schema": {
+                        "$ref": "#/components/schemas/c2pa.bindings"
+                     }
+                  }
+               },
+               "required": true
+            },
+            "responses": {
+               "204": {
+                  "description": "Manifest updated successfully",
+                  "content": {}
+               },
+               "400": {
+                  "description": "Invalid request body",
+                  "content": {}
+               },
+               "404": {
+                  "description": "Soft binding value not found",
+                  "content": {}
+               },
+               "403": {
+                  "description": "Client not allowed to perform this operation",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure",
+                  "content": {}
+               }
+            },
+            "security": [
+               {
+                  "auth": [
+                     "store:bindings"
+                  ]
+               }
+            ]
+         }
+      },
+      "/matches/byContent": {
+         "post": {
+            "tags": [
+               "query"
+            ],
+            "summary": "Finds C2PA Manifest identifiers using a digital asset",
+            "description": "Find zero or more C2PA Manifest identifiers using an uploaded file containing a digital asset",
+            "operationId": "uploadFile",
+            "parameters": [
+               {
+                  "name": "alg",
+                  "in": "query",
+                  "description": "A string identifying the soft binding algorithm and version of that algorithm used as per the authoritative list of C2PA soft binding algorithm names available at: https://github.com/c2pa-org/softbinding-algorithm-list",
+                  "schema": {
+                     "type": "string"
+                  }
+               },
+               {
+                  "name": "maxResults",
+                  "in": "query",
+                  "description": "The maximum number of manifests identifiers return for the query",
+                  "schema": {
+                     "type": "integer",
+                     "minimum": 1,
+                     "default": 10
+                  }
+               },
+               {
+                  "name": "hintAlg",
+                  "in": "query",
+                  "description": "An optional parameter specifying an additional soft binding algorithm name and version (as per the authoritative list of C2PA soft binding algorithm names available at: https://github.com/c2pa-org/softbinding-algorithm-list) to aid in resolution of the query",
+                  "schema": {
+                     "type": "string"
+                  }
+               },
+               {
+                  "name": "hintValue",
+                  "in": "query",
+                  "description": "An optional parameter specifying an additional soft binding algorithm value for the corresponding hintAlg to aid in resolution of the query",
+                  "schema": {
+                     "type": "string"
+                  }
+               }
+            ],
+            "requestBody": {
+               "description": "Asset to match to manifests",
+               "content": {
+                  "image/*": {
+                     "schema": {
+                        "type": "string",
+                        "format": "binary",
+                        "description": "Asset of type image"
+                     }
+                  },
+                  "audio/*": {
+                     "schema": {
+                        "type": "string",
+                        "format": "binary",
+                        "description": "Asset of type audio"
+                     }
+                  },
+                  "video/*": {
+                     "schema": {
+                        "type": "string",
+                        "format": "binary",
+                        "description": "Asset of type video"
+                     }
+                  },
+                  "application/*": {
+                     "schema": {
+                        "type": "string",
+                        "format": "binary",
+                        "description": "Asset of type application, such as `application/pdf`"
+                     }
+                  },
+                  "model/*": {
+                     "schema": {
+                        "type": "string",
+                        "format": "binary",
+                        "description": "Asset of type model"
+                     }
+                  },
+                  "text/*": {
+                     "schema": {
+                        "type": "string",
+                        "format": "string",
+                        "description": "Asset of type text"
+                     }
+                  }
+               }
+            },
+            "responses": {
+               "200": {
+                  "description": "Successful operation",
+                  "content": {
+                     "application/json": {
+                        "schema": {
+                           "$ref": "#/components/schemas/c2pa.softBindingQueryResult"
+                        }
+                     }
+                  }
+               },
+               "415": {
+                  "description": "Invalid asset type",
+                  "content": {}
+               },
+               "400": {
+                  "description": "Invalid request body",
+                  "content": {}
+               },
+               "403": {
+                  "description": "Client not allowed to perform this operation",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure",
+                  "content": {}
+               }
+            },
+            "security": [
+               {
+                  "auth": [
+                     "fetch:manifests"
+                  ]
+               }
+            ]
+         }
+      },
+      "/matches/byReference": {
+         "post": {
+            "tags": [
+               "query"
+            ],
+            "summary": "An optional endpoint that finds C2PA Manifest identifiers using a reference URL",
+            "description": "Optional endpoint to find zero or more C2PA Manifest identifiers within the manifest repository by downloading an asset or parts of an asset via a reference HTTPS URL provided by the client. As this method requires downloading the asset, it is recommended to use this method only when the asset is too large to be uploaded directly (e.g., in the case of a large video asset). Downloading arbitrary content from a URL is a potential attack vector, so the service should limit the size of the asset to be downloaded and reject an asset larger than this value. The service should also check that the downloaded asset matches the type specified in the request and reject it if it does not. The service should also check that the reference URL is using HTTPS and reject it if it is not. Other security measures should be taken to limit attacks, such as but not limited to, preventing SSRF (Server-Side Request Forgery) attacks",
+            "operationId": "queryByReference",
+            "parameters": [
+               {
+                  "name": "alg",
+                  "in": "query",
+                  "description": "A string identifying the soft binding algorithm and version of that algorithm used as per the authoritative list of C2PA soft binding algorithm names available at: https://github.com/c2pa-org/softbinding-algorithm-list",
+                  "schema": {
+                     "type": "string"
+                  }
+               },
+               {
+                  "name": "maxResults",
+                  "in": "query",
+                  "description": "The maximum number of manifests identifiers return for the query",
+                  "schema": {
+                     "type": "integer",
+                     "minimum": 1,
+                     "default": 10
+                  }
+               },
+               {
+                  "name": "hintAlg",
+                  "in": "query",
+                  "description": "An optional parameter specifying an additional soft binding algorithm name and version (as per the authoritative list of C2PA soft binding algorithm names available at: https://github.com/c2pa-org/softbinding-algorithm-list) to aid in resolution of the query",
+                  "schema": {
+                     "type": "string"
+                  }
+               },
+               {
+                  "name": "hintValue",
+                  "in": "query",
+                  "description": "An optional parameter specifying an additional soft binding algorithm value for the corresponding hintAlg to aid in resolution of the query",
+                  "schema": {
+                     "type": "string"
+                  }
+               }
+            ],
+            "requestBody": {
+               "description": "JSON document to provide an asset by reference",
+               "content": {
+                  "application/json": {
+                     "schema": {
+                        "type": "object",
+                        "properties": {
+                           "referenceUrl": {
+                              "type": "string",
+                              "format": "uri",
+                              "pattern": "^https://.*",
+                              "description": "An HTTPS URL referencing the resource to be used for finding the C2PA Manifest identifiers. To limit attacks, this URL should be signed and should expire after a short time",
+                              "example": "https://example.com/video.mp4?ClientAccessKeyId=AKIA...&Expires=1712345678&Signature=abcdefg"
+                           },
+                           "assetLength": {
+                              "type": "integer",
+                              "description": "Size of the asset to be downloaded from the reference URL in bytes. The service shall use this value to limit the size of the asset to be downloaded and reject an asset larger than this value",
+                              "example": 20971520
+                           },
+                           "assetType": {
+                              "type": "string",
+                              "description": "The IANA Media Type of the asset to be downloaded from the reference URL, such as 'video/mp4' or 'audio/mpeg'. The service shall check that the downloaded asset matches this type and reject it if it does not",
+                              "example": "video/mp4"
+                           },
+                           "region": {
+                              "type": "array",
+                              "description": "An optional array specifying the region of interest within the asset as per the C2PA Regions of Interest specification (see https://spec.c2pa.org/specifications/specifications/2.2/specs/C2PA_Specification.html#_regions_of_interest). If specified, the service shall only match soft bindings within the specified region of interest. If not specified, the service shall match soft bindings within the entire asset",
+                              "items": {
+                                 "$ref": "#/components/schemas/c2pa.regionOfInterest"
+                              }
+                           }
+                        },
+                        "required": [
+                           "referenceUrl",
+                           "assetLength"
+                        ]
+                     }
+                  }
+               },
+               "required": true
+            },
+            "responses": {
+               "200": {
+                  "description": "Successful operation",
+                  "content": {
+                     "application/json": {
+                        "schema": {
+                           "$ref": "#/components/schemas/c2pa.softBindingQueryResult"
+                        }
+                     }
+                  }
+               },
+               "400": {
+                  "description": "Invalid request body",
+                  "content": {}
+               },
+               "403": {
+                  "description": "Client not allowed to perform this operation",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure",
+                  "content": {}
+               }
+            },
+            "security": [
+               {
+                  "auth": [
+                     "fetch:manifests"
+                  ]
+               }
+            ]
+         }
+      },
+      "/manifests": {
+         "post": {
+            "tags": [
+               "store"
+            ],
+            "summary": "Add a C2PA Manifest Store to the repository",
+            "description": "Submit a C2PA Manifest Store to store it in the repository",
+            "operationId": "addManifest",
+            "parameters": [
+               {
+                  "name": "returnReceipt",
+                  "in": "query",
+                  "description": "Specifies if a verification receipt should be returned alongside the manifest identifier in the response body. By default only the manifest identifier is returned",
+                  "schema": {
+                     "type": "boolean",
+                     "default": false
+                  }
+               }
+            ],
+            "requestBody": {
+               "description": "C2PA Manifest to store",
+               "content": {
+                  "application/c2pa": {}
+               },
+               "required": true
+            },
+            "responses": {
+               "200": {
+                  "description": "C2PA Manifest Store stored successfully. The response includes the active C2PA Manifest identifier and may additionally include a receipt when returnReceipt=true",
+                  "content": {
+                     "application/json": {
+                        "schema": {
+                           "$ref": "#/components/schemas/c2pa.manifestCreateResult"
+                        }
+                     }
+                  }
+               },
+               "400": {
+                  "description": "Invalid request body",
+                  "content": {}
+               },
+               "403": {
+                  "description": "Client not allowed to perform this operation",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure",
+                  "content": {}
+               }
+            },
+            "security": [
+               {
+                  "auth": [
+                     "store:manifests"
+                  ]
+               }
+            ]
+         }
+      },
+      "/manifests/{manifestId}": {
+         "get": {
+            "tags": [
+               "fetch"
+            ],
+            "summary": "Returns a full C2PA Manifest Store or an active C2PA Manifest",
+            "description": "Retrieve a C2PA Manifest by manifest identifier. This either returns the active manifest or the entire C2PA Manifest Store that the active manifest identifier is part of. C2PA Manifest identifiers should follow the format described in the C2PA Technical specification",
+            "operationId": "getManifestById",
+            "parameters": [
+               {
+                  "name": "returnActiveManifest",
+                  "in": "query",
+                  "description": "Specifies if only the active manifest should be returned. By default the entire C2PA Manifest Store is returned",
+                  "schema": {
+                     "type": "boolean",
+                     "default": false
+                  }
+               },
+               {
+                  "name": "manifestId",
+                  "in": "path",
+                  "description": "Identifier of the C2PA Manifest to return",
+                  "required": true,
+                  "schema": {
+                     "type": "string"
+                  }
+               }
+            ],
+            "responses": {
+               "200": {
+                  "description": "Successful operation",
+                  "content": {
+                     "application/c2pa": {}
+                  }
+               },
+               "400": {
+                  "description": "Invalid query value",
+                  "content": {}
+               },
+               "404": {
+                  "description": "C2PA Manifest not found",
+                  "content": {}
+               },
+               "403": {
+                  "description": "Client not allowed to perform this operation",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure",
+                  "content": {}
+               }
+            },
+            "security": [
+               {
+                  "auth": [
+                     "fetch:manifests"
+                  ]
+               }
+            ]
+         },
+         "delete": {
+            "tags": [
+               "store"
+            ],
+            "summary": "Remove a C2PA Manifest Store from the repository",
+            "description": "Delete a stored C2PA Manifest Store. This should also remove the corresponding soft binding associated with the manifest to ensure it is no longer returned in query results",
+            "operationId": "deleteManifest",
+            "parameters": [
+               {
+                  "name": "manifestId",
+                  "in": "path",
+                  "description": "Identifier of the active C2PA Manifest in the C2PA Manifest Store to be deleted",
+                  "required": true,
+                  "schema": {
+                     "type": "string"
+                  }
+               }
+            ],
+            "responses": {
+               "204": {
+                  "description": "Manifest deleted successfully",
+                  "content": {}
+               },
+               "400": {
+                  "description": "Invalid request",
+                  "content": {}
+               },
+               "404": {
+                  "description": "C2PA Manifest Store not found",
+                  "content": {}
+               },
+               "403": {
+                  "description": "Client not allowed to perform this operation",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure",
+                  "content": {}
+               }
+            },
+            "security": [
+               {
+                  "auth": [
+                     "store:manifests"
+                  ]
+               }
+            ]
+         }
+      },
+      "/manifests/{manifestId}/receipts": {
+         "get": {
+            "tags": [
+               "fetch"
+            ],
+            "summary": "Returns a receipt and verification value for a C2PA Manifest Store.",
+            "description": "Retrieve the receipt of a C2PA Manifest Store selected by manifest identifier along with  its verification status. A receipt is a proof that a C2PA Manifest Store was ingested by the repository",
+            "operationId": "getVerifiedReceipt",
+            "parameters": [
+               {
+                  "name": "manifestId",
+                  "in": "path",
+                  "description": "Identifier of the C2PA Manifest Store for which to retrieve a receipt.",
+                  "required": true,
+                  "schema": {
+                     "type": "string"
+                  }
+               }
+            ],
+            "responses": {
+               "200": {
+                  "description": "Successful operation.",
+                  "content": {
+                     "application/json": {
+                        "schema": {
+                           "$ref": "#/components/schemas/c2pa.verifiedManifestReceipt"
+                        }
+                     }
+                  }
+               },
+               "400": {
+                  "description": "Invalid query value.",
+                  "content": {}
+               },
+               "404": {
+                  "description": "C2PA Manifest Store or receipt not found.",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure.",
+                  "content": {}
+               }
+            },
+            "security": [
+               {
+                  "auth": [
+                     "fetch:manifests"
+                  ]
+               }
+            ]
+         },
+         "post": {
+            "tags": [
+               "fetch"
+            ],
+            "summary": "Submit a receipt and receive a verification result",
+            "description": "Verify the supplied  receipt against the specified C2PA Manifest identifier and return the verified receipt",
+            "operationId": "verifyReceipt",
+            "parameters": [
+               {
+                  "name": "manifestId",
+                  "in": "path",
+                  "description": "Identifier of the C2PA Manifest against which the receipt is to be verified",
+                  "required": true,
+                  "schema": {
+                     "type": "string"
+                  }
+               }
+            ],
+            "requestBody": {
+               "description": "Receipt JSON document.",
+               "content": {
+                  "application/json": {
+                     "schema": {
+                        "$ref": "#/components/schemas/c2pa.manifestReceipt"
+                     }
+                  }
+               },
+               "required": true
+            },
+            "responses": {
+               "200": {
+                  "description": "Successful operation.",
+                  "content": {
+                     "application/json": {
+                        "schema": {
+                           "$ref": "#/components/schemas/c2pa.verifiedManifestReceipt"
+                        }
+                     }
+                  }
+               },
+               "400": {
+                  "description": "Invalid request body or verification input",
+                  "content": {}
+               },
+               "404": {
+                  "description": "C2PA Manifest not found",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure",
+                  "content": {}
+               }
+            },
+            "security": [
+               {
+                  "auth": [
+                     "fetch:manifests"
+                  ]
+               }
+            ]
+         }
+      },
+      "/services/supportedAlgorithms": {
+         "get": {
+            "tags": [
+               "service"
+            ],
+            "summary": "Returns a list of the soft binding algorithms supported by the service",
+            "description": "Enumerate the names of soft binding algorithms supported as queries by the service. See https://github.com/c2pa-org/softbinding-algorithm-list for an authoritative list of C2PA soft binding algorithm names",
+            "operationId": "getSupportedBindings",
+            "responses": {
+               "200": {
+                  "description": "Successful operation",
+                  "content": {
+                     "application/json": {
+                        "schema": {
+                           "$ref": "#/components/schemas/c2pa.softBindingAlgList"
+                        }
+                     }
+                  }
+               },
+               "400": {
+                  "description": "Invalid request",
+                  "content": {}
+               },
+               "403": {
+                  "description": "Client not allowed to perform this operation",
+                  "content": {}
+               },
+               "500": {
+                  "description": "Service failure",
+                  "content": {}
+               }
+            }
+         }
+      }
+   },
+   "components": {
+      "schemas": {
+         "c2pa.softBindingAlgList": {
+            "description": "list of the names of soft binding algorithms supported by this service. The authoritative list of name is available here: https://github.com/c2pa-org/softbinding-algorithm-list",
+            "properties": {
+               "watermarks": {
+                  "type": "array",
+                  "items": {
+                     "type": "object",
+                     "oneOf": [
+                        {
+                           "required": [
+                              "watermarks"
+                           ]
+                        },
+                        {
+                           "required": [
+                              "fingerprints"
+                           ]
+                        }
+                     ],
+                     "properties": {
+                        "alg": {
+                           "type": "string",
+                           "example": "foo.bar.watermark.1",
+                           "description": "Unique identifier of a fingerprint algorithm"
+                        }
+                     },
+                     "required": [
+                        "alg"
+                     ]
+                  }
+               },
+               "fingerprints": {
+                  "type": "array",
+                  "items": {
+                     "type": "object",
+                     "properties": {
+                        "alg": {
+                           "type": "string",
+                           "example": "foo.bar.fingerprint.1",
+                           "description": "Unique identifier of a watermark algorithm"
+                        }
+                     },
+                     "required": [
+                        "alg"
+                     ]
+                  }
+               }
+            }
+         },
+         "c2pa.softBindingQuery": {
+            "required": [
+               "value",
+               "alg"
+            ],
+            "type": "object",
+            "properties": {
+               "alg": {
+                  "type": "string",
+                  "description": "A string identifying the soft binding algorithm and version of that algorithm used"
+               },
+               "value": {
+                  "type": "string",
+                  "description": "A base64-encoded string describing, in algorithm specific format, the value of the soft binding to be used as the query"
+               }
+            }
+         },
+         "c2pa.bindings": {
+            "required": [
+               "bindingValue",
+               "manifestId"
+            ],
+            "type": "object",
+            "properties": {
+               "bindingValue": {
+                  "type": "string",
+                  "description": "A soft binding value to be associated with a C2PA Manifest Store"
+               },
+               "manifestId": {
+                  "type": "string",
+                  "description": "Identifier of the active C2PA Manifest of a C2PA Manifest Store to be associated with the soft binding identifier"
+               }
+            }
+         },
+         "c2pa.manifestCreateResultIdOnly": {
+            "type": "object",
+            "properties": {
+               "manifestId": {
+                  "type": "string",
+                  "description": "Identifier of the active C2PA Manifest of the stored C2PA Manifest Store. This identifier format shall correspond to the format described in the C2PA Technical specification"
+               }
+            },
+            "required": [
+               "manifestId"
+            ]
+         },
+         "c2pa.manifestCreateResult": {
+            "allOf": [
+               {
+                  "$ref": "#/components/schemas/c2pa.manifestCreateResultIdOnly"
+               },
+               {
+                  "type": "object",
+                  "properties": {
+                     "receipt": {
+                        "$ref": "#/components/schemas/c2pa.manifestReceipt",
+                        "description": "Verification receipt returned when the returnReceipt query parameter is true"
+                     }
+                  }
+               }
+            ]
+         },
+         "c2pa.softBindingQueryResult": {
+            "type": "object",
+            "properties": {
+               "matches": {
+                  "type": "array",
+                  "items": {
+                     "type": "object",
+                     "properties": {
+                        "manifestId": {
+                           "type": "string",
+                           "description": "Unique identifier of a matched C2PA Manifest"
+                        },
+                        "endpoint": {
+                           "type": "string",
+                           "description": "Endpoint of a Soft Binding Resolution API from which the C2PA Manifest may be obtained. If the endpoint is absent then the C2PA Manifest is available from same endpoint the query was sent to using the /manifests endpoint"
+                        },
+                        "similarityScore": {
+                           "type": "integer",
+                           "minimum": 0,
+                           "maximum": 100,
+                           "description": "An integer score in the range (0-100) representing the strength of match, if appropriate, where 0 is the weakest possible match and 100 is the strongest possible match"
+                        }
+                     },
+                     "required": [
+                        "manifestId"
+                     ]
+                  }
+               }
+            }
+         },
+         "c2pa.manifestReceipt": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+               "@context": {
+                  "oneOf": [
+                     {
+                        "type": "object"
+                     },
+                     {
+                        "type": "string"
+                     }
+                  ],
+                  "description": "JSON-LD context for the C2PA Manifest receipt",
+                  "example": {
+                     "c2pa": "https://c2pa.org/ns/",
+                     "receipt": "https://c2pa.org/ns/manifest-receipt#"
+                  }
+               },
+               "@type": {
+                  "type": "string",
+                  "const": "org.c2pa.manifest-receipt",
+                  "description": "JSON-LD type identifier for a C2PA Manifest receipt",
+                  "example": "org.c2pa.manifest-receipt"
+               },
+               "repository": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                     "uri": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "Base URI of the manifest repository issuing this C2PA Manifest receipt",
+                        "example": "https://repo.example.org"
+                     },
+                     "manifestId": {
+                        "type": "string",
+                        "description": "Canonical identifier of the ingested C2PA Manifest within this repository",
+                        "example": "urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4"
+                     }
+                  },
+                  "required": [
+                     "uri",
+                     "manifestId"
+                  ]
+               },
+               "anchor": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "Information describing a repository-specific proof that the C2PA Manifest was ingested and where that proof may be verified or retrieved",
+                  "properties": {
+                     "uri": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "URI where the proof may be verified or retrieved.",
+                        "example": "https://repo.example.org/anchors/7f3d91"
+                     },
+                     "parameters": {
+                        "type": "object",
+                        "description": "Optional repository-specific key/value parameters used when accessing the anchor URI",
+                        "additionalProperties": true,
+                        "example": {
+                           "view": "verification"
+                        }
+                     },
+                     "proof": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "description": "Repository-specific JSON object used to demonstrate proof that the C2PA Manifest was ingested",
+                        "example": {
+                           "alg": "ES256",
+                           "value": "BASE64URL_PROOF_VALUE"
+                        }
+                     }
+                  },
+                  "required": [
+                     "uri",
+                     "proof"
+                  ]
+               }
+            },
+            "required": [
+               "@context",
+               "@type",
+               "repository",
+               "anchor"
+            ]
+         },
+         "c2pa.verifiedManifestReceipt": {
+            "allOf": [
+               {
+                  "$ref": "#/components/schemas/c2pa.manifestReceipt"
+               },
+               {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                     "verified": {
+                        "type": "boolean",
+                        "description": "Result of the verification. A value of true means the verification was successful",
+                        "example": true
+                     },
+                     "error": {
+                        "type": "string",
+                        "description": "Optional explanation of why verification failed",
+                        "example": "The supplied receipt manifestId does not match the requested manifestId"
+                     }
+                  },
+                  "required": [
+                     "verified"
+                  ]
+               }
+            ]
+         },
+         "c2pa.regionOfInterest": {
+            "oneOf": [
+               {
+                  "$ref": "#/components/schemas/SpatialRange"
+               },
+               {
+                  "$ref": "#/components/schemas/TemporalRange"
+               },
+               {
+                  "$ref": "#/components/schemas/FrameRange"
+               },
+               {
+                  "$ref": "#/components/schemas/TextualRange"
+               },
+               {
+                  "$ref": "#/components/schemas/IdentifiedRange"
+               }
+            ],
+            "discriminator": {
+               "propertyName": "type",
+               "mapping": {
+                  "spatial": "#/components/schemas/SpatialRange",
+                  "temporal": "#/components/schemas/TemporalRange",
+                  "frame": "#/components/schemas/FrameRange",
+                  "textual": "#/components/schemas/TextualRange",
+                  "identified": "#/components/schemas/IdentifiedRange"
+               }
+            }
+         },
+         "SpatialRange": {
+            "type": "object",
+            "properties": {
+               "type": {
+                  "type": "string",
+                  "enum": [
+                     "spatial"
+                  ]
+               },
+               "shape": {
+                  "type": "object",
+                  "properties": {
+                     "kind": {
+                        "type": "string",
+                        "enum": [
+                           "rectangle",
+                           "circle",
+                           "polygon"
+                        ],
+                        "example": "rectangle"
+                     },
+                     "unit": {
+                        "type": "string",
+                        "enum": [
+                           "pixel",
+                           "percent"
+                        ],
+                        "example": "pixel"
+                     },
+                     "origin": {
+                        "type": "object",
+                        "properties": {
+                           "x": {
+                              "type": "number",
+                              "example": 10.0
+                           },
+                           "y": {
+                              "type": "number",
+                              "example": 5.0
+                           }
+                        },
+                        "required": [
+                           "x",
+                           "y"
+                        ]
+                     }
+                  },
+                  "required": [
+                     "kind",
+                     "unit"
+                  ]
+               }
+            },
+            "required": [
+               "type",
+               "shape"
+            ]
+         },
+         "TemporalRange": {
+            "type": "object",
+            "properties": {
+               "type": {
+                  "type": "string",
+                  "enum": [
+                     "temporal"
+                  ]
+               },
+               "time": {
+                  "type": "object",
+                  "description": "A time range described either using Normal Play Time as described in RFC 2326 or Wall Clock Time using the Internet profile of ISO 8601 as described in RFC 3339",
+                  "properties": {
+                     "type": {
+                        "type": "string",
+                        "enum": [
+                           "ntp",
+                           "wall-clock"
+                        ]
+                     },
+                     "start": {
+                        "type": "string",
+                        "example": "12:05:30.5"
+                     },
+                     "end": {
+                        "type": "string",
+                        "example": "12:07:40.2"
+                     }
+                  },
+                  "required": [
+                     "start",
+                     "end"
+                  ]
+               }
+            },
+            "required": [
+               "type",
+               "time"
+            ]
+         },
+         "FrameRange": {
+            "type": "object",
+            "properties": {
+               "type": {
+                  "type": "string",
+                  "enum": [
+                     "frame"
+                  ]
+               },
+               "frame": {
+                  "type": "object",
+                  "properties": {
+                     "start": {
+                        "type": "integer",
+                        "minimum": 0
+                     },
+                     "end": {
+                        "type": "integer",
+                        "minimum": 0
+                     }
+                  },
+                  "required": [
+                     "start",
+                     "end"
+                  ]
+               }
+            },
+            "required": [
+               "type",
+               "frame"
+            ]
+         },
+         "TextualRange": {
+            "type": "object",
+            "properties": {
+               "type": {
+                  "type": "string",
+                  "enum": [
+                     "textual"
+                  ]
+               },
+               "text": {
+                  "type": "object",
+                  "properties": {
+                     "selector": {
+                        "type": "object",
+                        "properties": {
+                           "fragment": {
+                              "type": "string",
+                              "description": "Fragment identifier, as per RFC3023 or ISO 32000-2, Annex O",
+                              "example": "page=1,rect=10,10,450,500"
+                           },
+                           "start": {
+                              "type": "integer",
+                              "minimum": 0
+                           },
+                           "end": {
+                              "type": "integer",
+                              "minimum": 0
+                           }
+                        },
+                        "required": [
+                           "fragment"
+                        ]
+                     }
+                  },
+                  "required": [
+                     "selector"
+                  ]
+               }
+            },
+            "required": [
+               "type",
+               "text"
+            ]
+         },
+         "IdentifiedRange": {
+            "type": "object",
+            "properties": {
+               "type": {
+                  "type": "string",
+                  "enum": [
+                     "identified"
+                  ]
+               },
+               "identified": {
+                  "type": "object",
+                  "properties": {
+                     "identifier": {
+                        "type": "string"
+                     },
+                     "value": {
+                        "type": "string"
+                     }
+                  },
+                  "required": [
+                     "identifier",
+                     "value"
+                  ]
+               }
+            },
+            "required": [
+               "type",
+               "identified"
+            ]
+         }
+      },
+      "securitySchemes": {
+         "auth": {
+            "type": "oauth2",
+            "flows": {
+               "clientCredentials": {
+                  "tokenUrl": "https://auth.example.com/oauth/token",
+                  "scopes": {
+                     "fetch:manifests": "Search and read manifests within the manifest repository"
+                  }
+               }
+            }
+         }
+      }
+   }
+}

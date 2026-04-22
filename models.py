@@ -1,0 +1,87 @@
+from typing import Optional, List, Any
+from pydantic import BaseModel, Field, HttpUrl
+
+class SoftBindingAlgorithm(BaseModel):
+    """Soft binding algorithm definition"""
+    alg: str = Field(..., description="Unique identifier of the algorithm")
+
+class SoftBindingAlgList(BaseModel):
+    """List of supported soft binding algorithms"""
+    watermarks: Optional[List[SoftBindingAlgorithm]] = Field(default_factory=list)
+    fingerprints: Optional[List[SoftBindingAlgorithm]] = Field(default_factory=list)
+
+class ManifestMatch(BaseModel):
+    """A matched C2PA Manifest"""
+    manifestId: str = Field(..., description="Unique identifier of a matched C2PA Manifest")
+    endpoint: Optional[str] = Field(None, description="Endpoint where the manifest can be obtained")
+    similarityScore: Optional[int] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Match strength score (0-100)"
+    )
+
+class SoftBindingQueryResult(BaseModel):
+    """Result of a soft binding query"""
+    matches: List[ManifestMatch] = Field(default_factory=list)
+
+class SoftBindingQuery(BaseModel):
+    """Query parameters for soft binding search"""
+    alg: str = Field(..., description="Soft binding algorithm identifier")
+    value: str = Field(..., description="Base64-encoded soft binding value")
+
+class AssetReferenceQuery(BaseModel):
+    """Query parameters for asset reference search"""
+    referenceUrl: HttpUrl = Field(
+        ...,
+        description="HTTPS URL referencing the resource to be used for finding C2PA Manifest identifiers"
+    )
+    assetLength: int = Field(
+        ...,
+        description="Size of the asset to be downloaded from the reference URL in bytes"
+    )
+    assetType: Optional[str] = Field(
+        None,
+        description="IANA Media Type of the asset (e.g., 'video/mp4', 'audio/mpeg')"
+    )
+    region: Optional[List[Any]] = Field(
+        None,
+        description="Optional array specifying the region of interest within the asset"
+    )
+
+class BindingsRequest(BaseModel):
+    """Request for binding a manifest to a soft binding value"""
+    bindingValue: str = Field(
+        ...,
+        description="A soft binding value to be associated with a C2PA Manifest Store"
+    )
+    manifestId: str = Field(
+        ...,
+        description="Identifier of the active C2PA Manifest of a C2PA Manifest Store"
+    )
+
+class ManifestReceipt(BaseModel):
+    """C2PA Manifest receipt"""
+    context: Any = Field(..., alias="@context", description="JSON-LD context")
+    type: str = Field(..., alias="@type", description="JSON-LD type identifier")
+    repository: dict = Field(..., description="Repository information")
+    anchor: dict = Field(..., description="Anchor proof information")
+
+    class Config:
+        populate_by_name = True
+
+class VerifiedManifestReceipt(ManifestReceipt):
+    """Verified C2PA Manifest receipt"""
+    verified: bool = Field(..., description="Result of verification")
+    error: Optional[str] = Field(None, description="Error explanation if verification failed")
+
+class ManifestCreateResult(BaseModel):
+    """Result of creating/storing a manifest"""
+    manifestId: str = Field(
+        ...,
+        description="Identifier of the active C2PA Manifest of the stored C2PA Manifest Store"
+    )
+    receipt: Optional[ManifestReceipt] = Field(
+        None,
+        description="Verification receipt returned when returnReceipt=true"
+    )
