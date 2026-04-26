@@ -3,14 +3,17 @@ from fastapi.responses import Response
 from contextlib import asynccontextmanager
 from typing import Optional
 import base64
+import io
+import uuid
 import httpx
 
 from config import settings
 from database import (
     MongoDB,
+    get_manifest_blobs_bucket,
     get_manifests_collection,
     get_soft_bindings_collection,
-    get_supported_algorithms_collection
+    get_supported_algorithms_collection,
 )
 from models import (
     SoftBindingQueryResult,
@@ -27,11 +30,9 @@ from models import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    # Startup
-    MongoDB.connect()
+    await MongoDB.connect()
     yield
-    # Shutdown
-    MongoDB.close()
+    await MongoDB.close()
 
 app = FastAPI(
     title=settings.api_title,
@@ -112,19 +113,18 @@ async def query_by_binding(
         soft_bindings_col = get_soft_bindings_collection()
 
         # Find matching soft bindings
-        cursor = soft_bindings_col.find(
+        docs = await soft_bindings_col.find(
             {"alg": alg, "value": value}
-        ).limit(maxResults)
+        ).to_list(length=maxResults)
 
-        matches = []
-        for doc in cursor:
-            match = ManifestMatch(
+        matches = [
+            ManifestMatch(
                 manifestId=doc.get("manifestId"),
                 endpoint=doc.get("endpoint"),
-                similarityScore=doc.get("similarityScore")
+                similarityScore=doc.get("similarityScore"),
             )
-            matches.append(match)
-
+            for doc in docs
+        ]
         return SoftBindingQueryResult(matches=matches)
 
     except HTTPException:
@@ -179,19 +179,18 @@ async def query_by_large_binding(
         soft_bindings_col = get_soft_bindings_collection()
 
         # Find matching soft bindings
-        cursor = soft_bindings_col.find(
+        docs = await soft_bindings_col.find(
             {"alg": query.alg, "value": query.value}
-        ).limit(maxResults)
+        ).to_list(length=maxResults)
 
-        matches = []
-        for doc in cursor:
-            match = ManifestMatch(
+        matches = [
+            ManifestMatch(
                 manifestId=doc.get("manifestId"),
                 endpoint=doc.get("endpoint"),
-                similarityScore=doc.get("similarityScore")
+                similarityScore=doc.get("similarityScore"),
             )
-            matches.append(match)
-
+            for doc in docs
+        ]
         return SoftBindingQueryResult(matches=matches)
 
     except HTTPException:
@@ -413,7 +412,7 @@ async def associate_manifest(binding: BindingsRequest):
 
         # Check if manifest exists (404 error)
         manifests_col = get_manifests_collection()
-        manifest_doc = manifests_col.find_one({"manifestId": binding.manifestId})
+        manifest_doc = await manifests_col.find_one({"_id": binding.manifestId})
 
         if not manifest_doc:
             raise HTTPException(
@@ -426,11 +425,11 @@ async def associate_manifest(binding: BindingsRequest):
 
         # Insert new binding (you may want to extract alg from bindingValue format)
         # For now, we'll store the bindingValue directly
-        soft_bindings_col.insert_one({
+        await soft_bindings_col.insert_one({
             "value": binding.bindingValue,
             "manifestId": binding.manifestId,
             "alg": "default",  # You should parse this from bindingValue or accept it as a parameter
-            "similarityScore": 100
+            "similarityScore": 100,
         })
 
         return Response(status_code=204)
@@ -472,9 +471,9 @@ async def update_associated_manifest(binding: BindingsRequest):
                 detail="Invalid request body: 'manifestId' cannot be empty"
             )
 
-        # Check if manifest exists
+        # Check if manifest exists (404 error)
         manifests_col = get_manifests_collection()
-        manifest_doc = manifests_col.find_one({"manifestId": binding.manifestId})
+        manifest_doc = await manifests_col.find_one({"_id": binding.manifestId})
 
         if not manifest_doc:
             raise HTTPException(
@@ -484,10 +483,9 @@ async def update_associated_manifest(binding: BindingsRequest):
 
         # Update the soft binding association (404 if not found)
         soft_bindings_col = get_soft_bindings_collection()
-
-        result = soft_bindings_col.update_one(
+        result = await soft_bindings_col.update_one(
             {"value": binding.bindingValue},
-            {"$set": {"manifestId": binding.manifestId}}
+            {"$set": {"manifestId": binding.manifestId}},
         )
 
         if result.matched_count == 0:
@@ -536,22 +534,28 @@ async def add_manifest(
         # TODO:
         # Generate a unique manifest ID (in real implementation, extract from manifest)
         # here should be a code where we obtain this id from a manifest somehow using tool or sdk
-        import uuid
-        manifest_id = f"urn:uuid:{uuid.uuid4()}"
+        # Per C2PA Technical Spec, the canonical format is `urn:c2pa:<UUID>`.
+        manifest_id = f"urn:c2pa:{uuid.uuid4()}"
 
-        #TODO: 
+        # TODO:
         # Somehow, an active manifest should also be extracted and saved
 
-        # Store the manifest
-        manifests_col = get_manifests_collection()
+        # Store the manifest. Blobs go in GridFS (manifest stores can exceed Mongo's 16MB doc limit).
+        fs = get_manifest_blobs_bucket()
+        store_id = await fs.upload_from_stream(
+            f"{manifest_id}.store", manifest_data
+        )
+        active_id = await fs.upload_from_stream(
+            f"{manifest_id}.active", manifest_data  # In real implementation, extract active manifest
+        )
 
-        manifests_col.insert_one({
-            "manifestId": manifest_id,
-            "manifestStore": manifest_data,
-            "activeManifest": manifest_data  # In real implementation, extract active manifest
+        manifests_col = get_manifests_collection()
+        await manifests_col.insert_one({
+            "_id": manifest_id,
+            "manifestStoreFileId": store_id,
+            "activeManifestFileId": active_id,
         })
 
-        # Prepare response
         result = ManifestCreateResult(manifestId=manifest_id)
 
         # TODO:
@@ -612,7 +616,7 @@ async def get_manifest_by_id(
         manifests_col = get_manifests_collection()
 
         # Find the manifest
-        manifest_doc = manifests_col.find_one({"manifestId": manifestId})
+        manifest_doc = await manifests_col.find_one({"_id": manifestId})
 
         if not manifest_doc:
             raise HTTPException(
@@ -620,22 +624,26 @@ async def get_manifest_by_id(
                 detail="C2PA Manifest Id not found"
             )
 
-        # Return the appropriate manifest data
-        if returnActiveManifest:
-            manifest_data = manifest_doc.get("activeManifest")
-        else:
-            manifest_data = manifest_doc.get("manifestStore")
-
-        if not manifest_data:
+        # Return the appropriate manifest data (active vs full store, per query flag)
+        file_id = manifest_doc.get(
+            "activeManifestFileId" if returnActiveManifest else "manifestStoreFileId"
+        )
+        if file_id is None:
             raise HTTPException(
                 status_code=404,
                 detail="Manifest data not found"
             )
 
+        # Stream the blob out of GridFS
+        fs = get_manifest_blobs_bucket()
+        buffer = io.BytesIO()
+        await fs.download_to_stream(file_id, buffer)
+        manifest_data = buffer.getvalue()
+
         # Return as application/c2pa content type
         return Response(
             content=manifest_data,
-            media_type="application/c2pa"
+            media_type="application/c2pa",
         )
 
     except HTTPException:
@@ -672,17 +680,29 @@ async def delete_manifest(manifestId: str):
 
         # Delete the manifest (404 if not found)
         manifests_col = get_manifests_collection()
-        result = manifests_col.delete_one({"manifestId": manifestId})
+        manifest_doc = await manifests_col.find_one({"_id": manifestId})
 
-        if result.deleted_count == 0:
+        if not manifest_doc:
             raise HTTPException(
                 status_code=404,
                 detail="C2PA Manifest Store not found"
             )
 
+        # Delete GridFS blobs
+        fs = get_manifest_blobs_bucket()
+        for key in ("manifestStoreFileId", "activeManifestFileId"):
+            file_id = manifest_doc.get(key)
+            if file_id is not None:
+                try:
+                    await fs.delete(file_id)
+                except Exception:
+                    pass
+
+        await manifests_col.delete_one({"_id": manifestId})
+
         # Also delete associated soft bindings
         soft_bindings_col = get_soft_bindings_collection()
-        soft_bindings_col.delete_many({"manifestId": manifestId})
+        await soft_bindings_col.delete_many({"manifestId": manifestId})
 
         return Response(status_code=204)
 
@@ -719,7 +739,7 @@ async def get_verified_receipt(manifestId: str, request: Request):
 
         # Check if manifest exists (404 if not found)
         manifests_col = get_manifests_collection()
-        manifest_doc = manifests_col.find_one({"manifestId": manifestId})
+        manifest_doc = await manifests_col.find_one({"_id": manifestId})
 
         if not manifest_doc:
             raise HTTPException(
@@ -776,7 +796,7 @@ async def verify_receipt(manifestId: str, receipt: ManifestReceipt):
 
         # Check if manifest exists (404 if not found)
         manifests_col = get_manifests_collection()
-        manifest_doc = manifests_col.find_one({"manifestId": manifestId})
+        manifest_doc = await manifests_col.find_one({"_id": manifestId})
 
         if not manifest_doc:
             raise HTTPException(
@@ -831,16 +851,17 @@ async def get_supported_algorithms():
     try:
         algorithms_col = get_supported_algorithms_collection()
 
-        # Fetch the supported algorithms document
-        algorithms_doc = algorithms_col.find_one({"_id": "supported_algorithms"})
-
-        if not algorithms_doc:
-            # Return empty lists if not configured yet
-            return SoftBindingAlgList(watermarks=[], fingerprints=[])
+        # Fetch the supported algorithms
+        watermarks = await algorithms_col.find(
+            {"type": "watermark"}, projection={"_id": 0, "alg": 1}
+        ).to_list(length=None)
+        fingerprints = await algorithms_col.find(
+            {"type": "fingerprint"}, projection={"_id": 0, "alg": 1}
+        ).to_list(length=None)
 
         return SoftBindingAlgList(
-            watermarks=algorithms_doc.get("watermarks", []),
-            fingerprints=algorithms_doc.get("fingerprints", [])
+            watermarks=watermarks,
+            fingerprints=fingerprints,
         )
 
     except HTTPException:

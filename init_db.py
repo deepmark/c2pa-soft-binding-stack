@@ -2,88 +2,113 @@
 Script to initialize MongoDB with sample data for testing
 Run this script to populate the database with sample manifests and soft bindings
 """
-from pymongo import MongoClient
-from config import settings
+import asyncio
 import base64
 
-def init_database():
-    """Initialize database with sample data"""
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
+from pymongo import ASCENDING
 
-    client = MongoClient(settings.mongodb_url)
+from config import settings
+
+
+SAMPLE_MANIFESTS = [
+    (
+        "urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4",
+        b"Sample C2PA active manifest data",
+        b"Sample C2PA manifest store data",
+    ),
+    (
+        "urn:c2pa:A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+        b"Another C2PA active manifest",
+        b"Another C2PA manifest store",
+    ),
+]
+
+SAMPLE_ALGORITHMS = [
+    {"type": "watermark",   "alg": "example.watermark.v1"},
+    {"type": "watermark",   "alg": "truepic.c2pa.watermark"},
+    {"type": "fingerprint", "alg": "example.fingerprint.v1"},
+    {"type": "fingerprint", "alg": "youtube.videoid"},
+]
+
+
+async def init_database() -> None:
+    client = AsyncIOMotorClient(settings.mongodb_url, uuidRepresentation="standard")
     db = client[settings.database_name]
+    fs = AsyncIOMotorGridFSBucket(db, bucket_name="manifest_blobs")
 
-    # Clear existing collections
     print("Clearing existing collections...")
-    db.manifests.delete_many({})
-    db.soft_bindings.delete_many({})
-    db.supported_algorithms.delete_many({})
+    await db.manifests.delete_many({})
+    await db.soft_bindings.delete_many({})
+    await db.supported_algorithms.delete_many({})
+    await db["manifest_blobs.files"].delete_many({})
+    await db["manifest_blobs.chunks"].delete_many({})
 
-    # Insert sample supported algorithms
+    print("Creating indexes...")
+    await db.soft_bindings.create_index(
+        [("alg", ASCENDING), ("value", ASCENDING)], name="alg_value_idx"
+    )
+    await db.soft_bindings.create_index(
+        [("manifestId", ASCENDING)], name="manifestId_idx"
+    )
+    await db.soft_bindings.create_index(
+        [("alg", ASCENDING), ("value", ASCENDING), ("manifestId", ASCENDING)],
+        name="binding_unique",
+        unique=True,
+    )
+    await db.supported_algorithms.create_index(
+        [("type", ASCENDING), ("alg", ASCENDING)],
+        name="type_alg_unique",
+        unique=True,
+    )
+
     print("Inserting supported algorithms...")
-    db.supported_algorithms.insert_one({
-        "_id": "supported_algorithms",
-        "watermarks": [
-            {"alg": "example.watermark.v1"},
-            {"alg": "truepic.c2pa.watermark"}
-        ],
-        "fingerprints": [
-            {"alg": "example.fingerprint.v1"},
-            {"alg": "youtube.videoid"}
-        ]
-    })
+    await db.supported_algorithms.insert_many(SAMPLE_ALGORITHMS)
 
-    # Insert sample manifests
     print("Inserting sample manifests...")
-    sample_manifests = [
-        {
-            "manifestId": "urn:uuid:12345678-1234-1234-1234-123456789abc",
-            "activeManifest": b"Sample C2PA active manifest data",
-            "manifestStore": b"Sample C2PA manifest store data"
-        },
-        {
-            "manifestId": "urn:uuid:87654321-4321-4321-4321-cba987654321",
-            "activeManifest": b"Another C2PA active manifest",
-            "manifestStore": b"Another C2PA manifest store"
-        }
-    ]
-    db.manifests.insert_many(sample_manifests)
+    for manifest_id, active, store in SAMPLE_MANIFESTS:
+        active_id = await fs.upload_from_stream(f"{manifest_id}.active", active)
+        store_id = await fs.upload_from_stream(f"{manifest_id}.store", store)
+        await db.manifests.insert_one({
+            "_id": manifest_id,
+            "activeManifestFileId": active_id,
+            "manifestStoreFileId": store_id,
+        })
 
-    # Insert sample soft bindings
     print("Inserting sample soft bindings...")
     sample_bindings = [
         {
             "alg": "example.watermark.v1",
             "value": base64.b64encode(b"watermark_value_123").decode(),
-            "manifestId": "urn:uuid:12345678-1234-1234-1234-123456789abc",
-            "similarityScore": 95
+            "manifestId": SAMPLE_MANIFESTS[0][0],
+            "similarityScore": 95,
         },
         {
             "alg": "example.fingerprint.v1",
             "value": base64.b64encode(b"fingerprint_abc").decode(),
-            "manifestId": "urn:uuid:87654321-4321-4321-4321-cba987654321",
-            "similarityScore": 88
+            "manifestId": SAMPLE_MANIFESTS[1][0],
+            "similarityScore": 88,
         },
         {
             "alg": "truepic.c2pa.watermark",
             "value": base64.b64encode(b"truepic_watermark_xyz").decode(),
-            "manifestId": "urn:uuid:12345678-1234-1234-1234-123456789abc",
-            "similarityScore": 100
-        }
+            "manifestId": SAMPLE_MANIFESTS[0][0],
+            "similarityScore": 100,
+        },
     ]
-    db.soft_bindings.insert_many(sample_bindings)
+    await db.soft_bindings.insert_many(sample_bindings)
 
-    print("\n✅ Database initialized successfully!")
-    print(f"\nInserted:")
-    print(f"  - {len(sample_manifests)} manifests")
+    print("\nDatabase initialized successfully.")
+    print(f"  - {len(SAMPLE_MANIFESTS)} manifests")
     print(f"  - {len(sample_bindings)} soft bindings")
-    print(f"  - 4 supported algorithms (2 watermarks, 2 fingerprints)")
-
-    print("\n📝 Sample query examples:")
-    print(f"  - Algorithm: example.watermark.v1")
-    print(f"  - Value: {base64.b64encode(b'watermark_value_123').decode()}")
-    print(f"  - Manifest ID: urn:uuid:12345678-1234-1234-1234-123456789abc")
+    print(f"  - {len(SAMPLE_ALGORITHMS)} supported algorithms")
+    print("\nSample query examples:")
+    print(f"  - Algorithm:   example.watermark.v1")
+    print(f"  - Value:       {base64.b64encode(b'watermark_value_123').decode()}")
+    print(f"  - Manifest ID: {SAMPLE_MANIFESTS[0][0]}")
 
     client.close()
 
+
 if __name__ == "__main__":
-    init_database()
+    asyncio.run(init_database())

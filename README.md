@@ -44,13 +44,19 @@ brew services start mongodb-community
 
 **Linux:**
 ```bash
-sudo apt-get install mongodb
-sudo systemctl start mongodb
+curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+sudo apt update && sudo apt install -y mongodb-org
+sudo systemctl enable --now mongod
 ```
 
 **Windows:**
 Download from https://www.mongodb.com/try/download/community
 
+**Docker (any platform):**
+```bash
+docker run -d -p 27017:27017 --name mongo mongo:latest
+```
 ## Setup
 
 1. **Install dependencies:**
