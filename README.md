@@ -1,37 +1,35 @@
 # C2PA Soft Binding Resolution API
 
-Complete implementation of the C2PA Soft Binding Resolution API v2.3.0 using FastAPI and MongoDB.
+Implementation of the [C2PA Soft Binding Resolution API v2.4](https://spec.c2pa.org/specifications/specifications/2.4/softbinding/Decoupled.html) using FastAPI, async MongoDB (motor), and GridFS for manifest blob storage.
 
 This API enables matching soft bindings (watermarks and fingerprints) to C2PA Manifests, providing content provenance verification for digital assets.
 
-## Features
+## Endpoints
 
-### Query Endpoints
-- `GET /matches/byBinding` - Query manifests by soft binding value
-- `POST /matches/byBinding` - Query manifests with large soft binding values
-- `POST /matches/byContent` - Find manifests by uploading an asset file
-- `POST /matches/byReference` - Find manifests by asset reference URL (with SSRF protection)
+### Query (`routers/query.py`)
+- `GET  /matches/byBinding` — Query manifests by soft binding value
+- `POST /matches/byBinding` — Same, for binding values too large for a URL
+- `POST /matches/byContent` — Find manifests by uploading an asset file
+- `POST /matches/byReference` — Find manifests by asset URL (with SSRF protection)
 
-### Manifest Management
-- `POST /manifests` - Store C2PA Manifest Store in the repository
-- `GET /manifests/{manifestId}` - Retrieve C2PA Manifest Store by ID
-- `DELETE /manifests/{manifestId}` - Remove manifest from repository
+### Store (`routers/store.py`)
+- `POST   /manifests` — Ingest a C2PA Manifest Store
+- `DELETE /manifests/{manifestId}` — Remove a Manifest Store (and its bindings)
+- `POST   /bindings` — Associate a manifest with a soft binding value
+- `PUT    /bindings` — Update the manifest associated with a binding
 
-### Soft Binding Management
-- `POST /bindings` - Associate a manifest with a soft binding value
-- `PUT /bindings` - Update manifest association for a soft binding
+### Fetch (`routers/fetch.py`)
+- `GET  /manifests/{manifestId}` — Retrieve a Manifest Store (or just the active manifest)
+- `GET  /manifests/{manifestId}/receipts` — Get a verified ingestion receipt
+- `POST /manifests/{manifestId}/receipts` — Verify a supplied receipt
 
-### Receipt Management
-- `GET /manifests/{manifestId}/receipts` - Get verification receipt for a manifest
-- `POST /manifests/{manifestId}/receipts` - Verify a receipt against a manifest
-
-### Service Information
-- `GET /services/supportedAlgorithms` - List supported watermark and fingerprint algorithms
+### Service (`routers/service.py`)
+- `GET /services/supportedAlgorithms` — List supported watermark / fingerprint algorithms
 
 ## Prerequisites
 
-- Python 3.8+
-- MongoDB running locally on port 27017
+- Python 3.10+
+- MongoDB 6.0+ running on port 27017
 
 ### Install MongoDB (if not already installed)
 
@@ -57,6 +55,7 @@ Download from https://www.mongodb.com/try/download/community
 ```bash
 docker run -d -p 27017:27017 --name mongo mongo:latest
 ```
+
 ## Setup
 
 1. **Install dependencies:**
@@ -64,7 +63,7 @@ docker run -d -p 27017:27017 --name mongo mongo:latest
 pip install -r requirements.txt
 ```
 
-2. **Initialize the database with sample data:**
+2. **Initialize the database with sample data + indexes:**
 ```bash
 python init_db.py
 ```
@@ -78,11 +77,15 @@ The API will be available at: http://localhost:8000
 
 ## API Documentation
 
-Once the server is running, visit:
-- **Interactive API docs (Swagger UI):** http://localhost:8000/docs
-- **Alternative docs (ReDoc):** http://localhost:8000/redoc
+- **Swagger UI:** http://localhost:8000/docs (endpoints are grouped by the four spec tags: `query`, `store`, `fetch`, `service`)
+- **ReDoc:** http://localhost:8000/redoc
 
 ## Testing the Endpoints
+
+The sample data inserted by `init_db.py` uses these IDs:
+
+- Manifest A: `urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4`
+- Manifest B: `urn:c2pa:A1B2C3D4-E5F6-7890-ABCD-EF1234567890`
 
 ### 1. List Supported Algorithms
 ```bash
@@ -91,7 +94,6 @@ curl http://localhost:8000/services/supportedAlgorithms
 
 ### 2. Query by Soft Binding (GET)
 ```bash
-# Using the sample data from init_db.py
 curl "http://localhost:8000/matches/byBinding?alg=example.watermark.v1&value=d2F0ZXJtYXJrX3ZhbHVlXzEyMw%3D%3D&maxResults=10"
 ```
 
@@ -105,11 +107,10 @@ curl -X POST "http://localhost:8000/matches/byBinding?maxResults=10" \
   }'
 ```
 
-### 4. Query by Content (File Upload)
+### 4. Query by Content (file upload)
 ```bash
 curl -X POST "http://localhost:8000/matches/byContent?alg=example.watermark.v1&maxResults=10" \
-  -H "Content-Type: image/jpeg" \
-  -F "file=@/path/to/image.jpg"
+  -F "file=@/path/to/asset.mp3"
 ```
 
 ### 5. Query by Reference URL
@@ -117,15 +118,14 @@ curl -X POST "http://localhost:8000/matches/byContent?alg=example.watermark.v1&m
 curl -X POST "http://localhost:8000/matches/byReference?alg=example.watermark.v1" \
   -H "Content-Type: application/json" \
   -d '{
-    "referenceUrl": "https://example.com/asset.jpg",
+    "referenceUrl": "https://example.com/asset.mp3",
     "assetLength": 1048576,
-    "assetType": "image/jpeg"
+    "assetType": "audio/mpeg"
   }'
 ```
 
 ### 6. Store a Manifest
 ```bash
-# Store a C2PA manifest (binary format)
 curl -X POST "http://localhost:8000/manifests?returnReceipt=true" \
   -H "Content-Type: application/c2pa" \
   --data-binary "@manifest.c2pa"
@@ -133,8 +133,10 @@ curl -X POST "http://localhost:8000/manifests?returnReceipt=true" \
 
 ### 7. Get Manifest by ID
 ```bash
-curl http://localhost:8000/manifests/urn:uuid:12345678-1234-1234-1234-123456789abc
+curl http://localhost:8000/manifests/urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4
 ```
+
+Add `?returnActiveManifest=true` to fetch only the active manifest instead of the full store.
 
 ### 8. Create Soft Binding Association
 ```bash
@@ -142,7 +144,7 @@ curl -X POST http://localhost:8000/bindings \
   -H "Content-Type: application/json" \
   -d '{
     "bindingValue": "d2F0ZXJtYXJrX3ZhbHVlXzEyMw==",
-    "manifestId": "urn:uuid:12345678-1234-1234-1234-123456789abc"
+    "manifestId": "urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4"
   }'
 ```
 
@@ -152,18 +154,18 @@ curl -X PUT http://localhost:8000/bindings \
   -H "Content-Type: application/json" \
   -d '{
     "bindingValue": "d2F0ZXJtYXJrX3ZhbHVlXzEyMw==",
-    "manifestId": "urn:uuid:87654321-4321-4321-4321-cba987654321"
+    "manifestId": "urn:c2pa:A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
   }'
 ```
 
 ### 10. Get Verification Receipt
 ```bash
-curl http://localhost:8000/manifests/urn:uuid:12345678-1234-1234-1234-123456789abc/receipts
+curl http://localhost:8000/manifests/urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4/receipts
 ```
 
 ### 11. Verify Receipt
 ```bash
-curl -X POST http://localhost:8000/manifests/urn:uuid:12345678-1234-1234-1234-123456789abc/receipts \
+curl -X POST http://localhost:8000/manifests/urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4/receipts \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -173,46 +175,54 @@ curl -X POST http://localhost:8000/manifests/urn:uuid:12345678-1234-1234-1234-12
     "@type": "org.c2pa.manifest-receipt",
     "repository": {
       "uri": "https://repo.example.org",
-      "manifestId": "urn:uuid:12345678-1234-1234-1234-123456789abc"
+      "manifestId": "urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4"
     },
     "anchor": {
       "uri": "https://repo.example.org/anchors/123456",
-      "proof": {
-        "alg": "ES256",
-        "value": "BASE64URL_PROOF_VALUE"
-      }
+      "proof": { "alg": "ES256", "value": "BASE64URL_PROOF_VALUE" }
     }
   }'
 ```
 
 ### 12. Delete Manifest
 ```bash
-curl -X DELETE http://localhost:8000/manifests/urn:uuid:12345678-1234-1234-1234-123456789abc
+curl -X DELETE http://localhost:8000/manifests/urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4
 ```
 
 ## Project Structure
 
 ```
-c2pa soft bindings/
-├── main.py                    # FastAPI application and routes
-├── models.py                  # Pydantic models
-├── database.py                # MongoDB connection
-├── config.py                  # Configuration settings
-├── init_db.py                 # Database initialization script
-├── requirements.txt           # Python dependencies
-├── specification.json         # OpenAPI specification
-└── README.md                  # This file
+soft-binding-resolution-api/
+├── main.py                # FastAPI app, lifespan, router wiring
+├── routers/               # One module per C2PA spec route group
+│   ├── __init__.py
+│   ├── query.py           # /matches/*
+│   ├── store.py           # POST/PUT /bindings, POST /manifests, DELETE /manifests/{id}
+│   ├── fetch.py           # GET /manifests/{id}, /receipts
+│   └── service.py         # /services/supportedAlgorithms
+├── database.py            # Async MongoDB connection, indexes, GridFS bucket
+├── init_db.py             # Sample data + index seeding
+├── models.py              # Pydantic request/response models
+├── config.py              # Pydantic-settings configuration
+├── requirements.txt
+├── specification.json     # Vendored OpenAPI spec from C2PA
+└── README.md
 ```
 
-## Database Collections
+## Database
 
-- **manifests** - Stores C2PA manifest data
-- **soft_bindings** - Stores soft binding to manifest mappings
-- **supported_algorithms** - Lists supported watermark and fingerprint algorithms
+The service uses three collections plus a GridFS bucket:
+
+- **`manifests`** — `_id` is the C2PA `manifestId` (`urn:c2pa:<UUID>`); doc holds GridFS file references for the active manifest and full manifest store.
+- **`soft_bindings`** — `{alg, value, manifestId, similarityScore}`. Indexed on `(alg, value)` for the hot lookup path, on `manifestId` for cascade deletes, and uniquely on the `(alg, value, manifestId)` triple to prevent duplicates.
+- **`supported_algorithms`** — one document per algorithm: `{type: "watermark"|"fingerprint", alg: "<id>"}`. Unique on `(type, alg)`.
+- **`manifest_blobs.*`** (GridFS) — manifest payloads. Used because C2PA Manifest Stores can exceed MongoDB's 16 MB document limit.
+
+Indexes are created automatically at startup (`MongoDB._ensure_indexes`) and re-asserted by `init_db.py`.
 
 ## Configuration
 
-Create a `.env` file to customize settings:
+Create a `.env` file to override defaults:
 ```env
 MONGODB_URL=mongodb://localhost:27017
 DATABASE_NAME=c2pa_soft_bindings
@@ -222,45 +232,50 @@ API_VERSION=1.1.0
 
 ## Error Handling
 
-The API returns standard HTTP status codes:
-- **200**: Successful operation
-- **204**: Successful operation with no content
-- **400**: Invalid request (bad parameters, invalid format)
-- **403**: Client not allowed to perform operation
-- **404**: Resource not found
-- **414**: URI too long (use POST instead of GET)
-- **415**: Unsupported media type
-- **500**: Internal server error
+Standard HTTP status codes per the C2PA Decoupled spec:
+- **200** — Successful operation
+- **204** — Successful operation with no content
+- **400** — Invalid request (bad parameters, invalid format)
+- **403** — Client not allowed to perform operation
+- **404** — Resource not found
+- **414** — URI too long (use POST instead of GET)
+- **415** — Unsupported media type
+- **500** — Internal server error
 
 ## Implementation Notes
 
 ### Placeholder Functionality
 
-Some endpoints contain placeholder implementations that require algorithm-specific code:
+Some endpoints contain placeholders that require an algorithm-specific implementation or the `c2pa-python` SDK to be plumbed in:
 
-1. **Soft Binding Extraction** (`/matches/byContent`, `/matches/byReference`):
-   - Currently returns empty results
-   - Requires implementing actual watermark/fingerprint extraction algorithms
-   - Each algorithm (from the supported algorithms list) needs specific extraction logic
+1. **Soft binding extraction** (`/matches/byContent`, `/matches/byReference`)
+   - Currently returns empty results.
+   - Each registered algorithm (`/services/supportedAlgorithms`) needs an extractor function that maps `bytes -> base64 value`.
+   - Wire them into a registry, dispatch by `alg`, then reuse the same query as `/matches/byBinding`.
 
-2. **C2PA Manifest Parsing** (`/manifests`):
-   - Currently stores manifests as-is without parsing
-   - In production, should use c2pa-python or c2pa-rs to parse and validate manifests
-   - Should extract the active manifest ID from the JUMBF structure
+2. **C2PA manifest parsing** (`POST /manifests`)
+   - Currently stores the request body as-is and mints a placeholder `urn:c2pa:<uuid4>` ID.
+   - Should call `c2pa-python` to parse the manifest store, extract the actual active manifest label (already in `urn:c2pa:` form per the C2PA Technical Spec), and store the active manifest blob separately.
 
-3. **Receipt Verification** (`/manifests/{manifestId}/receipts`):
-   - Currently uses simplified verification
-   - In production, should cryptographically verify the receipt proof
-   - Should validate signatures and anchor proofs
+3. **Receipt verification** (`POST /manifests/{manifestId}/receipts`)
+   - Currently performs a simplified comparison.
+   - Should cryptographically verify the receipt's proof against the anchor / repository signing key.
+
+### Architecture: where does the watermark itself come from?
+
+The C2PA Decoupled spec **only** covers the lookup API. Embedding the watermark in an asset and extracting it back out are out of scope:
+
+- **Embedding** is done by publisher tooling (a separate ingest service / CLI) before content ships. That tool generates a binding `value`, embeds it into the audio/video, builds a signed C2PA manifest containing a soft-binding assertion, and `POST`s the manifest + binding here.
+- **Extraction** happens either client-side (preferred — clients run the algorithm locally and call `/matches/byBinding`) or server-side via `/matches/byContent`.
+
+See https://github.com/c2pa-org/softbinding-algorithm-list for the registry of standardised algorithm identifiers.
 
 ## Next Steps
 
 To make this production-ready:
-- Integrate c2pa-python library for manifest parsing and validation
-- Implement actual watermark/fingerprint extraction algorithms
-- Add OAuth2 authentication as specified in the OpenAPI spec
-- Enhance SSRF protection (domain allowlist, cloud metadata endpoint blocking)
-- Add rate limiting
-- Add logging and monitoring
-- Implement proper receipt storage and cryptographic verification
-- Add database indexes for performance optimization
+- Integrate `c2pa-python` for manifest parsing, `manifestId` extraction, and active-manifest separation in `POST /manifests`.
+- Implement / register at least one real soft binding algorithm and wire its extractor into `/matches/byContent`.
+- Add OAuth2 / API-key authentication as specified in the OpenAPI spec.
+- Enhance SSRF protection (domain allowlist, cloud metadata endpoint blocking, IP-resolution checks).
+- Add rate limiting, structured logging, and metrics.
+- Implement real receipt storage with cryptographic proofs (e.g. signed COSE / JWS).
