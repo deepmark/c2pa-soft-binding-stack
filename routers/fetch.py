@@ -1,5 +1,5 @@
 """
-Fetch route group (C2PA Decoupled Soft Binding spec §1.4.1.3).
+Fetch route group 
 
 Retrieves C2PA Manifest Stores using provided identifiers, or verifies a
 supplied receipt.

@@ -42,6 +42,12 @@ async def associate_manifest(binding: BindingsRequest):
     """
     try:
         # Validate request body (400 error)
+        if not binding.alg or not binding.alg.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid request body: 'alg' cannot be empty",
+            )
+
         if not binding.bindingValue or not binding.bindingValue.strip():
             raise HTTPException(
                 status_code=400,
@@ -66,13 +72,10 @@ async def associate_manifest(binding: BindingsRequest):
 
         # Create or update the soft binding association
         soft_bindings_col = get_soft_bindings_collection()
-
-        # Insert new binding (you may want to extract alg from bindingValue format)
-        # For now, we'll store the bindingValue directly
         await soft_bindings_col.insert_one({
+            "alg": binding.alg,
             "value": binding.bindingValue,
             "manifestId": binding.manifestId,
-            "alg": "default",  # You should parse this from bindingValue or accept it as a parameter
             "similarityScore": 100,
         })
 
@@ -103,6 +106,12 @@ async def update_associated_manifest(binding: BindingsRequest):
     """
     try:
         # Validate request body (400 error)
+        if not binding.alg or not binding.alg.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid request body: 'alg' cannot be empty",
+            )
+
         if not binding.bindingValue or not binding.bindingValue.strip():
             raise HTTPException(
                 status_code=400,
@@ -128,7 +137,7 @@ async def update_associated_manifest(binding: BindingsRequest):
         # Update the soft binding association (404 if not found)
         soft_bindings_col = get_soft_bindings_collection()
         result = await soft_bindings_col.update_one(
-            {"value": binding.bindingValue},
+            {"alg": binding.alg, "value": binding.bindingValue},
             {"$set": {"manifestId": binding.manifestId}},
         )
 

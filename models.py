@@ -50,7 +50,17 @@ class AssetReferenceQuery(BaseModel):
     )
 
 class BindingsRequest(BaseModel):
-    """Request for binding a manifest to a soft binding value"""
+    """
+    Request for binding a manifest to a soft binding value.
+
+    Note: The spec omits `alg` from the request body, which makes (POST|PUT) /bindings
+    ambiguous when multiple algorithms share a value. Including it here
+    matches the storage shape (alg, value, manifestId).
+    """
+    alg: str = Field(
+        ...,
+        description="Soft binding algorithm identifier (extension over spec)"
+    )
     bindingValue: str = Field(
         ...,
         description="A soft binding value to be associated with a C2PA Manifest Store"

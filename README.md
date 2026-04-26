@@ -143,6 +143,7 @@ Add `?returnActiveManifest=true` to fetch only the active manifest instead of th
 curl -X POST http://localhost:8000/bindings \
   -H "Content-Type: application/json" \
   -d '{
+    "alg": "example.watermark.v1",
     "bindingValue": "d2F0ZXJtYXJrX3ZhbHVlXzEyMw==",
     "manifestId": "urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4"
   }'
@@ -153,6 +154,7 @@ curl -X POST http://localhost:8000/bindings \
 curl -X PUT http://localhost:8000/bindings \
   -H "Content-Type: application/json" \
   -d '{
+    "alg": "example.watermark.v1",
     "bindingValue": "d2F0ZXJtYXJrX3ZhbHVlXzEyMw==",
     "manifestId": "urn:c2pa:A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
   }'
