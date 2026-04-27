@@ -8,7 +8,7 @@ import base64
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from pymongo import ASCENDING
 
-from config import settings
+from soft_binding_api.config import settings
 
 
 SAMPLE_MANIFESTS = [
@@ -110,5 +110,10 @@ async def init_database() -> None:
     client.close()
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Console-script entry point."""
     asyncio.run(init_database())
+
+
+if __name__ == "__main__":
+    cli()

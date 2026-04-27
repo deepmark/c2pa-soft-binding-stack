@@ -11,9 +11,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from config import settings
-from database import MongoDB
-from routers import fetch, query, service, store
+from soft_binding_api.config import settings
+from soft_binding_api.database import MongoDB
+from soft_binding_api.routers import fetch, query, service, store
 
 
 @asynccontextmanager

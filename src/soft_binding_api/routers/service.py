@@ -6,8 +6,8 @@ algorithms.
 """
 from fastapi import APIRouter, HTTPException
 
-from database import get_supported_algorithms_collection
-from models import SoftBindingAlgList
+from soft_binding_api.database import get_supported_algorithms_collection
+from soft_binding_api.models import SoftBindingAlgList
 
 router = APIRouter(tags=["service"])
 

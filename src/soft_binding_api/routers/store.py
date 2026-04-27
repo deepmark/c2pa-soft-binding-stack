@@ -9,12 +9,12 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from database import (
+from soft_binding_api.database import (
     get_manifest_blobs_bucket,
     get_manifests_collection,
     get_soft_bindings_collection,
 )
-from models import (
+from soft_binding_api.models import (
     BindingsRequest,
     ManifestCreateResult,
     ManifestReceipt,

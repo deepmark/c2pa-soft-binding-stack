@@ -6,24 +6,24 @@ This API enables matching soft bindings (watermarks and fingerprints) to C2PA Ma
 
 ## Endpoints
 
-### Query (`routers/query.py`)
+### Query (`src/soft_binding_api/routers/query.py`) — §1.4.1.1
 - `GET  /matches/byBinding` — Query manifests by soft binding value
 - `POST /matches/byBinding` — Same, for binding values too large for a URL
 - `POST /matches/byContent` — Find manifests by uploading an asset file
 - `POST /matches/byReference` — Find manifests by asset URL (with SSRF protection)
 
-### Store (`routers/store.py`)
+### Store (`src/soft_binding_api/routers/store.py`) — §1.4.1.2
 - `POST   /manifests` — Ingest a C2PA Manifest Store
 - `DELETE /manifests/{manifestId}` — Remove a Manifest Store (and its bindings)
 - `POST   /bindings` — Associate a manifest with a soft binding value
 - `PUT    /bindings` — Update the manifest associated with a binding
 
-### Fetch (`routers/fetch.py`)
+### Fetch (`src/soft_binding_api/routers/fetch.py`) — §1.4.1.3
 - `GET  /manifests/{manifestId}` — Retrieve a Manifest Store (or just the active manifest)
 - `GET  /manifests/{manifestId}/receipts` — Get a verified ingestion receipt
 - `POST /manifests/{manifestId}/receipts` — Verify a supplied receipt
 
-### Service (`routers/service.py`)
+### Service (`src/soft_binding_api/routers/service.py`) — §1.4.1.4
 - `GET /services/supportedAlgorithms` — List supported watermark / fingerprint algorithms
 
 ## Prerequisites
@@ -60,20 +60,29 @@ docker run -d -p 27017:27017 --name mongo mongo:latest
 
 1. **Install dependencies:**
 ```bash
-pip install -r requirements.txt
+python -m venv venv
+source venv/bin/activate
+pip install -e .            # runtime deps
+pip install -e ".[dev]"     # + pytest, ruff, mypy
 ```
 
-2. **Initialize the database with sample data + indexes:**
+Initialize the database with sample data + indexes:
+
 ```bash
-python init_db.py
+softbinding-init-db          # console script
+# or:
+python -m soft_binding_api.init_db
 ```
 
-3. **Run the API server:**
+Run the API server:
+
 ```bash
-uvicorn main:app --reload
+uvicorn soft_binding_api.main:app --reload   # dev
+# or:
+softbinding-api                              # production-ish (no reload)
 ```
 
-The API will be available at: http://localhost:8000
+The API will be available at http://localhost:8000.
 
 ## API Documentation
 
@@ -195,20 +204,35 @@ curl -X DELETE http://localhost:8000/manifests/urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-
 
 ```
 soft-binding-resolution-api/
-├── main.py                # FastAPI app, lifespan, router wiring
-├── routers/               # One module per C2PA spec route group
-│   ├── __init__.py
-│   ├── query.py           # /matches/*
-│   ├── store.py           # POST/PUT /bindings, POST /manifests, DELETE /manifests/{id}
-│   ├── fetch.py           # GET /manifests/{id}, /receipts
-│   └── service.py         # /services/supportedAlgorithms
-├── database.py            # Async MongoDB connection, indexes, GridFS bucket
-├── init_db.py             # Sample data + index seeding
-├── models.py              # Pydantic request/response models
-├── config.py              # Pydantic-settings configuration
-├── requirements.txt
-├── specification.json     # Vendored OpenAPI spec from C2PA
-└── README.md
+├── pyproject.toml             # Build system, deps, entry points
+├── README.md
+├── .gitignore
+├── specification.json         # Vendored OpenAPI spec from C2PA
+├── src/
+│   └── soft_binding_api/
+│       ├── __init__.py
+│       ├── __main__.py        # `python -m soft_binding_api` / `softbinding-api`
+│       ├── main.py            # FastAPI app, lifespan, router wiring
+│       ├── config.py          # Pydantic-settings configuration
+│       ├── database.py        # Async Mongo connection, indexes, GridFS bucket
+│       ├── init_db.py         # Sample data + index seeding (`softbinding-init-db`)
+│       ├── models.py          # Pydantic request/response models
+│       ├── routers/           # One module per C2PA spec route group
+│       │   ├── query.py       # §1.4.1.1 — /matches/*
+│       │   ├── store.py       # §1.4.1.2 — POST/PUT /bindings, POST /manifests, DELETE /manifests/{id}
+│       │   ├── fetch.py       # §1.4.1.3 — GET /manifests/{id}, /receipts
+│       │   └── service.py     # §1.4.1.4 — /services/supportedAlgorithms
+│       └── services/          # Algorithm implementations (out-of-spec plug points)
+│           ├── registry.py    # `register_watermark` / `register_fingerprint`
+│           ├── watermark/
+│           │   ├── embed.py   # publisher-side embedder placeholder
+│           │   └── detect.py  # verifier-side detector placeholder
+│           └── fingerprint/
+│               └── compute.py # fingerprint computer placeholder
+├── tests/
+│   ├── test_routes.py         # smoke: required spec routes are registered
+│   └── test_registry.py       # algorithm registry behaviour
+└── docs/
 ```
 
 ## Database
@@ -270,7 +294,23 @@ The C2PA Decoupled spec **only** covers the lookup API. Embedding the watermark 
 - **Embedding** is done by publisher tooling (a separate ingest service / CLI) before content ships. That tool generates a binding `value`, embeds it into the audio/video, builds a signed C2PA manifest containing a soft-binding assertion, and `POST`s the manifest + binding here.
 - **Extraction** happens either client-side (preferred — clients run the algorithm locally and call `/matches/byBinding`) or server-side via `/matches/byContent`.
 
-See https://github.com/c2pa-org/softbinding-algorithm-list for the registry of standardised algorithm identifiers.
+The `src/soft_binding_api/services/` package holds plug points for these:
+
+- `services/watermark/embed.py` — publisher-side embedder (used by ingest tooling)
+- `services/watermark/detect.py` — verifier-side detector (used by `/matches/byContent`)
+- `services/fingerprint/compute.py` — fingerprint computer (both sides)
+- `services/registry.py` — `register_watermark(alg, embed=..., detect=...)` and `register_fingerprint(alg, compute=...)` to wire concrete implementations in by their algorithm identifier.
+
+All three modules raise `NotImplementedError` until something is registered. See https://github.com/c2pa-org/softbinding-algorithm-list for the registry of standardised algorithm identifiers.
+
+## Tests
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+The bundled tests verify the spec-required routes are registered and that the algorithm registry round-trips. They don't require MongoDB.
 
 ## Next Steps
 

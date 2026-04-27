@@ -8,7 +8,7 @@ from motor.motor_asyncio import (
 )
 from pymongo import ASCENDING
 
-from config import settings
+from soft_binding_api.config import settings
 
 
 class MongoDB:

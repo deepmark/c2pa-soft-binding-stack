@@ -15,6 +15,7 @@ ENV/
 build/
 dist/
 *.egg-info/
+src/*.egg-info/
 *.egg
 
 # Environment / secrets

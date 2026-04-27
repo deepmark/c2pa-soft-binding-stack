@@ -10,8 +10,8 @@ import base64
 import httpx
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 
-from database import get_soft_bindings_collection
-from models import (
+from soft_binding_api.database import get_soft_bindings_collection
+from soft_binding_api.models import (
     AssetReferenceQuery,
     ManifestMatch,
     SoftBindingQuery,
