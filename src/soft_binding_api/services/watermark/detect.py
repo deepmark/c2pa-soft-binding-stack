@@ -6,19 +6,18 @@ when the *server* is asked to extract a binding from an uploaded asset.
 Clients that prefer to do extraction locally never hit this code path —
 they call ``/matches/byBinding`` directly with the value they extracted.
 
-Plug your real detector in via ``register_watermark`` from
-``soft_binding_api.services.registry``::
-
-    from soft_binding_api.services.registry import register_watermark
-    from myorg.audio_watermark import detect as audio_detect
-
-    register_watermark("myorg.audiomark.v1", detect=audio_detect)
+Current implementation is the **dummy** counterpart to ``embed``: since
+the embedder is a passthrough, the detector simply re-runs the binding
+derivation on the input bytes. This guarantees a clean round-trip
+(``detect(embed(x, v)) == compute_binding_value(x)``) for tests and for
+``/matches/byContent`` once that endpoint is wired up.
 """
 from __future__ import annotations
-from typing import Optional
+
+from soft_binding_api.services.watermark.embed import compute_binding_value
 
 
-def detect(asset_bytes: bytes) -> Optional[str]:
+def detect(asset_bytes: bytes) -> str | None:
     """
     Reference signature for a watermark detector.
 
@@ -27,9 +26,7 @@ def detect(asset_bytes: bytes) -> Optional[str]:
 
     Returns:
         The base64-encoded binding value, or ``None`` if no watermark
-        was found.
+        was found. The dummy implementation always returns the value
+        derived from the input bytes.
     """
-    raise NotImplementedError(
-        "No watermark detector is registered. "
-        "Register one with `register_watermark(alg, detect=...)`."
-    )
+    return compute_binding_value(asset_bytes)
