@@ -9,7 +9,7 @@ import io
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from soft_binding_api.database import get_manifest_blobs_bucket, get_manifests_collection
+from soft_binding_api.core.database import get_manifest_blobs_bucket, get_manifests_collection
 from soft_binding_api.models import ManifestReceipt, VerifiedManifestReceipt
 
 router = APIRouter(tags=["fetch"])

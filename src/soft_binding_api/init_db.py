@@ -8,8 +8,7 @@ import base64
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from pymongo import ASCENDING
 
-from soft_binding_api.config import settings
-
+from soft_binding_api.core.config import settings
 
 SAMPLE_MANIFESTS = [
     (
@@ -27,6 +26,7 @@ SAMPLE_MANIFESTS = [
 SAMPLE_ALGORITHMS = [
     {"type": "watermark",   "alg": "example.watermark.v1"},
     {"type": "watermark",   "alg": "truepic.c2pa.watermark"},
+    {"type": "watermark",   "alg": "me.deepmark.audio.vigil.128"},
     {"type": "fingerprint", "alg": "example.fingerprint.v1"},
     {"type": "fingerprint", "alg": "youtube.videoid"},
 ]
@@ -41,8 +41,11 @@ async def init_database() -> None:
     await db.manifests.delete_many({})
     await db.soft_bindings.delete_many({})
     await db.supported_algorithms.delete_many({})
+    await db.ingestions.delete_many({})
     await db["manifest_blobs.files"].delete_many({})
     await db["manifest_blobs.chunks"].delete_many({})
+    await db["ingest_assets.files"].delete_many({})
+    await db["ingest_assets.chunks"].delete_many({})
 
     print("Creating indexes...")
     await db.soft_bindings.create_index(
@@ -60,6 +63,12 @@ async def init_database() -> None:
         [("type", ASCENDING), ("alg", ASCENDING)],
         name="type_alg_unique",
         unique=True,
+    )
+    await db.ingestions.create_index(
+        [("ingestionId", ASCENDING)], name="ingestionId_unique", unique=True
+    )
+    await db.ingestions.create_index(
+        [("alg", ASCENDING), ("bindingValue", ASCENDING)], name="alg_value_idx"
     )
 
     print("Inserting supported algorithms...")
@@ -103,7 +112,7 @@ async def init_database() -> None:
     print(f"  - {len(sample_bindings)} soft bindings")
     print(f"  - {len(SAMPLE_ALGORITHMS)} supported algorithms")
     print("\nSample query examples:")
-    print(f"  - Algorithm:   example.watermark.v1")
+    print("  - Algorithm:   example.watermark.v1")
     print(f"  - Value:       {base64.b64encode(b'watermark_value_123').decode()}")
     print(f"  - Manifest ID: {SAMPLE_MANIFESTS[0][0]}")
 

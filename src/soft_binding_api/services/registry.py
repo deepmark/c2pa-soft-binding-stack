@@ -7,12 +7,12 @@ dispatch to a concrete algorithm by its `alg` identifier (e.g.
 """
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 WatermarkEmbedder = Callable[[bytes, str], bytes]
 """(asset_bytes, value_b64) -> watermarked asset bytes"""
 
-WatermarkDetector = Callable[[bytes], Optional[str]]
+WatermarkDetector = Callable[[bytes], str | None]
 """asset_bytes -> base64 binding value (or None if not detected)"""
 
 FingerprintComputer = Callable[[bytes], str]

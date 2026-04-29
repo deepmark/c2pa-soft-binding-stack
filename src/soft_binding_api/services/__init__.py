@@ -9,9 +9,6 @@ Submodules:
 - ``watermark.embed``    — write a binding value into an asset
 - ``watermark.detect``   — recover a binding value from an asset
 - ``fingerprint.compute``— derive a content fingerprint from an asset
-
-See https://github.com/c2pa-org/softbinding-algorithm-list for registered
-algorithm identifiers.
 """
 
 from soft_binding_api.services.registry import (

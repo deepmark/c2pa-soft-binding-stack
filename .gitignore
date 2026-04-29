@@ -49,8 +49,17 @@ Thumbs.db
 # Uploaded / generated assets that shouldn't be committed
 uploads/
 tmp/
+storage/
 *.c2pa
 *.log
+
+# Signing material — never commit certs/keys
+credentials/*.pem
+credentials/*.key
+credentials/*.crt
+credentials/*.cer
+credentials/*.p12
+credentials/*.pfx
 
 # MongoDB local data (if you ever bind-mount it)
 data/

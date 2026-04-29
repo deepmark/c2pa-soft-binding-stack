@@ -4,13 +4,12 @@ Query route group
 Searches for matching manifests using a soft binding. The soft binding value
 is either provided by the caller, or is computed from an asset.
 """
-from typing import Optional
 import base64
 
 import httpx
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 
-from soft_binding_api.database import get_soft_bindings_collection
+from soft_binding_api.core.database import get_soft_bindings_collection
 from soft_binding_api.models import (
     AssetReferenceQuery,
     ManifestMatch,
@@ -179,10 +178,10 @@ async def query_by_large_binding(
 )
 async def query_by_content(
     file: UploadFile = File(...),
-    alg: Optional[str] = Query(None, description="Soft binding algorithm identifier"),
+    alg: str | None = Query(None, description="Soft binding algorithm identifier"),
     maxResults: int = Query(10, ge=1, description="Maximum number of results"),
-    hintAlg: Optional[str] = Query(None, description="Additional algorithm hint"),
-    hintValue: Optional[str] = Query(None, description="Additional value hint"),
+    hintAlg: str | None = Query(None, description="Additional algorithm hint"),
+    hintValue: str | None = Query(None, description="Additional value hint"),
 ):
     """
     Find zero or more C2PA Manifest identifiers within the manifest store
@@ -243,10 +242,10 @@ async def query_by_content(
 )
 async def query_by_reference(
     query: AssetReferenceQuery,
-    alg: Optional[str] = Query(None, description="Soft binding algorithm identifier"),
+    alg: str | None = Query(None, description="Soft binding algorithm identifier"),
     maxResults: int = Query(10, ge=1, description="Maximum number of results"),
-    hintAlg: Optional[str] = Query(None, description="Additional algorithm hint"),
-    hintValue: Optional[str] = Query(None, description="Additional value hint"),
+    hintAlg: str | None = Query(None, description="Additional algorithm hint"),
+    hintValue: str | None = Query(None, description="Additional value hint"),
 ):
     """
     Optional endpoint to find zero or more C2PA Manifest identifiers within the manifest store
