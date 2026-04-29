@@ -1,0 +1,35 @@
+# Shared catalog of soft-binding algorithms supported by this deployment.
+#
+# Mounted into both `resolution-api` and `ingestion-api`:
+#  - resolution-api reads it for `GET /services/supportedAlgorithms`.
+#  - ingestion-api reads it to look up the plugin URL for a given alg
+#    when handling `POST /ingest`.
+#
+# Schema:
+#   alg         -- canonical soft-binding algorithm identifier
+#   type        -- "watermark" or "fingerprint"
+#   valueBits   -- width of the binding value in bits
+#   mediaTypes  -- IANA media types this plugin can handle
+#   url         -- HTTP URL of the plugin container, used by ingestion-api
+
+algorithms:
+  - alg: me.deepmark.audio.vigil.128
+    type: watermark
+    valueBits: 128
+    mediaTypes:
+      - audio/wav
+      - audio/wave
+      - audio/x-wav
+      - audio/mpeg
+      - audio/flac
+      - audio/x-flac
+      - audio/ogg
+    url: http://watermark-vigil-128:8000
+
+  # Fingerprint plugins go here, e.g.:
+  #
+  # - alg: org.example.audiofp.v1
+  #   type: fingerprint
+  #   valueBits: 128
+  #   mediaTypes: ["audio/wav", "audio/mpeg"]
+  #   url: http://fingerprint-example:8000

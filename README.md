@@ -1,323 +1,237 @@
-# C2PA Soft Binding Resolution API
+# C2PA Soft-Binding Stack
 
-Implementation of the [C2PA Soft Binding Resolution API v2.4](https://spec.c2pa.org/specifications/specifications/2.4/softbinding/Decoupled.html) using FastAPI, async MongoDB (motor), and GridFS for manifest blob storage.
+Multi-service repo implementing the [C2PA Soft Binding Resolution API
+v2.4](https://spec.c2pa.org/specifications/specifications/2.4/softbinding/Decoupled.html)
+plus an audio ingest pipeline that produces signed manifests with
+soft-binding watermarks. Inspired by the
+[deepmarkpy-benchmark](https://github.com/deepmark/deepmarkpy-benchmark)
+plugin-per-container architecture.
 
-This API enables matching soft bindings (watermarks and fingerprints) to C2PA Manifests, providing content provenance verification for digital assets.
-
-## Endpoints
-
-### Query (`src/soft_binding_api/routers/query.py`) — §1.4.1.1
-- `GET  /matches/byBinding` — Query manifests by soft binding value
-- `POST /matches/byBinding` — Same, for binding values too large for a URL
-- `POST /matches/byContent` — Find manifests by uploading an asset file
-- `POST /matches/byReference` — Find manifests by asset URL (with SSRF protection)
-
-### Store (`src/soft_binding_api/routers/store.py`) — §1.4.1.2
-- `POST   /manifests` — Ingest a C2PA Manifest Store
-- `DELETE /manifests/{manifestId}` — Remove a Manifest Store (and its bindings)
-- `POST   /bindings` — Associate a manifest with a soft binding value
-- `PUT    /bindings` — Update the manifest associated with a binding
-
-### Fetch (`src/soft_binding_api/routers/fetch.py`) — §1.4.1.3
-- `GET  /manifests/{manifestId}` — Retrieve a Manifest Store (or just the active manifest)
-- `GET  /manifests/{manifestId}/receipts` — Get a verified ingestion receipt
-- `POST /manifests/{manifestId}/receipts` — Verify a supplied receipt
-
-### Service (`src/soft_binding_api/routers/service.py`) — §1.4.1.4
-- `GET /services/supportedAlgorithms` — List supported watermark / fingerprint algorithms
-
-## Prerequisites
-
-- Python 3.10+
-- MongoDB 6.0+ running on port 27017
-
-### Install MongoDB (if not already installed)
-
-**macOS:**
-```bash
-brew tap mongodb/brew
-brew install mongodb-community
-brew services start mongodb-community
-```
-
-**Linux:**
-```bash
-curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
-echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
-sudo apt update && sudo apt install -y mongodb-org
-sudo systemctl enable --now mongod
-```
-
-**Windows:**
-Download from https://www.mongodb.com/try/download/community
-
-**Docker (any platform):**
-```bash
-docker run -d -p 27017:27017 --name mongo mongo:latest
-```
-
-## Setup
-
-1. **Install dependencies:**
-```bash
-python -m venv venv
-source venv/bin/activate
-pip install -e .            # runtime deps
-pip install -e ".[dev]"     # + pytest, ruff, mypy
-```
-
-Initialize the database with sample data + indexes:
-
-```bash
-softbinding-init-db          # console script
-# or:
-python -m soft_binding_api.init_db
-```
-
-Run the API server:
-
-```bash
-uvicorn soft_binding_api.main:app --reload   # dev
-# or:
-softbinding-api                              # production-ish (no reload)
-```
-
-The API will be available at http://localhost:8000.
-
-## API Documentation
-
-- **Swagger UI:** http://localhost:8000/docs (endpoints are grouped by the four spec tags: `query`, `store`, `fetch`, `service`)
-- **ReDoc:** http://localhost:8000/redoc
-
-## Testing the Endpoints
-
-The sample data inserted by `init_db.py` uses these IDs:
-
-- Manifest A: `urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4`
-- Manifest B: `urn:c2pa:A1B2C3D4-E5F6-7890-ABCD-EF1234567890`
-
-### 1. List Supported Algorithms
-```bash
-curl http://localhost:8000/services/supportedAlgorithms
-```
-
-### 2. Query by Soft Binding (GET)
-```bash
-curl "http://localhost:8000/matches/byBinding?alg=example.watermark.v1&value=d2F0ZXJtYXJrX3ZhbHVlXzEyMw%3D%3D&maxResults=10"
-```
-
-### 3. Query by Large Soft Binding (POST)
-```bash
-curl -X POST "http://localhost:8000/matches/byBinding?maxResults=10" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "alg": "example.watermark.v1",
-    "value": "d2F0ZXJtYXJrX3ZhbHVlXzEyMw=="
-  }'
-```
-
-### 4. Query by Content (file upload)
-```bash
-curl -X POST "http://localhost:8000/matches/byContent?alg=example.watermark.v1&maxResults=10" \
-  -F "file=@/path/to/asset.mp3"
-```
-
-### 5. Query by Reference URL
-```bash
-curl -X POST "http://localhost:8000/matches/byReference?alg=example.watermark.v1" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "referenceUrl": "https://example.com/asset.mp3",
-    "assetLength": 1048576,
-    "assetType": "audio/mpeg"
-  }'
-```
-
-### 6. Store a Manifest
-```bash
-curl -X POST "http://localhost:8000/manifests?returnReceipt=true" \
-  -H "Content-Type: application/c2pa" \
-  --data-binary "@manifest.c2pa"
-```
-
-### 7. Get Manifest by ID
-```bash
-curl http://localhost:8000/manifests/urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4
-```
-
-Add `?returnActiveManifest=true` to fetch only the active manifest instead of the full store.
-
-### 8. Create Soft Binding Association
-```bash
-curl -X POST http://localhost:8000/bindings \
-  -H "Content-Type: application/json" \
-  -d '{
-    "alg": "example.watermark.v1",
-    "bindingValue": "d2F0ZXJtYXJrX3ZhbHVlXzEyMw==",
-    "manifestId": "urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4"
-  }'
-```
-
-### 9. Update Soft Binding Association
-```bash
-curl -X PUT http://localhost:8000/bindings \
-  -H "Content-Type: application/json" \
-  -d '{
-    "alg": "example.watermark.v1",
-    "bindingValue": "d2F0ZXJtYXJrX3ZhbHVlXzEyMw==",
-    "manifestId": "urn:c2pa:A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
-  }'
-```
-
-### 10. Get Verification Receipt
-```bash
-curl http://localhost:8000/manifests/urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4/receipts
-```
-
-### 11. Verify Receipt
-```bash
-curl -X POST http://localhost:8000/manifests/urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4/receipts \
-  -H "Content-Type: application/json" \
-  -d '{
-    "@context": {
-      "c2pa": "https://c2pa.org/ns/",
-      "receipt": "https://c2pa.org/ns/manifest-receipt#"
-    },
-    "@type": "org.c2pa.manifest-receipt",
-    "repository": {
-      "uri": "https://repo.example.org",
-      "manifestId": "urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4"
-    },
-    "anchor": {
-      "uri": "https://repo.example.org/anchors/123456",
-      "proof": { "alg": "ES256", "value": "BASE64URL_PROOF_VALUE" }
-    }
-  }'
-```
-
-### 12. Delete Manifest
-```bash
-curl -X DELETE http://localhost:8000/manifests/urn:c2pa:F9168C5E-CEB2-4FAA-B6BF-329BF39FA1E4
-```
-
-## Project Structure
+## Services
 
 ```
 soft-binding-resolution-api/
-├── pyproject.toml             # Build system, deps, entry points
-├── README.md
-├── .gitignore
-├── specification.json         # Vendored OpenAPI spec from C2PA
-├── src/
-│   └── soft_binding_api/
-│       ├── __init__.py
-│       ├── __main__.py        # `python -m soft_binding_api` / `softbinding-api`
-│       ├── main.py            # FastAPI app, lifespan, router wiring
-│       ├── config.py          # Pydantic-settings configuration
-│       ├── database.py        # Async Mongo connection, indexes, GridFS bucket
-│       ├── init_db.py         # Sample data + index seeding (`softbinding-init-db`)
-│       ├── models.py          # Pydantic request/response models
-│       ├── routers/           # One module per C2PA spec route group
-│       │   ├── query.py       # §1.4.1.1 — /matches/*
-│       │   ├── store.py       # §1.4.1.2 — POST/PUT /bindings, POST /manifests, DELETE /manifests/{id}
-│       │   ├── fetch.py       # §1.4.1.3 — GET /manifests/{id}, /receipts
-│       │   └── service.py     # §1.4.1.4 — /services/supportedAlgorithms
-│       └── services/          # Algorithm implementations (out-of-spec plug points)
-│           ├── registry.py    # `register_watermark` / `register_fingerprint`
-│           ├── watermark/
-│           │   ├── embed.py   # publisher-side embedder placeholder
-│           │   └── detect.py  # verifier-side detector placeholder
-│           └── fingerprint/
-│               └── compute.py # fingerprint computer placeholder
-├── tests/
-│   ├── test_routes.py         # smoke: required spec routes are registered
-│   └── test_registry.py       # algorithm registry behaviour
-└── docs/
+├── algorithms.yaml                     ← shared catalog (mounted into both APIs)
+├── docker-compose.yml
+├── .env.example
+├── credentials/                        ← cert + key, mounted only into ingestion-api
+└── src/
+    ├── resolution-api/                 ← lookup half of the spec
+    │   └── src/resolution_api/         ← /matches, /manifests, /bindings, /services
+    ├── ingestion-api/                  ← orchestrator: upload → embed → sign → store → push
+    │   └── src/ingestion_api/          ← POST /ingest, /ready, …
+    └── plugins/
+        ├── watermark/
+        │   └── vigil-128/              ← me.deepmark.audio.vigil.128 (FastAPI plugin)
+        └── fingerprint/                ← drop new fingerprint plugins here
 ```
 
-## Database
+Four containers wired together via `docker-compose`:
 
-The service uses three collections plus a GridFS bucket:
+- **`resolution-api`** (port 8000) — read/write of the C2PA Manifest
+  Store and the soft-binding lookup table. Reads supported algorithms
+  from `algorithms.yaml`.
+- **`ingestion-api`** (port 8001) — accepts audio uploads, calls the
+  watermark plugin, builds + signs the C2PA manifest, persists artifacts,
+  auto-pushes the resulting manifest store + binding to
+  `resolution-api`.
+- **`watermark-vigil-128`** (port 8101) — soft-binding watermark plugin
+  for `me.deepmark.audio.vigil.128`. Currently a deterministic SHA-256[:16]
+  dummy — drop in real DSP without touching anything else (see
+  [src/plugins/watermark/vigil-128/README.md](src/plugins/watermark/vigil-128/README.md)).
+- **`mongo`** — backing store for `resolution-api`. The ingestion
+  service is filesystem-only; it does not touch Mongo.
 
-- **`manifests`** — `_id` is the C2PA `manifestId` (`urn:c2pa:<UUID>`); doc holds GridFS file references for the active manifest and full manifest store.
-- **`soft_bindings`** — `{alg, value, manifestId, similarityScore}`. Indexed on `(alg, value)` for the hot lookup path, on `manifestId` for cascade deletes, and uniquely on the `(alg, value, manifestId)` triple to prevent duplicates.
-- **`supported_algorithms`** — one document per algorithm: `{type: "watermark"|"fingerprint", alg: "<id>"}`. Unique on `(type, alg)`.
-- **`manifest_blobs.*`** (GridFS) — manifest payloads. Used because C2PA Manifest Stores can exceed MongoDB's 16 MB document limit.
+### Data flow (`POST /ingest`)
 
-Indexes are created automatically at startup (`MongoDB._ensure_indexes`) and re-asserted by `init_db.py`.
+```
+Client
+  │ multipart upload (audio file)
+  ▼
+ingestion-api (8001)
+  │ writes /shared/<id>/input.wav
+  │
+  │ POST http://watermark-vigil-128:8000/embed
+  │   { input_path: "/shared/<id>/input.wav",
+  │     output_path: "/shared/<id>/wm.wav" }
+  ▼
+watermark-vigil-128 (8000 internal)
+  │ reads input, embeds, writes output, returns { bindingValue }
+  ▼
+ingestion-api
+  │ reads /shared/<id>/wm.wav back into memory
+  │ builds C2PA manifest (EDIT intent: parent ingredient + c2pa.opened
+  │   auto-injected; we add c2pa.watermarked.bound + c2pa.soft-binding)
+  │ signs with cert/key from /credentials
+  │ writes /var/lib/ingestion-api/storage/ingestions/<id>/{signed.wav,
+  │   manifest.c2pa, metadata.json}
+  │
+  │ POST http://resolution-api:8000/manifests   (raw c2pa bytes)
+  │ POST http://resolution-api:8000/bindings    ({alg, value, manifestId})
+  ▼
+resolution-api (8000)
+  │ persists into Mongo. /matches/byBinding now resolves the new asset.
 
-## Configuration
-
-Create a `.env` file to override defaults:
-```env
-MONGODB_URL=mongodb://localhost:27017
-DATABASE_NAME=c2pa_soft_bindings
-API_TITLE=C2PA Soft Binding Resolution API
-API_VERSION=1.1.0
+Response back to client:
+  { ingestionId, manifestId, alg, bindingValue,
+    outputAssetUrl, manifestUrl,
+    resolutionPush: { status, error? }, ... }
 ```
 
-## Error Handling
+The shared volume (`shared:` in compose) is the byte-transport channel
+between ingestion-api and plugin containers — bytes don't leave the
+Docker network as base64 in JSON.
 
-Standard HTTP status codes per the C2PA Decoupled spec:
-- **200** — Successful operation
-- **204** — Successful operation with no content
-- **400** — Invalid request (bad parameters, invalid format)
-- **403** — Client not allowed to perform operation
-- **404** — Resource not found
-- **414** — URI too long (use POST instead of GET)
-- **415** — Unsupported media type
-- **500** — Internal server error
+## Quick start with `docker compose`
 
-## Implementation Notes
+```bash
+cp .env.example .env
 
-### Placeholder Functionality
+# Drop ES256 test certs in (cert chain + private key for local dev)
+mkdir -p credentials
+curl -fsSLo credentials/es256_certs.pem \
+  https://raw.githubusercontent.com/contentauth/c2pa-rs/main/sdk/tests/fixtures/certs/es256.pub
+curl -fsSLo credentials/es256_private.key \
+  https://raw.githubusercontent.com/contentauth/c2pa-rs/main/sdk/tests/fixtures/certs/es256.pem
 
-Some endpoints contain placeholders that require an algorithm-specific implementation or the `c2pa-python` SDK to be plumbed in:
+docker compose build
+docker compose up -d
 
-1. **Soft binding extraction** (`/matches/byContent`, `/matches/byReference`)
-   - Currently returns empty results.
-   - Each registered algorithm (`/services/supportedAlgorithms`) needs an extractor function that maps `bytes -> base64 value`.
-   - Wire them into a registry, dispatch by `alg`, then reuse the same query as `/matches/byBinding`.
+# Seed resolution-api Mongo with the sample manifests + indexes.
+docker compose exec resolution-api resolution-init-db
 
-2. **C2PA manifest parsing** (`POST /manifests`)
-   - Currently stores the request body as-is and mints a placeholder `urn:c2pa:<uuid4>` ID.
-   - Should call `c2pa-python` to parse the manifest store, extract the actual active manifest label (already in `urn:c2pa:` form per the C2PA Technical Spec), and store the active manifest blob separately.
+# Sanity checks:
+curl http://localhost:8000/health
+curl http://localhost:8001/ready | jq .
+curl http://localhost:8101/info  | jq .
+curl http://localhost:8000/services/supportedAlgorithms | jq .
+```
 
-3. **Receipt verification** (`POST /manifests/{manifestId}/receipts`)
-   - Currently performs a simplified comparison.
-   - Should cryptographically verify the receipt's proof against the anchor / repository signing key.
+Ingest an audio asset end-to-end:
 
-### Architecture: where does the watermark itself come from?
+```bash
+curl -X POST http://localhost:8001/ingest \
+  -F "file=@/path/to/audio.wav;type=audio/wav" \
+  -F "title=Hello world" | jq .
+```
 
-The C2PA Decoupled spec **only** covers the lookup API. Embedding the watermark in an asset and extracting it back out are out of scope:
+The response carries `outputAssetUrl`, `manifestUrl`, and
+`resolutionPush.status` so you can confirm the auto-push succeeded.
+Then verify the lookup side resolves the new asset:
 
-- **Embedding** is done by publisher tooling (a separate ingest service / CLI) before content ships. That tool generates a binding `value`, embeds it into the audio/video, builds a signed C2PA manifest containing a soft-binding assertion, and `POST`s the manifest + binding here.
-- **Extraction** happens either client-side (preferred — clients run the algorithm locally and call `/matches/byBinding`) or server-side via `/matches/byContent`.
+```bash
+curl "http://localhost:8000/matches/byBinding?alg=me.deepmark.audio.vigil.128&value=<bindingValue>"
+```
 
-The `src/soft_binding_api/services/` package holds plug points for these:
+## Local development without docker
 
-- `services/watermark/embed.py` — publisher-side embedder (used by ingest tooling)
-- `services/watermark/detect.py` — verifier-side detector (used by `/matches/byContent`)
-- `services/fingerprint/compute.py` — fingerprint computer (both sides)
-- `services/registry.py` — `register_watermark(alg, embed=..., detect=...)` and `register_fingerprint(alg, compute=...)` to wire concrete implementations in by their algorithm identifier.
+Each service is a `pip install -e .`-able package. Run them from one
+shared venv (or one per service — your call):
 
-All three modules raise `NotImplementedError` until something is registered. See https://github.com/c2pa-org/softbinding-algorithm-list for the registry of standardised algorithm identifiers.
+```bash
+python -m venv venv && source venv/bin/activate
+
+pip install -e "./src/resolution-api[dev]"
+pip install -e "./src/ingestion-api[dev]"
+pip install -r ./src/plugins/watermark/vigil-128/requirements.txt
+```
+
+Then in three terminals (with mongo running locally on 27017):
+
+```bash
+# 1. plugin
+cd src/plugins/watermark/vigil-128 && uvicorn app:app --port 8101
+
+# 2. resolution-api
+cd src/resolution-api && resolution-api          # PORT=8000
+
+# 3. ingestion-api
+cd src/ingestion-api && ingestion-api            # PORT=8001
+```
+
+Tweak per-service config via the env vars described in each service's
+README + `.env.example` at the repo root. Default settings assume a
+Docker network, so for bare-metal dev you'll likely want:
+
+```bash
+export ALGORITHMS_CATALOG_PATH=$PWD/algorithms.yaml
+export RESOLUTION_API_URL=http://127.0.0.1:8000
+# point ingestion-api at the local plugin instead of the docker hostname
+sed -i 's|http://watermark-vigil-128:8000|http://127.0.0.1:8101|' algorithms.yaml
+```
 
 ## Tests
 
+Each service ships its own pytest suite. From the repo root:
+
 ```bash
-pip install -e ".[dev]"
-pytest
+( cd src/resolution-api && pytest -q )
+( cd src/ingestion-api  && pytest -q )
+( cd src/plugins/watermark/vigil-128 && PYTHONPATH=. pytest -q )
 ```
 
-The bundled tests verify the spec-required routes are registered and that the algorithm registry round-trips. They don't require MongoDB.
+- `src/resolution-api` — route smoke + algorithms catalog loader. No Mongo needed.
+- `src/ingestion-api` — end-to-end orchestrator with a stubbed plugin client
+  + stubbed resolution-api auto-push. Needs `credentials/` for real
+  C2PA signing (auto-skips otherwise). Catalog + plugin client + push
+  client are tested separately with `httpx.MockTransport`.
+- `src/plugins/watermark/vigil-128` — algorithm unit tests + FastAPI
+  TestClient over `/info`, `/health`, `/embed`, `/detect`.
 
-## Next Steps
+Total: 39 tests, no external services, all pass on a fresh checkout
+once `credentials/` is populated.
 
-To make this production-ready:
-- Integrate `c2pa-python` for manifest parsing, `manifestId` extraction, and active-manifest separation in `POST /manifests`.
-- Implement / register at least one real soft binding algorithm and wire its extractor into `/matches/byContent`.
-- Add OAuth2 / API-key authentication as specified in the OpenAPI spec.
-- Enhance SSRF protection (domain allowlist, cloud metadata endpoint blocking, IP-resolution checks).
-- Add rate limiting, structured logging, and metrics.
-- Implement real receipt storage with cryptographic proofs (e.g. signed COSE / JWS).
+## Adding a new plugin
+
+1. Create `src/plugins/<watermark|fingerprint>/<name>/{app.py,requirements.txt,Dockerfile}`.
+   Mirror `src/plugins/watermark/vigil-128/` for the shape — watermark
+   plugins expose `/info`, `/embed`, `/detect`, `/health`; fingerprint
+   plugins expose `/info`, `/compute`, `/health`.
+2. Register the plugin in `algorithms.yaml`.
+3. Add a service block to `docker-compose.yml` with the same shared
+   volume mount and a hostname matching the YAML `url`.
+4. Restart with `docker compose up -d --build`.
+
+ingestion-api will resolve the new alg from the catalog at request time;
+resolution-api will surface it on the next call to
+`/services/supportedAlgorithms` (no restart needed — the YAML is reread
+per request).
+
+## Configuration reference
+
+See:
+- `src/resolution-api/src/resolution_api/core/config.py`
+- `src/ingestion-api/src/ingestion_api/core/config.py`
+- `credentials/README.md` — supported signing algorithms + how to drop in
+  test certs.
+
+Common knobs:
+
+| Env var | Service | Default | What |
+| --- | --- | --- | --- |
+| `MONGODB_URL` | resolution-api | `mongodb://localhost:27017` | Mongo URL |
+| `ALGORITHMS_CATALOG_PATH` | both | `<repo>/algorithms.yaml` | Shared YAML catalog path |
+| `DEFAULT_AUDIO_ALG` | ingestion-api | `me.deepmark.audio.vigil.128` | Plugin to call from `POST /ingest` |
+| `SHARED_VOLUME_PATH` | ingestion-api | `<repo>/shared-volume` | Byte transport channel to plugins |
+| `STORAGE_ROOT` | ingestion-api | `<service>/storage` | Where signed assets + manifests + sidecars land |
+| `CREDENTIALS_DIR` | ingestion-api | `<repo>/credentials` | Cert + key root |
+| `SIGNING_ALG` | ingestion-api | `ES256` | C2PA signing algorithm |
+| `TA_URL` | ingestion-api | _(unset)_ | RFC 3161 timestamp authority |
+| `RESOLUTION_API_URL` | ingestion-api | _(unset)_ → SKIP | Auto-push target. Empty = no push. |
+
+## Known limitations / next steps
+
+- `Signer.from_info` is broken for ES256 in c2pa-python 0.32.3; we use
+  `Signer.from_callback` + `cryptography` in ingestion-api. Drop the
+  explicit `cryptography` dep when the upstream bug is fixed.
+- vigil-128 is a dummy embedder. Replace `_embed_bytes` and
+  `_detect_bytes` in `src/plugins/watermark/vigil-128/app.py` to wire in
+  real Vigil-128 DSP.
+- Fingerprint plugins: not implemented; see
+  `src/plugins/fingerprint/README.md` for the contract.
+- Ingestion-api stores artifacts on a Docker volume only; for shared
+  multi-host deployments, point `STORAGE_ROOT` at network-attached
+  storage or extend `services/storage.py` with an S3 backend.
+- The `/matches/byContent` and `/matches/byReference` endpoints in
+  resolution-api still return empty results — they don't yet call
+  back into the plugin containers to recompute bindings.
