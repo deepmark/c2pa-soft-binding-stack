@@ -67,16 +67,14 @@ async def init_database() -> None:
     print("Inserting sample soft bindings...")
     sample_bindings = [
         {
-            "alg": "example.watermark.v1",
+            "alg": "me.deepmark.audio.aware.20",
             "value": base64.b64encode(b"watermark_value_123").decode(),
             "manifestId": SAMPLE_MANIFESTS[0][0],
-            "similarityScore": 95,
         },
         {
-            "alg": "example.fingerprint.v1",
+            "alg": "me.deepmark.audio.aware.20",
             "value": base64.b64encode(b"fingerprint_abc").decode(),
             "manifestId": SAMPLE_MANIFESTS[1][0],
-            "similarityScore": 88,
         },
     ]
     await db.soft_bindings.insert_many(sample_bindings)
