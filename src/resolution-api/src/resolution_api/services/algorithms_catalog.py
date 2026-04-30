@@ -1,5 +1,5 @@
 """
-Algorithm catalog loader.
+Algorithm catalog loader + async plugin client.
 
 The catalog of supported soft-binding algorithms lives in a single YAML
 file at the repo root (``algorithms.yaml``). Both ``resolution-api``
@@ -10,13 +10,11 @@ ingestion-api can route to.
 Schema::
 
     algorithms:
-      - alg: me.deepmark.audio.vigil.128
+      - alg: me.deepmark.audio.aware.20
         type: watermark            # watermark | fingerprint
-        valueBits: 128
+        valueBits: 20
         mediaTypes: ["audio/wav", "audio/mpeg"]
-        url: http://watermark-vigil-128:8000   # ingestion-api uses this; resolution
-                                                # api ignores it but keeps it for
-                                                # /ready dumps if exposed.
+        url: http://watermark-aware-20:9004
 
 Hot-reloads on every read. Cheap (small file, parsed lazily) and avoids
 having to bounce the service when a new plugin is added to the catalog.
@@ -27,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import httpx
 import yaml
 
 from resolution_api.core.config import settings
@@ -35,6 +34,17 @@ from resolution_api.core.logging import get_logger
 logger = get_logger(__name__)
 
 AlgorithmType = Literal["watermark", "fingerprint"]
+
+BINDING_VALUE_HEADER = "X-Binding-Value"
+OCTET_STREAM = "application/octet-stream"
+
+
+class AlgorithmNotFoundError(LookupError):
+    """The catalog has no entry for the requested ``alg`` identifier."""
+
+
+class PluginUnavailableError(RuntimeError):
+    """The plugin container couldn't be reached, or returned a non-2xx."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -73,3 +83,52 @@ def load_catalog(path: Path | None = None) -> list[AlgorithmEntry]:
                 "Skipping malformed algorithm entry #%d in %s: %s", i, catalog_path, exc,
             )
     return out
+
+
+def resolve(alg: str, *, catalog: list[AlgorithmEntry] | None = None) -> AlgorithmEntry:
+    """Find an algorithm by id; raises ``AlgorithmNotFoundError`` if missing."""
+    entries = catalog if catalog is not None else load_catalog()
+    for entry in entries:
+        if entry.alg == alg:
+            return entry
+    raise AlgorithmNotFoundError(
+        f"alg={alg!r} not found in catalog {settings.algorithms_catalog_path}. "
+        f"Known algorithms: {[e.alg for e in entries]}"
+    )
+
+
+class AsyncPluginClient:
+    """Async HTTP wrapper around a single plugin container for detection."""
+
+    def __init__(
+        self,
+        entry: AlgorithmEntry,
+        *,
+        timeout_s: float = 60.0,
+    ) -> None:
+        if not entry.url:
+            raise PluginUnavailableError(
+                f"alg={entry.alg!r} has no URL configured in algorithms.yaml"
+            )
+        self._entry = entry
+        self._timeout = timeout_s
+
+    @property
+    def alg(self) -> str:
+        return self._entry.alg
+
+    async def detect(self, *, audio_bytes: bytes) -> str | None:
+        url = self._entry.url.rstrip("/") + "/detect"
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            try:
+                r = await client.post(
+                    url,
+                    content=audio_bytes,
+                    headers={"Content-Type": OCTET_STREAM},
+                )
+                r.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise PluginUnavailableError(f"POST {url}: {exc}") from exc
+        data = r.json()
+        v = data.get("bindingValue")
+        return v if isinstance(v, str) else None
