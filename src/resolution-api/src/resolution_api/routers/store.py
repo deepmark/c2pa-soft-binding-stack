@@ -19,7 +19,6 @@ from resolution_api.core.database import (
 from resolution_api.models import (
     BindingsRequest,
     ManifestCreateResult,
-    ManifestReceipt,
 )
 
 
@@ -103,15 +102,11 @@ async def associate_manifest(binding: BindingsRequest):
         # as the unique index — so retries are idempotent (a re-push
         # of the same triple is a no-op, not a dup-key error).
         soft_bindings_col = get_soft_bindings_collection()
-        await soft_bindings_col.update_one(
-            {
-                "alg": binding.alg,
-                "value": binding.bindingValue,
-                "manifestId": binding.manifestId,
-            },
-            {"$set": {"similarityScore": 100}},
-            upsert=True,
-        )
+        await soft_bindings_col.insert_one({
+            "alg": binding.alg,
+            "value": binding.bindingValue,
+            "manifestId": binding.manifestId,
+        })
 
         return Response(status_code=204)
 
@@ -246,22 +241,9 @@ async def add_manifest(
 
         result = ManifestCreateResult(manifestId=manifest_id)
 
-        # TODO:
-        # see what the receipt is, change the code below!!
-        # Optionally add receipt
+        # TODO: potentially add manifest receipt
         if returnReceipt:
-            result.receipt = ManifestReceipt(
-                context={"c2pa": "https://c2pa.org/ns/", "receipt": "https://c2pa.org/ns/manifest-receipt#"},
-                type="org.c2pa.manifest-receipt",
-                repository={
-                    "uri": str(request.base_url),
-                    "manifestId": manifest_id,
-                },
-                anchor={
-                    "uri": f"{request.base_url}anchors/{manifest_id[:6]}",
-                    "proof": {"alg": "ES256", "value": "BASE64URL_PROOF_VALUE"},
-                },
-            )
+            result.receipt = None
 
         return result
 
