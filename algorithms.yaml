@@ -13,9 +13,9 @@
 #   url         -- HTTP URL of the plugin container, used by ingestion-api
 
 algorithms:
-  - alg: me.deepmark.audio.vigil.128
+  - alg: me.deepmark.audio.aware.20
     type: watermark
-    valueBits: 128
+    valueBits: 20
     mediaTypes:
       - audio/wav
       - audio/wave
@@ -24,7 +24,7 @@ algorithms:
       - audio/flac
       - audio/x-flac
       - audio/ogg
-    url: http://watermark-vigil-128:8000
+    url: http://watermark-aware-20:9004
 
   # Fingerprint plugins go here, e.g.:
   #
