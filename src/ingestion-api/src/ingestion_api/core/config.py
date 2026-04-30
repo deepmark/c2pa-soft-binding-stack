@@ -11,6 +11,9 @@ This service:
 
 No MongoDB. The on-disk metadata sidecar is the source of truth for
 ingestion records on this service.
+
+Required path settings: ``algorithms_catalog_path``, ``storage_root``,
+``credentials_dir``.
 """
 from __future__ import annotations
 
@@ -18,16 +21,6 @@ from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-def _service_root() -> Path:
-    # src/ingestion-api/src/ingestion_api/core/config.py -> ingestion-api/
-    return Path(__file__).resolve().parents[3]
-
-
-def _repo_root() -> Path:
-    # service folder -> .../src/ -> repo root
-    return _service_root().parent.parent
 
 
 class Settings(BaseSettings):
@@ -42,14 +35,18 @@ class Settings(BaseSettings):
     # in the shared ``algorithms.yaml`` catalog.
     default_audio_alg: str = "me.deepmark.audio.vigil.128"
 
-    # Algorithm catalog — same file must bemounted into resolution-api.
+    # Algorithm catalog — same file must be mounted into resolution-api.
     algorithms_catalog_path: Path = Field(
-        default_factory=lambda: _repo_root() / "algorithms.yaml"
+        ...,
+        description="Absolute path to the shared algorithms.yaml catalog.",
     )
 
     # Persistent on-disk artifact store (signed asset + manifest bytes +
-    # metadata sidecar).
-    storage_root: Path = Field(default_factory=lambda: _service_root() / "storage")
+    # metadata sidecar). Must be a writable directory.
+    storage_root: Path = Field(
+        ...,
+        description="Absolute path to the artifact store directory.",
+    )
 
     # Plugin HTTP timeouts.
     plugin_request_timeout_s: float = 60.0
@@ -62,8 +59,13 @@ class Settings(BaseSettings):
     claim_generator_name: str = "Deepmark Inc."
     claim_generator_version: str = "0.1.0"
 
-    # Signing credentials (mounted into this container only).
-    credentials_dir: Path = Field(default_factory=lambda: _repo_root() / "credentials")
+    # Signing credentials. ``credentials_dir`` is required; the cert/key
+    # paths default to the conventional filenames inside it but can be
+    # overridden individually.
+    credentials_dir: Path = Field(
+        ...,
+        description="Directory containing the ES256 cert chain + private key.",
+    )
     cert_chain_path: Path | None = None
     private_key_path: Path | None = None
     signing_alg: str = "ES256"

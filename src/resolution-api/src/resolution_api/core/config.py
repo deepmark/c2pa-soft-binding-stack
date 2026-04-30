@@ -14,16 +14,6 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _service_root() -> Path:
-    # src/resolution-api/src/resolution_api/core/config.py -> resolution-api/
-    return Path(__file__).resolve().parents[3]
-
-
-def _repo_root() -> Path:
-    # service folder -> .../src/ -> repo root
-    return _service_root().parent.parent
-
-
 class Settings(BaseSettings):
     # Mongo
     mongodb_url: str = "mongodb://localhost:27017"
@@ -37,9 +27,9 @@ class Settings(BaseSettings):
     )
 
     # Algorithm catalog (shared YAML mounted into the container).
-    # Defaults to ``<repo>/algorithms.yaml`` for local dev.
     algorithms_catalog_path: Path = Field(
-        default_factory=lambda: _repo_root() / "algorithms.yaml"
+        ...,
+        description="Absolute path to the shared algorithms.yaml catalog.",
     )
 
     # Logging

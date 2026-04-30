@@ -2,11 +2,25 @@
 from __future__ import annotations
 
 import math
+import os
 import struct
+import tempfile
 import wave
 from pathlib import Path
 
 import pytest
+
+# Required path settings must be in the env BEFORE the ingestion_api
+# package imports (Settings() runs at module import). We point them at
+# the dev checkout's repo root for catalog + credentials, and at a
+# session-scoped tmp dir for storage so tests don't write under the
+# repo.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+os.environ.setdefault("ALGORITHMS_CATALOG_PATH", str(_REPO_ROOT / "algorithms.yaml"))
+os.environ.setdefault("CREDENTIALS_DIR", str(_REPO_ROOT / "credentials"))
+os.environ.setdefault(
+    "STORAGE_ROOT", str(Path(tempfile.gettempdir()) / "ingestion-api-tests-storage")
+)
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
