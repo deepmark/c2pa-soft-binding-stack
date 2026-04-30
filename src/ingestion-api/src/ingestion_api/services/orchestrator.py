@@ -40,7 +40,7 @@ from ingestion_api.services.algorithms import (
     resolve as resolve_algorithm,
 )
 from ingestion_api.services.manifest import ManifestBuilderService
-from ingestion_api.services.resolution import (
+from ingestion_api.services.publisher import (
     ResolutionPushClient,
     ResolutionPushRequest,
 )

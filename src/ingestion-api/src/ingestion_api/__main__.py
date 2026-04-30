@@ -20,7 +20,7 @@ from ingestion_api.core.config import settings
 from ingestion_api.core.logging import configure_logging, get_logger
 from ingestion_api.routers import health, ingest
 from ingestion_api.services.orchestrator import IngestionService
-from ingestion_api.services.resolution import ResolutionPushClient
+from ingestion_api.services.publisher import ResolutionPushClient
 from ingestion_api.services.signing import SigningService
 from ingestion_api.services.storage import LocalAssetStore
 

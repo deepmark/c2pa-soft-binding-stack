@@ -4,7 +4,7 @@ from __future__ import annotations
 import httpx
 
 from ingestion_api.models.ingestion import ResolutionPushStatus
-from ingestion_api.services.resolution import (
+from ingestion_api.services.publisher import (
     ResolutionPushClient,
     ResolutionPushRequest,
 )

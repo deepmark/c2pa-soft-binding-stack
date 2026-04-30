@@ -3,8 +3,7 @@ Application configuration for ingestion-api.
 
 This service:
 - accepts audio uploads,
-- delegates watermark embed to a plugin container over HTTP (raw bytes
-  in/out — no shared filesystem required),
+- delegates watermark embed to a plugin container over HTTP,
 - builds + signs a C2PA manifest,
 - persists signed asset + manifest bytes + metadata JSON sidecar to disk,
 - (optionally) auto-pushes the manifest store + binding to the
@@ -60,7 +59,7 @@ class Settings(BaseSettings):
     resolution_request_timeout_s: float = 10.0
 
     # Claim generator metadata embedded in the manifest.
-    claim_generator_name: str = "ingestion-api"
+    claim_generator_name: str = "Deepmark Inc."
     claim_generator_version: str = "0.1.0"
 
     # Signing credentials (mounted into this container only).
