@@ -23,15 +23,17 @@ app, mirroring the watermark plugin pattern.
    ### `POST /compute`
    Request:
    ```
-   { "input_path": "/shared/<id>/audio.wav" }
+   Content-Type: application/octet-stream
+
+   <raw audio bytes>
    ```
    Response:
    ```
    { "bindingValue": "<base64 fingerprint value>" }
    ```
 
-   Bytes are exchanged via the shared Docker volume — `input_path` is an
-   absolute path on that volume.
+   Bytes are exchanged in raw HTTP bodies, so the plugin can run on a
+   different host from ingestion-api (no shared filesystem required).
 
 3. Add `requirements.txt` and a `Dockerfile` (copy from
    `plugins/watermark/vigil-128/` and adapt).
@@ -46,8 +48,8 @@ app, mirroring the watermark plugin pattern.
    ```
 
 5. Add a service block to the root `docker-compose.yml` mirroring
-   `watermark-vigil-128` — same shared-volume mount, port mapping,
-   container hostname matching the YAML `url`.
+   `watermark-vigil-128` — port mapping and container hostname matching
+   the YAML `url`.
 
 Fingerprint plugins do **not** expose `/embed` or `/detect`. They only
 compute a value from the bytes; the resolution API and ingestion API

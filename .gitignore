@@ -50,7 +50,6 @@ Thumbs.db
 uploads/
 tmp/
 storage/
-shared-volume/
 **/storage/
 *.c2pa
 *.log

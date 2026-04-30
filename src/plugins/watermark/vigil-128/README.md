@@ -1,9 +1,10 @@
 # `me.deepmark.audio.vigil.128` plugin
 
 Soft-binding watermark plugin for the C2PA ingest pipeline. Single-file
-FastAPI service. Bytes are exchanged via a Docker volume shared with
-ingestion-api — the caller passes absolute paths in `/embed` /
-`/detect`, the plugin reads/writes those files directly.
+FastAPI service. Bytes are exchanged over HTTP — the caller POSTs the
+audio body as `application/octet-stream` and the plugin returns the
+watermarked bytes plus the binding value in a response header. No
+shared filesystem required.
 
 ## HTTP contract
 
@@ -21,19 +22,25 @@ ingestion-api — the caller passes absolute paths in `/embed` /
 ### `POST /embed`
 Request:
 ```
-{ "input_path": "/shared/<id>/input.wav",
-  "output_path": "/shared/<id>/watermarked.wav",
-  "value": null }                  # optional; plugin derives if omitted
+Content-Type: application/octet-stream
+X-Binding-Value: <optional caller-supplied base64 value>
+
+<raw audio bytes>
 ```
 Response:
 ```
-{ "bindingValue": "<base64 128-bit>", "outputPath": "/shared/<id>/watermarked.wav" }
+Content-Type: application/octet-stream
+X-Binding-Value: <base64 128-bit value the plugin used>
+
+<watermarked audio bytes>
 ```
 
 ### `POST /detect`
 Request:
 ```
-{ "input_path": "/shared/<id>/audio.wav" }
+Content-Type: application/octet-stream
+
+<raw audio bytes>
 ```
 Response:
 ```

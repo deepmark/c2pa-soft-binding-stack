@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import base64
-from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from app import (
     ALG,
+    BINDING_VALUE_HEADER,
     TYPE,
     VALUE_BITS,
     _detect_bytes,
@@ -70,39 +70,64 @@ def test_health_endpoint():
     assert r.json()["status"] == "ok"
 
 
-def test_embed_writes_output_and_returns_binding_value(tmp_path: Path):
-    src = tmp_path / "input.wav"
-    dst = tmp_path / "watermarked.wav"
-    src.write_bytes(b"some audio bytes")
-
+def test_embed_returns_watermarked_bytes_and_binding_header():
+    src = b"some audio bytes"
     with TestClient(app) as client:
         r = client.post(
             "/embed",
-            json={"input_path": str(src), "output_path": str(dst)},
+            content=src,
+            headers={"Content-Type": "application/octet-stream"},
         )
     assert r.status_code == 200
-    body = r.json()
-    assert body["bindingValue"] == compute_binding_value(b"some audio bytes")
-    assert body["outputPath"] == str(dst)
-    assert dst.is_file()
+    assert r.headers["content-type"].startswith("application/octet-stream")
+    assert r.headers[BINDING_VALUE_HEADER] == compute_binding_value(src)
     # Dummy embedder is passthrough.
-    assert dst.read_bytes() == src.read_bytes()
+    assert r.content == src
 
 
-def test_embed_404_when_input_missing(tmp_path: Path):
+def test_embed_honours_caller_provided_binding_value():
+    src = b"audio"
+    override = "Y2FsbGVyT3ZlcnJpZGU="
     with TestClient(app) as client:
         r = client.post(
             "/embed",
-            json={"input_path": str(tmp_path / "nope.wav"), "output_path": str(tmp_path / "out.wav")},
+            content=src,
+            headers={
+                "Content-Type": "application/octet-stream",
+                BINDING_VALUE_HEADER: override,
+            },
+        )
+    assert r.status_code == 200
+    assert r.headers[BINDING_VALUE_HEADER] == override
+
+
+def test_embed_400_on_empty_body():
+    with TestClient(app) as client:
+        r = client.post(
+            "/embed",
+            content=b"",
+            headers={"Content-Type": "application/octet-stream"},
         )
     assert r.status_code == 400
-    assert "not found" in r.json()["detail"]
 
 
-def test_detect_endpoint(tmp_path: Path):
-    src = tmp_path / "input.wav"
-    src.write_bytes(b"hello audio")
+def test_detect_endpoint():
+    src = b"hello audio"
     with TestClient(app) as client:
-        r = client.post("/detect", json={"input_path": str(src)})
+        r = client.post(
+            "/detect",
+            content=src,
+            headers={"Content-Type": "application/octet-stream"},
+        )
     assert r.status_code == 200
-    assert r.json()["bindingValue"] == compute_binding_value(b"hello audio")
+    assert r.json()["bindingValue"] == compute_binding_value(src)
+
+
+def test_detect_400_on_empty_body():
+    with TestClient(app) as client:
+        r = client.post(
+            "/detect",
+            content=b"",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    assert r.status_code == 400

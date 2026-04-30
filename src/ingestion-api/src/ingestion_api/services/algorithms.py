@@ -14,18 +14,20 @@ The plugin HTTP contract (matching ``plugins/watermark/<name>/app.py``):
 
 Watermark plugin (``type: watermark``):
 - ``GET  /info``
-- ``POST /embed``  body ``{input_path, output_path, value?}`` -> ``{bindingValue}``
-- ``POST /detect`` body ``{input_path}``                        -> ``{bindingValue|null}``
+- ``POST /embed``  body = raw audio bytes (``application/octet-stream``);
+  optional ``X-Binding-Value`` request header to override the value.
+  Response body = watermarked bytes; ``X-Binding-Value`` response header
+  carries the resulting binding value.
+- ``POST /detect`` body = raw audio bytes -> JSON ``{bindingValue|null}``
 - ``GET  /health``
 
 Fingerprint plugin (``type: fingerprint``):
 - ``GET  /info``
-- ``POST /compute`` body ``{input_path}`` -> ``{bindingValue}``
+- ``POST /compute`` body = raw audio bytes -> JSON ``{bindingValue}``
 - ``GET  /health``
 
-Bytes are exchanged via the shared Docker volume so we don't have to
-base64-encode multi-MB audio over JSON. The caller (this service) picks
-the input/output paths; the plugin reads/writes them.
+Bytes are exchanged in raw HTTP bodies, so plugin containers can run on
+hosts independent from ingestion-api (no shared filesystem required).
 """
 from __future__ import annotations
 
@@ -42,6 +44,9 @@ from ingestion_api.core.logging import get_logger
 logger = get_logger(__name__)
 
 AlgorithmType = Literal["watermark", "fingerprint"]
+
+BINDING_VALUE_HEADER = "X-Binding-Value"
+OCTET_STREAM = "application/octet-stream"
 
 
 class AlgorithmNotFoundError(LookupError):
@@ -101,6 +106,13 @@ def resolve(alg: str, *, catalog: list[AlgorithmEntry] | None = None) -> Algorit
     )
 
 
+@dataclass(slots=True, frozen=True)
+class EmbedResult:
+    """Outcome of a watermark ``/embed`` call."""
+    binding_value: str
+    watermarked_bytes: bytes
+
+
 class PluginClient:
     """Thin HTTP wrapper around a single plugin container."""
 
@@ -139,53 +151,63 @@ class PluginClient:
         self.close()
 
     def info(self) -> dict:
-        return self._get("/info")
+        return self._get_json("/info")
 
     def health(self) -> dict:
-        return self._get("/health")
+        return self._get_json("/health")
 
     def embed(
         self,
         *,
-        input_path: Path | str,
-        output_path: Path | str,
+        audio_bytes: bytes,
         value: str | None = None,
-    ) -> str:
-        """Watermark plugin only. Returns the embedded binding value."""
+    ) -> EmbedResult:
+        """Watermark plugin only. Returns the watermarked bytes + binding value."""
         if self._entry.type != "watermark":
             raise PluginUnavailableError(
                 f"alg={self.alg!r} is not a watermark plugin (type={self._entry.type})"
             )
-        body = {
-            "input_path": str(input_path),
-            "output_path": str(output_path),
-        }
+        headers = {"Content-Type": OCTET_STREAM}
         if value is not None:
-            body["value"] = value
-        data = self._post("/embed", body)
-        return self._require_binding_value(data)
+            headers[BINDING_VALUE_HEADER] = value
+        url = self._url("/embed")
+        try:
+            r = self._client.post(url, content=audio_bytes, headers=headers)
+            r.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise PluginUnavailableError(f"POST {url}: {exc}") from exc
 
-    def detect(self, *, input_path: Path | str) -> str | None:
+        binding_value = r.headers.get(BINDING_VALUE_HEADER)
+        if not binding_value:
+            raise PluginUnavailableError(
+                f"Plugin {self.alg!r} did not return {BINDING_VALUE_HEADER} header"
+            )
+        return EmbedResult(binding_value=binding_value, watermarked_bytes=r.content)
+
+    def detect(self, *, audio_bytes: bytes) -> str | None:
         """Watermark plugin only."""
         if self._entry.type != "watermark":
             raise PluginUnavailableError(
                 f"alg={self.alg!r} is not a watermark plugin (type={self._entry.type})"
             )
-        data = self._post("/detect", {"input_path": str(input_path)})
+        data = self._post_json_with_body("/detect", audio_bytes)
         v = data.get("bindingValue")
         return v if isinstance(v, str) else None
 
-    def compute(self, *, input_path: Path | str) -> str:
+    def compute(self, *, audio_bytes: bytes) -> str:
         """Fingerprint plugin only."""
         if self._entry.type != "fingerprint":
             raise PluginUnavailableError(
                 f"alg={self.alg!r} is not a fingerprint plugin (type={self._entry.type})"
             )
-        data = self._post("/compute", {"input_path": str(input_path)})
+        data = self._post_json_with_body("/compute", audio_bytes)
         return self._require_binding_value(data)
 
-    def _get(self, path: str) -> dict:
-        url = self._entry.url.rstrip("/") + path
+    def _url(self, path: str) -> str:
+        return self._entry.url.rstrip("/") + path
+
+    def _get_json(self, path: str) -> dict:
+        url = self._url(path)
         try:
             r = self._client.get(url)
             r.raise_for_status()
@@ -193,13 +215,15 @@ class PluginClient:
             raise PluginUnavailableError(f"GET {url}: {exc}") from exc
         return r.json()
 
-    def _post(self, path: str, body: dict) -> dict:
-        url = self._entry.url.rstrip("/") + path
+    def _post_json_with_body(self, path: str, body: bytes) -> dict:
+        url = self._url(path)
         try:
-            r = self._client.post(url, json=body)
+            r = self._client.post(
+                url, content=body, headers={"Content-Type": OCTET_STREAM},
+            )
             r.raise_for_status()
         except httpx.HTTPError as exc:
-            raise PluginUnavailableError(f"POST {url} {body}: {exc}") from exc
+            raise PluginUnavailableError(f"POST {url}: {exc}") from exc
         return r.json()
 
     @staticmethod

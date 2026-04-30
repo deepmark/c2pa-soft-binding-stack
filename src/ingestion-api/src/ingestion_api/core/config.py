@@ -3,8 +3,8 @@ Application configuration for ingestion-api.
 
 This service:
 - accepts audio uploads,
-- delegates watermark embed to a plugin container over HTTP (via a shared
-  Docker volume for byte transport),
+- delegates watermark embed to a plugin container over HTTP (raw bytes
+  in/out — no shared filesystem required),
 - builds + signs a C2PA manifest,
 - persists signed asset + manifest bytes + metadata JSON sidecar to disk,
 - (optionally) auto-pushes the manifest store + binding to the
@@ -33,26 +33,19 @@ def _repo_root() -> Path:
 
 class Settings(BaseSettings):
     # API metadata
-    api_title: str = "C2PA Ingestion API"
+    api_title: str = "Deepmark C2PA Ingestion API"
     api_version: str = "0.1.0"
     api_description: str = (
-        "Watermark, build, sign, and persist C2PA manifests for audio assets."
+        "Watermark and build a signed C2PA manifests for audio assets."
     )
 
     # Default soft-binding algorithm for POST /ingest. Must match an entry
     # in the shared ``algorithms.yaml`` catalog.
     default_audio_alg: str = "me.deepmark.audio.vigil.128"
 
-    # Algorithm catalog — same file mounted into resolution-api.
+    # Algorithm catalog — same file must bemounted into resolution-api.
     algorithms_catalog_path: Path = Field(
         default_factory=lambda: _repo_root() / "algorithms.yaml"
-    )
-
-    # Shared volume used to hand bytes between ingestion-api and plugin
-    # containers. Must be mounted into every plugin container at the
-    # same path.
-    shared_volume_path: Path = Field(
-        default_factory=lambda: _repo_root() / "shared-volume"
     )
 
     # Persistent on-disk artifact store (signed asset + manifest bytes +

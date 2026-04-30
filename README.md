@@ -49,17 +49,17 @@ Client
   │ multipart upload (audio file)
   ▼
 ingestion-api (8001)
-  │ writes /shared/<id>/input.wav
-  │
   │ POST http://watermark-vigil-128:8000/embed
-  │   { input_path: "/shared/<id>/input.wav",
-  │     output_path: "/shared/<id>/wm.wav" }
+  │   Content-Type: application/octet-stream
+  │   <raw audio bytes>
   ▼
 watermark-vigil-128 (8000 internal)
-  │ reads input, embeds, writes output, returns { bindingValue }
+  │ reads body, embeds, returns:
+  │   Content-Type: application/octet-stream
+  │   X-Binding-Value: <base64 128-bit>
+  │   <watermarked audio bytes>
   ▼
 ingestion-api
-  │ reads /shared/<id>/wm.wav back into memory
   │ builds C2PA manifest (EDIT intent: parent ingredient + c2pa.opened
   │   auto-injected; we add c2pa.watermarked.bound + c2pa.soft-binding)
   │ signs with cert/key from /credentials
@@ -78,9 +78,9 @@ Response back to client:
     resolutionPush: { status, error? }, ... }
 ```
 
-The shared volume (`shared:` in compose) is the byte-transport channel
-between ingestion-api and plugin containers — bytes don't leave the
-Docker network as base64 in JSON.
+Bytes flow ingestion-api ⇄ plugins purely over HTTP, so plugin
+containers don't need to share a filesystem with ingestion-api and can
+run on a different host or behind a load balancer.
 
 ## Quick start with `docker compose`
 
@@ -186,10 +186,12 @@ once `credentials/` is populated.
 1. Create `src/plugins/<watermark|fingerprint>/<name>/{app.py,requirements.txt,Dockerfile}`.
    Mirror `src/plugins/watermark/vigil-128/` for the shape — watermark
    plugins expose `/info`, `/embed`, `/detect`, `/health`; fingerprint
-   plugins expose `/info`, `/compute`, `/health`.
+   plugins expose `/info`, `/compute`, `/health`. All endpoints take
+   raw audio bytes in the request body and return either bytes (with
+   `X-Binding-Value` header) or JSON.
 2. Register the plugin in `algorithms.yaml`.
-3. Add a service block to `docker-compose.yml` with the same shared
-   volume mount and a hostname matching the YAML `url`.
+3. Add a service block to `docker-compose.yml` with a hostname matching
+   the YAML `url`.
 4. Restart with `docker compose up -d --build`.
 
 ingestion-api will resolve the new alg from the catalog at request time;
@@ -212,7 +214,6 @@ Common knobs:
 | `MONGODB_URL` | resolution-api | `mongodb://localhost:27017` | Mongo URL |
 | `ALGORITHMS_CATALOG_PATH` | both | `<repo>/algorithms.yaml` | Shared YAML catalog path |
 | `DEFAULT_AUDIO_ALG` | ingestion-api | `me.deepmark.audio.vigil.128` | Plugin to call from `POST /ingest` |
-| `SHARED_VOLUME_PATH` | ingestion-api | `<repo>/shared-volume` | Byte transport channel to plugins |
 | `STORAGE_ROOT` | ingestion-api | `<service>/storage` | Where signed assets + manifests + sidecars land |
 | `CREDENTIALS_DIR` | ingestion-api | `<repo>/credentials` | Cert + key root |
 | `SIGNING_ALG` | ingestion-api | `ES256` | C2PA signing algorithm |

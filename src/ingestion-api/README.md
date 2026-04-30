@@ -1,9 +1,9 @@
 # ingestion-api
 
-Audio ingest pipeline: takes an upload, calls a watermark plugin
-container over a shared Docker volume, builds + signs a C2PA manifest,
-persists artifacts, and (optionally) auto-pushes the manifest store +
-binding to `resolution-api`.
+Audio ingest pipeline: takes an upload, POSTs the audio bytes to a
+watermark plugin over HTTP, builds + signs a C2PA manifest, persists
+artifacts, and (optionally) auto-pushes the manifest store + binding
+to `resolution-api`.
 
 For the full picture (compose stack, plugins, resolution-api) see the
 [top-level README](../../README.md).
@@ -31,7 +31,6 @@ Settings live in `src/ingestion_api/core/config.py`. Common overrides:
 | --- | --- | --- |
 | `DEFAULT_AUDIO_ALG` | `me.deepmark.audio.vigil.128` | Default plugin to call from `POST /ingest` |
 | `ALGORITHMS_CATALOG_PATH` | `<repo>/algorithms.yaml` | Shared catalog |
-| `SHARED_VOLUME_PATH` | `<repo>/shared-volume` | Byte transport to plugins |
 | `STORAGE_ROOT` | `<service>/storage` | Local artifact store |
 | `CREDENTIALS_DIR` | `<repo>/credentials` | ES256 cert + key root |
 | `SIGNING_ALG` | `ES256` | C2PA signing algorithm |

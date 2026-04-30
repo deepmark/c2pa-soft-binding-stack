@@ -1,10 +1,9 @@
 """
 Local filesystem storage for ingest artifacts.
 
-We never persist the raw upload or any (plugin-side) watermarked
-intermediate. Plugins read uploads from the shared volume and emit
-watermarked bytes back onto it; this module only manages the *durable*
-artifact set:
+We never persist the raw upload or any plugin-side watermarked
+intermediate — plugin bytes flow over HTTP and stay in memory until
+the signing step. This module only manages the *durable* artifact set:
 
     <storage_root>/ingestions/<ingestionId>/
       signed.<ext>            # signed asset emitted by Builder.sign

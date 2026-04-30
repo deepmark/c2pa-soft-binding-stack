@@ -4,25 +4,22 @@ Audio ingestion orchestrator.
 End-to-end pipeline:
 
     upload bytes
-        -> drop on shared volume as <uuid>/input.<ext>
-        -> POST /embed to plugin container, get binding value back
-        -> read watermarked bytes back from shared volume
+        -> POST /embed to plugin container (raw octet-stream),
+           receive watermarked bytes + binding value
         -> build C2PA manifest (EDIT intent: parent ingredient + c2pa.opened
            injected automatically; we add c2pa.watermarked.bound + the
            c2pa.soft-binding assertion)
         -> sign (Builder.sign)
         -> persist signed asset + manifest bytes + metadata sidecar
         -> auto-push manifest store + binding to resolution-api
-        -> cleanup shared-volume scratch dir
 
-The original upload and the watermarked intermediate live only on the
-shared volume for the duration of the request, and are deleted on
-completion (success or failure).
+Bytes never touch disk on the ingestion-api side until we write the
+signed output. The plugin call is purely HTTP, so plugin containers can
+live on a different host (no shared volume required).
 """
 from __future__ import annotations
 
 import asyncio
-import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +34,7 @@ from ingestion_api.models.ingestion import (
 )
 from ingestion_api.services.algorithms import (
     AlgorithmNotFoundError,
+    EmbedResult,
     PluginClient,
     PluginUnavailableError,
     resolve as resolve_algorithm,
@@ -91,14 +89,11 @@ class IngestionService:
         local_store: LocalAssetStore,
         resolution_client: ResolutionPushClient | None = None,
         soft_binding_alg: str | None = None,
-        shared_volume_path: Path | None = None,
     ) -> None:
         self._signing_service = signing_service
         self._local_store = local_store
         self._resolution_client = resolution_client or ResolutionPushClient()
         self._alg = soft_binding_alg or settings.default_audio_alg
-        self._shared_volume = (shared_volume_path or settings.shared_volume_path).resolve()
-        self._shared_volume.mkdir(parents=True, exist_ok=True)
 
     async def ingest(self, payload: IngestionInput) -> IngestionResult:
         mime_type = guess_audio_format(payload.filename, payload.content_type)
@@ -116,18 +111,14 @@ class IngestionService:
 
         ingestion_id = new_ingestion_id()
         artifacts = self._local_store.allocate(ingestion_id, ext=ext)
-        scratch_dir = self._shared_volume / ingestion_id
-        scratch_dir.mkdir(parents=True, exist_ok=False)
 
         try:
             return await self._run_pipeline(
-                payload, mime_type, ext, ingestion_id, artifacts, scratch_dir,
+                payload, mime_type, ext, ingestion_id, artifacts,
             )
         except Exception:
             self._local_store.cleanup(artifacts)
             raise
-        finally:
-            shutil.rmtree(scratch_dir, ignore_errors=True)
 
     async def _run_pipeline(
         self,
@@ -136,16 +127,8 @@ class IngestionService:
         ext: str,
         ingestion_id: str,
         artifacts: IngestionArtifacts,
-        scratch_dir: Path,
     ) -> IngestionResult:
-        # 1. Drop the upload on the shared volume so the plugin container
-        #    can read it. We pick the input + output paths so the plugin
-        #    is dumb.
-        input_path = scratch_dir / f"input{ext}"
-        output_path = scratch_dir / f"watermarked{ext}"
-        input_path.write_bytes(payload.data)
-
-        # 2. Resolve plugin and call /embed.
+        # 1. Resolve plugin and call /embed over HTTP.
         try:
             entry = resolve_algorithm(self._alg)
         except AlgorithmNotFoundError as exc:
@@ -153,20 +136,21 @@ class IngestionService:
 
         loop = asyncio.get_running_loop()
         try:
-            binding_value = await loop.run_in_executor(
+            embed_result = await loop.run_in_executor(
                 None,
-                lambda: self._call_plugin_embed(entry, input_path, output_path),
+                lambda: self._call_plugin_embed(entry, payload.data),
             )
         except PluginUnavailableError as exc:
             raise IngestionError(f"Plugin call failed: {exc}") from exc
 
-        if not output_path.is_file():
+        watermarked = embed_result.watermarked_bytes
+        binding_value = embed_result.binding_value
+        if not watermarked:
             raise IngestionError(
-                f"Plugin {entry.alg!r} did not produce {output_path} on the shared volume",
+                f"Plugin {entry.alg!r} returned an empty watermarked payload",
             )
-        watermarked = output_path.read_bytes()
 
-        # 3. Build + sign manifest. Run in a thread because the SDK is sync.
+        # 2. Build + sign manifest. Run in a thread because the SDK is sync.
         builder = self._make_manifest_builder()
         signed_at = datetime.now(timezone.utc)
         built = await loop.run_in_executor(
@@ -186,14 +170,14 @@ class IngestionService:
         else:
             manifest_bytes_path = None
 
-        # 4. Resolve manifest ID best-effort by reading back the signed asset.
+        # 3. Resolve manifest ID best-effort by reading back the signed asset.
         manifest_id = await loop.run_in_executor(
             None, self._read_active_manifest_label, artifacts.signed_path,
         )
         if not manifest_id:
             manifest_id = new_manifest_urn()
 
-        # 5. Auto-push to resolution API.
+        # 4. Auto-push to resolution API.
         push_result, push_manifest_id = await loop.run_in_executor(
             None,
             lambda: self._resolution_client.push(
@@ -239,14 +223,9 @@ class IngestionService:
             manifest_bytes_path=manifest_bytes_path,
         )
 
-    def _call_plugin_embed(
-        self, entry, input_path: Path, output_path: Path,
-    ) -> str:
+    def _call_plugin_embed(self, entry, audio_bytes: bytes) -> EmbedResult:
         with PluginClient(entry) as plugin:
-            return plugin.embed(
-                input_path=input_path,
-                output_path=output_path,
-            )
+            return plugin.embed(audio_bytes=audio_bytes)
 
     def _make_manifest_builder(self) -> ManifestBuilderService:
         return ManifestBuilderService(

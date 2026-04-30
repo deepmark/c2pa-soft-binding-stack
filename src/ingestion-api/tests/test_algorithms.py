@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from ingestion_api.services.algorithms import (
+    BINDING_VALUE_HEADER,
     AlgorithmEntry,
     AlgorithmNotFoundError,
     PluginClient,
@@ -72,16 +73,54 @@ def test_plugin_client_embed_round_trip():
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
-        captured["body"] = request.content.decode()
-        return httpx.Response(200, json={"bindingValue": "ZmFrZQ==", "outputPath": "/shared/x"})
+        captured["body"] = request.content
+        captured["content_type"] = request.headers.get("content-type")
+        return httpx.Response(
+            200,
+            content=b"watermarked-bytes",
+            headers={
+                BINDING_VALUE_HEADER: "ZmFrZQ==",
+                "Content-Type": "application/octet-stream",
+            },
+        )
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
-        v = plugin.embed(input_path="/shared/in.wav", output_path="/shared/out.wav")
+        result = plugin.embed(audio_bytes=b"raw-audio")
 
-    assert v == "ZmFrZQ=="
+    assert result.binding_value == "ZmFrZQ=="
+    assert result.watermarked_bytes == b"watermarked-bytes"
     assert captured["url"] == "http://plugin:8000/embed"
-    assert "/shared/in.wav" in captured["body"]
+    assert captured["body"] == b"raw-audio"
+    assert captured["content_type"] == "application/octet-stream"
+
+
+def test_plugin_client_embed_forwards_caller_value():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["override"] = request.headers.get(BINDING_VALUE_HEADER)
+        return httpx.Response(
+            200,
+            content=b"x",
+            headers={BINDING_VALUE_HEADER: "Y2FsbGVy"},
+        )
+
+    with _mock_client(handler) as c:
+        plugin = PluginClient(_entry(), client=c)
+        plugin.embed(audio_bytes=b"a", value="Y2FsbGVy")
+
+    assert captured["override"] == "Y2FsbGVy"
+
+
+def test_plugin_client_embed_raises_when_header_missing():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"bytes")
+
+    with _mock_client(handler) as c:
+        plugin = PluginClient(_entry(), client=c)
+        with pytest.raises(PluginUnavailableError):
+            plugin.embed(audio_bytes=b"a")
 
 
 def test_plugin_client_raises_on_5xx():
@@ -91,7 +130,7 @@ def test_plugin_client_raises_on_5xx():
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
         with pytest.raises(PluginUnavailableError):
-            plugin.embed(input_path="/x", output_path="/y")
+            plugin.embed(audio_bytes=b"a")
 
 
 def test_plugin_client_rejects_wrong_type():
@@ -99,16 +138,21 @@ def test_plugin_client_rejects_wrong_type():
     with _mock_client(lambda r: httpx.Response(200, json={})) as c:
         plugin = PluginClient(fp_entry, client=c)
         with pytest.raises(PluginUnavailableError):
-            plugin.embed(input_path="/x", output_path="/y")
+            plugin.embed(audio_bytes=b"a")
 
 
 def test_plugin_client_compute_for_fingerprint():
+    captured: dict = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.content
         return httpx.Response(200, json={"bindingValue": "abc"})
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(type="fingerprint"), client=c)
-        assert plugin.compute(input_path="/x") == "abc"
+        assert plugin.compute(audio_bytes=b"raw") == "abc"
+
+    assert captured["body"] == b"raw"
 
 
 def test_plugin_client_detect_returns_none_when_missing():
@@ -117,4 +161,4 @@ def test_plugin_client_detect_returns_none_when_missing():
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
-        assert plugin.detect(input_path="/x") is None
+        assert plugin.detect(audio_bytes=b"raw") is None

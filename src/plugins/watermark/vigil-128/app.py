@@ -4,14 +4,15 @@
 Single-file FastAPI service exposing the watermark plugin contract:
 
 - ``GET  /info``    metadata about this plugin
-- ``POST /embed``   embed a 128-bit binding into the input audio
-- ``POST /detect``  extract the binding from an input
+- ``POST /embed``   embed a 128-bit binding into an audio asset
+- ``POST /detect``  extract the binding from an audio asset
 - ``GET  /health``  liveness probe
 
-Bytes are exchanged via a Docker volume shared with ingestion-api. The
-caller specifies absolute ``input_path`` / ``output_path`` under that
-volume; this plugin reads/writes those paths directly. We never accept
-audio over the wire.
+Bytes are exchanged over HTTP. ``/embed`` and ``/detect`` accept
+``application/octet-stream`` request bodies (the audio bytes). ``/embed``
+returns the watermarked bytes as ``application/octet-stream`` and the
+binding value in the ``X-Binding-Value`` response header. ``/detect``
+returns JSON.
 
 Current implementation is a deterministic dummy:
 - ``compute_binding_value`` = base64(SHA-256(bytes)[:16]) — 128 bits.
@@ -27,11 +28,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import shutil
-from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
+from pydantic import BaseModel
 
 ALG = "me.deepmark.audio.vigil.128"
 TYPE = "watermark"
@@ -45,6 +45,8 @@ MEDIA_TYPES = (
     "audio/x-flac",
     "audio/ogg",
 )
+
+BINDING_VALUE_HEADER = "X-Binding-Value"
 
 
 # ---------------------------------------------------------------------------
@@ -73,27 +75,6 @@ def _detect_bytes(asset_bytes: bytes) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-class EmbedRequest(BaseModel):
-    input_path: str = Field(..., description="Absolute path to source audio on the shared volume")
-    output_path: str = Field(..., description="Absolute path where watermarked audio should be written")
-    value: str | None = Field(
-        None,
-        description=(
-            "Optional caller-provided binding value. When omitted, the plugin "
-            "derives it deterministically from the input bytes."
-        ),
-    )
-
-
-class EmbedResponse(BaseModel):
-    bindingValue: str
-    outputPath: str
-
-
-class DetectRequest(BaseModel):
-    input_path: str = Field(..., description="Absolute path to audio on the shared volume")
-
-
 class DetectResponse(BaseModel):
     bindingValue: str | None
 
@@ -108,7 +89,10 @@ class InfoResponse(BaseModel):
 app = FastAPI(
     title=f"C2PA watermark plugin: {ALG}",
     version="0.1.0",
-    description="Soft-binding watermark plugin (dummy 128-bit). Bytes via shared volume.",
+    description=(
+        "Soft-binding watermark plugin (dummy 128-bit). "
+        "Bytes exchanged over HTTP (octet-stream)."
+    ),
 )
 
 
@@ -127,35 +111,42 @@ def health() -> dict:
     return {"status": "ok", "alg": ALG}
 
 
-@app.post("/embed", response_model=EmbedResponse, summary="Embed a soft-binding watermark")
-def embed_endpoint(req: EmbedRequest) -> EmbedResponse:
-    src = Path(req.input_path)
-    dst = Path(req.output_path)
-    if not src.is_file():
-        raise HTTPException(status_code=400, detail=f"input_path not found: {src}")
-    try:
-        data = src.read_bytes()
-        value = req.value or compute_binding_value(data)
-        watermarked = _embed_bytes(data, value)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if watermarked is data:
-            # Passthrough fast path; avoid a redundant copy if src == dst.
-            if src.resolve() != dst.resolve():
-                shutil.copyfile(src, dst)
-        else:
-            dst.write_bytes(watermarked)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"I/O error: {exc}") from exc
-    return EmbedResponse(bindingValue=value, outputPath=str(dst))
+@app.post(
+    "/embed",
+    summary="Embed a soft-binding watermark",
+    responses={
+        200: {
+            "content": {"application/octet-stream": {}},
+            "description": (
+                "Watermarked asset bytes. The binding value is returned in "
+                f"the ``{BINDING_VALUE_HEADER}`` response header."
+            ),
+        },
+        400: {"description": "Empty request body"},
+    },
+)
+async def embed_endpoint(request: Request) -> Response:
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty request body")
+    override = request.headers.get(BINDING_VALUE_HEADER) or None
+    value = override or compute_binding_value(data)
+    watermarked = _embed_bytes(data, value)
+    return Response(
+        content=watermarked,
+        media_type="application/octet-stream",
+        headers={BINDING_VALUE_HEADER: value},
+    )
 
 
-@app.post("/detect", response_model=DetectResponse, summary="Detect a soft-binding watermark")
-def detect_endpoint(req: DetectRequest) -> DetectResponse:
-    src = Path(req.input_path)
-    if not src.is_file():
-        raise HTTPException(status_code=400, detail=f"input_path not found: {src}")
-    try:
-        data = src.read_bytes()
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"I/O error: {exc}") from exc
+@app.post(
+    "/detect",
+    response_model=DetectResponse,
+    summary="Detect a soft-binding watermark",
+    responses={400: {"description": "Empty request body"}},
+)
+async def detect_endpoint(request: Request) -> DetectResponse:
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty request body")
     return DetectResponse(bindingValue=_detect_bytes(data))

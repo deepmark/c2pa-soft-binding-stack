@@ -2,9 +2,9 @@
 End-to-end orchestrator test (no Mongo, no live plugin, no live resolution API).
 
 Stubs:
-- ``PluginClient.embed`` -> writes ``output_path`` (passthrough copy) and
-  returns the deterministic 128-bit binding value, matching what the
-  real vigil-128 plugin would produce.
+- ``PluginClient.embed`` -> returns an ``EmbedResult`` carrying the
+  passthrough watermarked bytes + the deterministic 128-bit binding
+  value, matching what the real vigil-128 plugin would produce.
 - ``ResolutionPushClient.push`` -> records the request and returns a
   ``ResolutionPushResult.OK``.
 
@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 from pathlib import Path
 
 import pytest
@@ -25,14 +24,12 @@ from ingestion_api.models.ingestion import (
     ResolutionPushStatus,
 )
 from ingestion_api.services import algorithms as algorithms_module
-from ingestion_api.services import resolution as resolution_module
-from ingestion_api.services.algorithms import AlgorithmEntry
+from ingestion_api.services.algorithms import AlgorithmEntry, EmbedResult
 from ingestion_api.services.orchestrator import (
     IngestionInput,
     IngestionService,
     UnsupportedAudioFormatError,
 )
-from ingestion_api.services.resolution import ResolutionPushClient
 from ingestion_api.services.signing import SigningService
 from ingestion_api.services.storage import LocalAssetStore
 from ingestion_api.utils.hashing import sha256_truncated_b64
@@ -60,12 +57,11 @@ class _StubPluginClient:
     def __exit__(self, *exc):
         return None
 
-    def embed(self, *, input_path, output_path, value=None):
-        src = Path(input_path)
-        dst = Path(output_path)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, dst)
-        return value or _binding_value(src.read_bytes())
+    def embed(self, *, audio_bytes: bytes, value: str | None = None) -> EmbedResult:
+        return EmbedResult(
+            binding_value=value or _binding_value(audio_bytes),
+            watermarked_bytes=audio_bytes,
+        )
 
 
 class _StubResolutionClient:
@@ -135,14 +131,12 @@ def ingestion_service(
     local_store: LocalAssetStore,
     stub_resolution: _StubResolutionClient,
     patched_plugin: AlgorithmEntry,
-    tmp_path: Path,
 ) -> IngestionService:
     return IngestionService(
         signing_service=signing_service,
         local_store=local_store,
         resolution_client=stub_resolution,
         soft_binding_alg=BINDING_ALG,
-        shared_volume_path=tmp_path / "shared",
     )
 
 
@@ -155,7 +149,6 @@ def test_ingest_produces_signed_asset_and_metadata(
     ingestion_service: IngestionService,
     sample_wav_bytes: bytes,
     stub_resolution: _StubResolutionClient,
-    tmp_path: Path,
 ):
     payload = IngestionInput(
         filename="sample.wav",
@@ -221,7 +214,6 @@ def test_ingest_records_failed_push(
     local_store: LocalAssetStore,
     patched_plugin: AlgorithmEntry,
     sample_wav_bytes: bytes,
-    tmp_path: Path,
 ):
     """Resolution-api 5xx -> record FAILED, ingest still succeeds."""
 
@@ -242,7 +234,6 @@ def test_ingest_records_failed_push(
         local_store=local_store,
         resolution_client=_FailingResolution(),
         soft_binding_alg=BINDING_ALG,
-        shared_volume_path=tmp_path / "shared",
     )
 
     result = asyncio.run(
