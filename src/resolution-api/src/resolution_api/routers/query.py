@@ -10,14 +10,96 @@ import httpx
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 
 from resolution_api.core.database import get_soft_bindings_collection
+from resolution_api.core.logging import get_logger
 from resolution_api.models import (
     AssetReferenceQuery,
     ManifestMatch,
     SoftBindingQuery,
     SoftBindingQueryResult,
 )
+from resolution_api.services.algorithms_catalog import (
+    AlgorithmEntry,
+    AlgorithmNotFoundError,
+    AsyncPluginClient,
+    PluginUnavailableError,
+    load_catalog,
+    resolve,
+)
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["query"])
+
+
+def _resolve_or_400(alg: str) -> AlgorithmEntry:
+    try:
+        return resolve(alg)
+    except AlgorithmNotFoundError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported algorithm: '{alg}' is not registered",
+        )
+
+
+async def _detect_from_bytes(
+    content: bytes,
+    *,
+    alg: str | None,
+    maxResults: int,
+) -> SoftBindingQueryResult:
+    """Shared detection + DB lookup used by byContent and byReference."""
+    soft_bindings_col = get_soft_bindings_collection()
+    all_matches: list[ManifestMatch] = []
+
+    if alg:
+        entries_to_try = [_resolve_or_400(alg)]
+    else:
+        catalog = load_catalog()
+        entries_to_try = [
+            e for e in catalog
+            if e.type == "watermark" and e.url
+        ]
+        if not entries_to_try:
+            raise HTTPException(
+                status_code=400,
+                detail="No watermark detectors registered in the system",
+            )
+        logger.info("No alg specified, trying %d registered detectors", len(entries_to_try))
+
+    for entry in entries_to_try:
+        try:
+            client = AsyncPluginClient(entry)
+            detected_value = await client.detect(audio_bytes=content)
+        except PluginUnavailableError as exc:
+            logger.warning("Detection failed for alg=%s: %s", entry.alg, exc)
+            if alg:
+                raise HTTPException(status_code=500, detail=f"Watermark detection failed: {exc}")
+            continue
+
+        if detected_value is None:
+            logger.info("No watermark detected with alg=%s", entry.alg)
+            continue
+
+        logger.info("Watermark detected with alg=%s", entry.alg)
+        docs = await soft_bindings_col.find(
+            {"alg": entry.alg, "value": detected_value}
+        ).to_list(length=maxResults)
+
+        for doc in docs:
+            all_matches.append(ManifestMatch(
+                manifestId=doc.get("manifestId"),
+                endpoint=doc.get("endpoint"),
+            ))
+
+    seen: set[str] = set()
+    unique: list[ManifestMatch] = []
+    for m in all_matches:
+        if m.manifestId not in seen:
+            seen.add(m.manifestId)
+            unique.append(m)
+
+    logger.info("Found %d unique matches", len(unique))
+    return SoftBindingQueryResult(matches=unique[:maxResults])
 
 
 @router.get(
@@ -86,7 +168,6 @@ async def query_by_binding(
             ManifestMatch(
                 manifestId=doc.get("manifestId"),
                 endpoint=doc.get("endpoint"),
-                similarityScore=doc.get("similarityScore"),
             )
             for doc in docs
         ]
@@ -152,7 +233,6 @@ async def query_by_large_binding(
             ManifestMatch(
                 manifestId=doc.get("manifestId"),
                 endpoint=doc.get("endpoint"),
-                similarityScore=doc.get("similarityScore"),
             )
             for doc in docs
         ]
@@ -188,40 +268,27 @@ async def query_by_content(
     using an uploaded file containing a digital asset.
     """
     try:
-        # Validate content type (415 error)
         if not file.content_type:
             raise HTTPException(
                 status_code=415,
                 detail="Invalid asset type: content type not specified",
             )
 
-        # Check if content type is supported
-        supported_types = ["image/", "audio/", "video/", "application/", "model/", "text/"]
-        if not any(file.content_type.startswith(prefix) for prefix in supported_types):
+        supported_prefixes = ["audio/"]
+        if not any(file.content_type.startswith(p) for p in supported_prefixes):
             raise HTTPException(
                 status_code=415,
                 detail=f"Invalid asset type: {file.content_type} is not supported",
             )
 
-        # Read file content
         content = await file.read()
-
-        # Validate file is not empty (400 error)
         if not content:
             raise HTTPException(
                 status_code=400,
                 detail="Invalid request body: uploaded file is empty",
             )
 
-        # TODO
-        # 1. Extract soft binding from the asset using the specified algorithm
-        # 2. Query the database with the extracted binding (same way as in byBinding endpoints)
-        # 3. Return matching manifests
-        #
-        # For now, we return empty results since actual soft binding extraction
-        # requires algorithm-specific implementations!
-
-        return SoftBindingQueryResult(matches=[])
+        return await _detect_from_bytes(content, alg=alg, maxResults=maxResults)
 
     except HTTPException:
         raise
@@ -326,16 +393,7 @@ async def query_by_reference(
                 detail=f"Invalid request body: failed to download asset from referenceUrl: {str(e)}",
             )
 
-        # TODO
-        # 1. Extract soft binding from the downloaded asset using the specified algorithm
-        # 2. Apply region of interest if specified
-        # 3. Query the database with the extracted binding
-        # 4. Return matching manifests
-        #
-        # For now, we return empty results since actual soft binding extraction
-        # requires algorithm-specific implementations
-
-        return SoftBindingQueryResult(matches=[])
+        return await _detect_from_bytes(content, alg=alg, maxResults=maxResults)
 
     except HTTPException:
         raise
