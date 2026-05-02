@@ -77,7 +77,7 @@ class _StubResolutionClient:
 
     def push(self, req):
         self.calls.append(req)
-        return ResolutionPushResult(status=ResolutionPushStatus.OK), "urn:c2pa:stubbed-resolution-id"
+        return ResolutionPushResult(status=ResolutionPushStatus.OK)
 
     def close(self):
         pass
@@ -208,11 +208,11 @@ def test_ingest_produces_signed_asset_and_record(
     assert push.manifest_bytes  # non-empty
 
 
-def test_ingest_uses_resolution_returned_manifest_id(
+def test_ingest_manifest_id_matches_signed_asset(
     ingestion_service: IngestionService,
     sample_wav_bytes: bytes,
 ):
-    """When the resolution API mints its own manifestId, that one wins."""
+    """Stored manifestId is exactly the active_manifest URN inside the signed file."""
     result = asyncio.run(
         ingestion_service.ingest(
             IngestionInput(
@@ -222,7 +222,11 @@ def test_ingest_uses_resolution_returned_manifest_id(
             )
         )
     )
-    assert result.record.manifestId == "urn:c2pa:stubbed-resolution-id"
+    from c2pa import Reader
+    with Reader(str(result.signed_asset_path)) as r:
+        active_manifest = json.loads(r.json())["active_manifest"]
+    assert result.record.manifestId == active_manifest
+    assert active_manifest.startswith("urn:c2pa:")
 
 
 def test_ingest_records_failed_push(
@@ -238,10 +242,7 @@ def test_ingest_records_failed_push(
         enabled = True
 
         def push(self, req):
-            return (
-                ResolutionPushResult(status=ResolutionPushStatus.FAILED, error="boom"),
-                None,
-            )
+            return ResolutionPushResult(status=ResolutionPushStatus.FAILED, error="boom")
 
         def close(self):
             pass

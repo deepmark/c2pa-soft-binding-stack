@@ -4,8 +4,10 @@ Store route group
 Ingests C2PA Manifest Stores and creates, updates, or deletes their
 associations with soft bindings.
 """
-import uuid
+import io
+import json
 
+from c2pa import Reader
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
@@ -19,6 +21,32 @@ from resolution_api.models import (
     ManifestCreateResult,
     ManifestReceipt,
 )
+
+
+def _extract_manifest_id(manifest_data: bytes) -> str:
+    """Parse a raw C2PA manifest store and return its active_manifest URN.
+
+    Raises HTTPException(400) if the bytes don't contain a valid C2PA
+    manifest store or no active_manifest label can be read. Both
+    ingestion-api and resolution-api use the same SDK call, so for
+    identical bytes both services derive the same ID — that's what
+    makes ``POST /manifests`` idempotent.
+    """
+    try:
+        with Reader("application/c2pa", io.BytesIO(manifest_data)) as r:
+            data = json.loads(r.json())
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid C2PA manifest store: {exc}",
+        )
+    manifest_id = data.get("active_manifest")
+    if not manifest_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Manifest store has no active_manifest label",
+        )
+    return manifest_id
 
 router = APIRouter(tags=["store"])
 
@@ -70,14 +98,20 @@ async def associate_manifest(binding: BindingsRequest):
                 detail="C2PA Manifest id not found",
             )
 
-        # Create or update the soft binding association
+        # Create or update the soft binding association. Upsert keyed
+        # on the (alg, value, manifestId) compound — same composite key
+        # as the unique index — so retries are idempotent (a re-push
+        # of the same triple is a no-op, not a dup-key error).
         soft_bindings_col = get_soft_bindings_collection()
-        await soft_bindings_col.insert_one({
-            "alg": binding.alg,
-            "value": binding.bindingValue,
-            "manifestId": binding.manifestId,
-            "similarityScore": 100,
-        })
+        await soft_bindings_col.update_one(
+            {
+                "alg": binding.alg,
+                "value": binding.bindingValue,
+                "manifestId": binding.manifestId,
+            },
+            {"$set": {"similarityScore": 100}},
+            upsert=True,
+        )
 
         return Response(status_code=204)
 
@@ -184,30 +218,31 @@ async def add_manifest(
                 detail="Invalid request body: manifest data cannot be empty",
             )
 
-        # TODO:
-        # Generate a unique manifest ID (in real implementation, extract from manifest)
-        # here should be a code where we obtain this id from a manifest somehow using tool or sdk
-        # Per C2PA Technical Spec, the canonical format is `urn:c2pa:<UUID>`.
-        manifest_id = f"urn:c2pa:{uuid.uuid4()}"
-
-        # TODO:
-        # Somehow, an active manifest should also be extracted and saved
-
-        # Store the manifest. Blobs go in GridFS (manifest stores can exceed Mongo's 16MB doc limit).
-        fs = get_manifest_blobs_bucket()
-        store_id = await fs.upload_from_stream(
-            f"{manifest_id}.store", manifest_data
-        )
-        active_id = await fs.upload_from_stream(
-            f"{manifest_id}.active", manifest_data  # In real implementation, extract active manifest
-        )
+        # Extract the canonical manifestId from the manifest bytes.
+        # Same derivation ingestion-api uses → idempotent storage.
+        manifest_id = _extract_manifest_id(manifest_data)
 
         manifests_col = get_manifests_collection()
-        await manifests_col.insert_one({
-            "_id": manifest_id,
-            "manifestStoreFileId": store_id,
-            "activeManifestFileId": active_id,
-        })
+        existing = await manifests_col.find_one({"_id": manifest_id})
+
+        if existing is None:
+            # First time we see this manifest — write blobs + record.
+            # TODO: extract the *active* manifest from the store and
+            # store it as a separate blob (currently we duplicate the
+            # store bytes into both slots).
+            fs = get_manifest_blobs_bucket()
+            store_id = await fs.upload_from_stream(
+                f"{manifest_id}.store", manifest_data,
+            )
+            active_id = await fs.upload_from_stream(
+                f"{manifest_id}.active", manifest_data,
+            )
+            await manifests_col.insert_one({
+                "_id": manifest_id,
+                "manifestStoreFileId": store_id,
+                "activeManifestFileId": active_id,
+            })
+        # else: idempotent re-push, blobs + record already there.
 
         result = ManifestCreateResult(manifestId=manifest_id)
 

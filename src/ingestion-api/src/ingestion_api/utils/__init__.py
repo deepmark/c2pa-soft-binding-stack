@@ -6,7 +6,7 @@ from ingestion_api.utils.audio import (
     is_supported_audio,
 )
 from ingestion_api.utils.hashing import sha256_hex, sha256_truncated_b64
-from ingestion_api.utils.ids import new_ingestion_id, new_manifest_urn
+from ingestion_api.utils.ids import new_ingestion_id
 
 __all__ = [
     "SUPPORTED_AUDIO_EXTENSIONS",
@@ -16,5 +16,4 @@ __all__ = [
     "sha256_hex",
     "sha256_truncated_b64",
     "new_ingestion_id",
-    "new_manifest_urn",
 ]

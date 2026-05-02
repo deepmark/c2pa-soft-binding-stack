@@ -70,11 +70,11 @@ class Settings(BaseSettings):
     resolution_push_enabled: bool = True
     resolution_api_url: str = ""
     resolution_request_timeout_s: float = 10.0
-    # Per-call retry policy. Each HTTP request (POST /manifests and
-    # each POST /bindings) gets up to N additional attempts on
-    # transient failures (timeouts, connection errors, 5xx). 4xx is
-    # treated as permanent and surfaces immediately. Backoff doubles
-    # each retry, starting at ``resolution_retry_backoff_s``.
+    # Per-call retry policy. 
+    # Each HTTP request (POST /manifests and each POST /bindings) 
+    # gets up to N additional attempts on transient failures (timeouts, connection errors, 5xx). 
+    # 4xx is treated as permanent and surfaces immediately. 
+    # Backoff doubles each retry, starting at ``resolution_retry_backoff_s``.
     resolution_max_retries: int = 1
     resolution_retry_backoff_s: float = 0.5
 
@@ -82,9 +82,7 @@ class Settings(BaseSettings):
     claim_generator_name: str = "Deepmark Inc."
     claim_generator_version: str = "0.1.0"
 
-    # Signing credentials. ``credentials_dir`` is required; the cert/key
-    # paths default to the conventional filenames inside it but can be
-    # overridden individually.
+    # Signing credentials. ``credentials_dir`` is required; 
     credentials_dir: Path = Field(
         ...,
         description="Directory containing the ES256 cert chain + private key.",

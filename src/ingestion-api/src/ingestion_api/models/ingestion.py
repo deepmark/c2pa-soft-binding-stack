@@ -62,9 +62,9 @@ class IngestionRecord(BaseModel):
         description="All soft-bindings emitted in this ingest (one per c2pa.soft-binding assertion)",
         min_length=1,
     )
-    manifestId: str | None = Field(
-        None,
-        description="C2PA active-manifest URN (if available)",
+    manifestId: str = Field(
+        ...,
+        description="C2PA active-manifest URN extracted from the signed asset",
     )
     signingAlg: str = Field(..., description="Signing algorithm (e.g. ES256)")
     taUrl: str | None = Field(None, description="RFC3161 timestamp authority used")
@@ -85,7 +85,7 @@ class IngestionRecord(BaseModel):
 class IngestResponse(BaseModel):
     """Response body for ``POST /ingest``."""
     ingestionId: str
-    manifestId: str | None
+    manifestId: str
     softBindings: list[SoftBindingRecord] = Field(
         ...,
         description="All soft-bindings emitted in this ingest",

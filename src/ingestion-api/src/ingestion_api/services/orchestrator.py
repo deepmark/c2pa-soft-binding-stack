@@ -12,9 +12,12 @@ End-to-end pipeline:
            injected automatically; we add c2pa.watermarked.bound + one
            c2pa.soft-binding assertion per alg)
         -> sign (Builder.sign)
+        -> extract canonical manifestId from signed asset (hard fail
+           if SDK can't surface it — better than fabricating a UUID)
         -> persist signed asset + manifest bytes to disk
         -> persist IngestionRecord to MongoDB
         -> auto-push manifest store + every binding to resolution-api
+           (which derives the same manifestId from the same bytes)
 
 Bytes never touch disk on the ingestion-api side until we write the
 signed output. The plugin call is purely HTTP, so plugin containers can
@@ -62,7 +65,7 @@ from ingestion_api.utils.audio import (
     SUPPORTED_AUDIO_MIME_TYPES,
     guess_audio_format,
 )
-from ingestion_api.utils.ids import new_ingestion_id, new_manifest_urn
+from ingestion_api.utils.ids import new_ingestion_id
 
 logger = get_logger(__name__)
 
@@ -205,33 +208,39 @@ class IngestionService:
         else:
             manifest_bytes_path = None
 
-        # 4. Resolve manifest ID best-effort by reading back the signed asset.
+        # 4. Extract the canonical manifest URN from the signed asset.
+        # This is the single source of truth: resolution-api will derive
+        # the same value from the same manifest bytes, so we don't need
+        # a fallback or override path. If extraction fails, the signing
+        # pipeline produced something we can't identify — treat as a
+        # hard error rather than fabricating a UUID.
         manifest_id = await loop.run_in_executor(
             None, self._read_active_manifest_label, artifacts.signed_path,
         )
         if not manifest_id:
-            manifest_id = new_manifest_urn()
+            raise IngestionError(
+                "Could not extract active manifestId from signed asset — "
+                "C2PA Reader returned no active_manifest label. This "
+                "indicates a signing pipeline bug."
+            )
 
         # 5. Auto-push to resolution API: one /manifests + one /bindings
-        # per pass.
+        # per pass. Resolution-api derives the same manifestId from the
+        # bytes; we don't trust a returned override.
         bindings = [
             BindingPair(alg=p.entry.alg, binding_value=p.binding_value)
             for p in passes
         ]
-        push_result, push_manifest_id = await loop.run_in_executor(
+        push_result = await loop.run_in_executor(
             None,
             lambda: self._resolution_client.push(
                 ResolutionPushRequest(
                     manifest_bytes=built.manifest_bytes or b"",
+                    manifest_id=manifest_id,
                     bindings=bindings,
-                    fallback_manifest_id=manifest_id,
                 ),
             ),
         )
-        # If the resolution API minted its own manifestId, prefer that;
-        # otherwise stick with whatever we read back from the signed asset.
-        if push_result.status == ResolutionPushStatus.OK and push_manifest_id:
-            manifest_id = push_manifest_id
 
         soft_binding_records = [
             SoftBindingRecord(

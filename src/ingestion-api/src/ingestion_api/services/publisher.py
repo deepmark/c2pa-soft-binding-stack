@@ -11,18 +11,22 @@ that don't have a resolution-api downstream.
 
 Wire shape:
 1. ``POST {RESOLUTION_API_URL}/manifests`` with the raw manifest bytes
-   as ``application/c2pa``. Response carries the assigned manifestId.
+   as ``application/c2pa``. Resolution-api derives the manifestId
+   deterministically from the bytes (same as ingestion-api's
+   extraction), so the call is idempotent and the response payload is
+   informational — we use the locally-extracted ID for the binding
+   posts.
 2. ``POST {RESOLUTION_API_URL}/bindings`` with
    ``{alg, bindingValue, manifestId}`` — one call per binding.
    Resolution-api's ``/bindings`` is intentionally singular (one
    binding per request); we loop over the list here.
 
-Failure mode: caller logs + records a ``ResolutionPushResult`` with
-``status=FAILED`` and an error message; the ingest request still
-succeeds, returning the artifacts so a retry/sync can reconcile later.
-A single ``/bindings`` failure aborts the rest of the loop — partial
-state is signalled via ``status=FAILED`` so the operator can re-push
-with the persisted manifest bytes + sidecar.
+Failure mode: caller logs + records ``status=FAILED`` and an error
+message; the ingest request still succeeds, returning the artifacts so
+a retry/sync can reconcile later. A single ``/bindings`` failure
+aborts the rest of the loop — partial state is signalled via
+``status=FAILED`` so the operator can re-push with the persisted
+manifest bytes (re-pushes are idempotent server-side).
 """
 from __future__ import annotations
 
@@ -49,8 +53,8 @@ class BindingPair:
 @dataclass(slots=True)
 class ResolutionPushRequest:
     manifest_bytes: bytes
+    manifest_id: str
     bindings: Sequence[BindingPair]
-    fallback_manifest_id: str | None = None
 
 
 class ResolutionPushClient:
@@ -98,57 +102,44 @@ class ResolutionPushClient:
         if self._owned_client:
             self._client.close()
 
-    def push(self, req: ResolutionPushRequest) -> tuple[ResolutionPushResult, str | None]:
+    def push(self, req: ResolutionPushRequest) -> ResolutionPushResult:
         """
-        Push manifest + every binding. Returns (result, manifestId-on-success).
+        Push manifest + every binding to resolution-api.
 
         Never raises — failure modes are surfaced through
-        ``ResolutionPushResult.status=FAILED``.
+        ``ResolutionPushResult.status=FAILED``. The caller-supplied
+        ``req.manifest_id`` is used directly for the binding posts;
+        resolution-api derives the same ID from ``req.manifest_bytes``,
+        so the manifest POST is idempotent.
         """
         if not self.enabled:
-            return ResolutionPushResult(status=ResolutionPushStatus.SKIPPED), req.fallback_manifest_id
+            return ResolutionPushResult(status=ResolutionPushStatus.SKIPPED)
 
         if not req.bindings:
-            return (
-                ResolutionPushResult(
-                    status=ResolutionPushStatus.FAILED,
-                    error="ResolutionPushRequest.bindings must be non-empty",
-                ),
-                None,
+            return ResolutionPushResult(
+                status=ResolutionPushStatus.FAILED,
+                error="ResolutionPushRequest.bindings must be non-empty",
             )
 
         try:
-            manifest_id = self._post_manifest(req.manifest_bytes) or req.fallback_manifest_id
-            if not manifest_id:
-                return (
-                    ResolutionPushResult(
-                        status=ResolutionPushStatus.FAILED,
-                        error="resolution-api returned no manifestId and no fallback was provided",
-                    ),
-                    None,
-                )
+            self._post_manifest(req.manifest_bytes)
             for pair in req.bindings:
-                self._post_binding(pair.alg, pair.binding_value, manifest_id)
-            return ResolutionPushResult(status=ResolutionPushStatus.OK), manifest_id
+                self._post_binding(pair.alg, pair.binding_value, req.manifest_id)
+            return ResolutionPushResult(status=ResolutionPushStatus.OK)
         except httpx.HTTPError as exc:
             logger.warning("Resolution-api push failed: %s", exc)
-            return ResolutionPushResult(status=ResolutionPushStatus.FAILED, error=str(exc)), None
+            return ResolutionPushResult(status=ResolutionPushStatus.FAILED, error=str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("Unexpected resolution-api push failure")
-            return ResolutionPushResult(status=ResolutionPushStatus.FAILED, error=str(exc)), None
+            return ResolutionPushResult(status=ResolutionPushStatus.FAILED, error=str(exc))
 
-    def _post_manifest(self, manifest_bytes: bytes) -> str | None:
+    def _post_manifest(self, manifest_bytes: bytes) -> None:
         url = f"{self._base_url}/manifests"
-        r = self._send_with_retry(
+        self._send_with_retry(
             "POST", url,
             content=manifest_bytes,
             headers={"Content-Type": "application/c2pa"},
         )
-        try:
-            data = r.json()
-        except ValueError:
-            return None
-        return data.get("manifestId")
 
     def _post_binding(self, alg: str, binding_value: str, manifest_id: str) -> None:
         url = f"{self._base_url}/bindings"
