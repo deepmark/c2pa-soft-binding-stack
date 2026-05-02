@@ -25,7 +25,7 @@ async def ready() -> dict:
     Best-effort readiness:
     - cert + key files present
     - algorithm catalog loadable
-    - default plugin /health responding
+    - every configured ``audio_algs`` plugin /health responding
     - resolution-api /health responding (if RESOLUTION_API_URL set)
     """
     cert_path = settings.resolved_cert_chain_path()
@@ -33,20 +33,35 @@ async def ready() -> dict:
     creds_ok = cert_path.is_file() and key_path.is_file()
 
     catalog = load_catalog()
-    plugin = next((e for e in catalog if e.alg == settings.default_audio_alg), None)
+    by_alg = {e.alg: e for e in catalog}
 
-    plugin_ok = False
-    plugin_err: str | None = None
-    if plugin and plugin.url:
-        try:
-            with httpx.Client(timeout=2.0) as c:
-                r = c.get(plugin.url.rstrip("/") + "/health")
+    plugins_report: list[dict] = []
+    plugins_ok = True
+    with httpx.Client(timeout=2.0) as c:
+        for alg in settings.audio_algs:
+            entry = by_alg.get(alg)
+            if entry is None or not entry.url:
+                plugins_ok = False
+                plugins_report.append({
+                    "alg": alg,
+                    "ok": False,
+                    "url": entry.url if entry else None,
+                    "error": (
+                        f"alg {alg!r} missing or has no URL in algorithms.yaml"
+                    ),
+                })
+                continue
+            try:
+                r = c.get(entry.url.rstrip("/") + "/health")
                 r.raise_for_status()
-                plugin_ok = True
-        except httpx.HTTPError as exc:
-            plugin_err = str(exc)
-    else:
-        plugin_err = "default plugin missing or has no URL in algorithms.yaml"
+                plugins_report.append({
+                    "alg": alg, "ok": True, "url": entry.url, "error": None,
+                })
+            except httpx.HTTPError as exc:
+                plugins_ok = False
+                plugins_report.append({
+                    "alg": alg, "ok": False, "url": entry.url, "error": str(exc),
+                })
 
     resolution_ok: bool | None = None
     resolution_err: str | None = None
@@ -62,7 +77,7 @@ async def ready() -> dict:
 
     overall = (
         "ok"
-        if creds_ok and plugin_ok and (resolution_ok is None or resolution_ok)
+        if creds_ok and plugins_ok and (resolution_ok is None or resolution_ok)
         else "degraded"
     )
 
@@ -74,7 +89,7 @@ async def ready() -> dict:
             "private_key_path": str(key_path),
         },
         "ingest": {
-            "default_alg": settings.default_audio_alg,
+            "audio_algs": list(settings.audio_algs),
             "signing_alg": settings.signing_alg,
             "ta_url": settings.ta_url,
         },
@@ -82,7 +97,7 @@ async def ready() -> dict:
             "path": str(settings.algorithms_catalog_path),
             "entries": len(catalog),
         },
-        "plugin": {"ok": plugin_ok, "url": plugin.url if plugin else None, "error": plugin_err},
+        "plugins": plugins_report,
         "resolution_api": {
             "url": settings.resolution_api_url or None,
             "ok": resolution_ok,

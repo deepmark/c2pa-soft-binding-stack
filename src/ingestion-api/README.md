@@ -29,7 +29,7 @@ Settings live in `src/ingestion_api/core/config.py`. Common overrides:
 
 | Var | Default | What |
 | --- | --- | --- |
-| `DEFAULT_AUDIO_ALG` | `me.deepmark.audio.vigil.128` | Default plugin to call from `POST /ingest` |
+| `AUDIO_ALGS` | `["me.deepmark.audio.vigil.128"]` | JSON list of soft-binding algs per ingest (watermarks first, fingerprints last) |
 | `ALGORITHMS_CATALOG_PATH` | `<repo>/algorithms.yaml` | Shared catalog |
 | `STORAGE_ROOT` | `<service>/storage` | Local artifact store |
 | `CREDENTIALS_DIR` | `<repo>/credentials` | ES256 cert + key root |

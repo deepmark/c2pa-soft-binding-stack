@@ -213,7 +213,7 @@ Common knobs:
 | --- | --- | --- | --- |
 | `MONGODB_URL` | resolution-api | `mongodb://localhost:27017` | Mongo URL |
 | `ALGORITHMS_CATALOG_PATH` | both | `<repo>/algorithms.yaml` | Shared YAML catalog path |
-| `DEFAULT_AUDIO_ALG` | ingestion-api | `me.deepmark.audio.vigil.128` | Plugin to call from `POST /ingest` |
+| `AUDIO_ALGS` | ingestion-api | `["me.deepmark.audio.vigil.128"]` | JSON list of soft-binding algs per ingest (watermarks first, fingerprints last) |
 | `STORAGE_ROOT` | ingestion-api | `<service>/storage` | Where signed assets + manifests + sidecars land |
 | `CREDENTIALS_DIR` | ingestion-api | `<repo>/credentials` | Cert + key root |
 | `SIGNING_ALG` | ingestion-api | `ES256` | C2PA signing algorithm |

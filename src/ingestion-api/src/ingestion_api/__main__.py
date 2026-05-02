@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
         signing_service=app.state.signing_service,
         local_store=app.state.local_store,
         resolution_client=app.state.resolution_client,
-        soft_binding_alg=settings.default_audio_alg,
+        soft_binding_algs=settings.audio_algs,
     )
 
     try:

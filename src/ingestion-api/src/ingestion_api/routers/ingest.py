@@ -66,8 +66,7 @@ def _build_response(record: IngestionRecord, request: Request) -> IngestResponse
     return IngestResponse(
         ingestionId=record.ingestionId,
         manifestId=record.manifestId,
-        alg=record.alg,
-        bindingValue=record.bindingValue,
+        softBindings=record.softBindings,
         originalFilename=record.originalFilename,
         originalMimeType=record.originalMimeType,
         outputAssetUrl=output_url,

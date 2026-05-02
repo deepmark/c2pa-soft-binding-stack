@@ -63,6 +63,10 @@ class _StubPluginClient:
             watermarked_bytes=audio_bytes,
         )
 
+    def compute(self, *, audio_bytes: bytes) -> str:
+        # Stand-in for a fingerprint plugin: pure read, deterministic value.
+        return "fp:" + _binding_value(audio_bytes)
+
 
 class _StubResolutionClient:
     """Always-OK auto-push stub. Records calls for assertions."""
@@ -136,7 +140,7 @@ def ingestion_service(
         signing_service=signing_service,
         local_store=local_store,
         resolution_client=stub_resolution,
-        soft_binding_alg=BINDING_ALG,
+        soft_binding_algs=[BINDING_ALG],
     )
 
 
@@ -165,8 +169,11 @@ def test_ingest_produces_signed_asset_and_metadata(
 
     record = result.record
     assert record.status is IngestionStatus.OK
-    assert record.alg == BINDING_ALG
-    assert record.bindingValue == _binding_value(sample_wav_bytes)
+    assert len(record.softBindings) == 1
+    only = record.softBindings[0]
+    assert only.alg == BINDING_ALG
+    assert only.kind == "watermark"
+    assert only.bindingValue == _binding_value(sample_wav_bytes)
     assert record.originalFilename == "sample.wav"
     assert record.originalMimeType == "audio/wav"
     assert record.resolutionPushStatus is ResolutionPushStatus.OK
@@ -178,17 +185,19 @@ def test_ingest_produces_signed_asset_and_metadata(
 
     # Metadata sidecar matches the returned record.
     sidecar = json.loads((base / "metadata.json").read_text("utf-8"))
-    assert sidecar["alg"] == BINDING_ALG
-    assert sidecar["bindingValue"] == record.bindingValue
+    assert sidecar["softBindings"] == [
+        {"alg": BINDING_ALG, "kind": "watermark", "bindingValue": only.bindingValue},
+    ]
     assert sidecar["ingestionId"] == record.ingestionId
     assert sidecar["resolutionPushStatus"] == "ok"
     assert "originalAssetPath" not in sidecar
 
-    # Resolution-api stub received the manifest.
+    # Resolution-api stub received the manifest + a binding-pair list.
     assert len(stub_resolution.calls) == 1
     push = stub_resolution.calls[0]
-    assert push.alg == BINDING_ALG
-    assert push.binding_value == record.bindingValue
+    assert [(b.alg, b.binding_value) for b in push.bindings] == [
+        (BINDING_ALG, only.bindingValue),
+    ]
     assert push.manifest_bytes  # non-empty
 
 
@@ -233,7 +242,7 @@ def test_ingest_records_failed_push(
         signing_service=signing_service,
         local_store=local_store,
         resolution_client=_FailingResolution(),
-        soft_binding_alg=BINDING_ALG,
+        soft_binding_algs=[BINDING_ALG],
     )
 
     result = asyncio.run(
@@ -298,4 +307,86 @@ def test_signed_asset_round_trips_through_reader(
         a for a in active["assertions"] if a["label"] == "c2pa.soft-binding"
     )
     assert sb["data"]["alg"] == BINDING_ALG
-    assert sb["data"]["blocks"][0]["value"] == result.record.bindingValue
+    assert sb["data"]["blocks"][0]["value"] == result.record.softBindings[0].bindingValue
+
+
+def test_ingest_with_watermark_plus_fingerprint(
+    monkeypatch,
+    signing_service: SigningService,
+    local_store: LocalAssetStore,
+    stub_resolution: _StubResolutionClient,
+    sample_wav_bytes: bytes,
+):
+    """Multi-alg pipeline: one watermark + one fingerprint, both surfaced."""
+    FP_ALG = "me.deepmark.audio.fp.stub"
+    catalog = {
+        BINDING_ALG: AlgorithmEntry(
+            alg=BINDING_ALG,
+            type="watermark",
+            value_bits=128,
+            media_types=("audio/wav",),
+            url="http://stubbed:8000",
+        ),
+        FP_ALG: AlgorithmEntry(
+            alg=FP_ALG,
+            type="fingerprint",
+            value_bits=128,
+            media_types=("audio/wav",),
+            url="http://stubbed:8001",
+        ),
+    }
+    monkeypatch.setattr(algorithms_module, "resolve", lambda alg, **_: catalog[alg])
+    from ingestion_api.services import orchestrator as orchestrator_module
+    monkeypatch.setattr(orchestrator_module, "PluginClient", _StubPluginClient)
+    monkeypatch.setattr(
+        orchestrator_module, "resolve_algorithm", lambda alg, **_: catalog[alg],
+    )
+
+    svc = IngestionService(
+        signing_service=signing_service,
+        local_store=local_store,
+        resolution_client=stub_resolution,
+        soft_binding_algs=[BINDING_ALG, FP_ALG],
+    )
+
+    result = asyncio.run(
+        svc.ingest(
+            IngestionInput(
+                filename="sample.wav",
+                content_type="audio/wav",
+                data=sample_wav_bytes,
+            )
+        )
+    )
+
+    # Record carries both bindings, in input order.
+    kinds = [(b.alg, b.kind) for b in result.record.softBindings]
+    assert kinds == [(BINDING_ALG, "watermark"), (FP_ALG, "fingerprint")]
+
+    # Publisher saw both pairs, against the same /manifests call.
+    assert len(stub_resolution.calls) == 1
+    pushed = [(b.alg, b.binding_value) for b in stub_resolution.calls[0].bindings]
+    assert pushed == [
+        (BINDING_ALG, result.record.softBindings[0].bindingValue),
+        (FP_ALG, result.record.softBindings[1].bindingValue),
+    ]
+
+    # Signed manifest has two soft-binding assertions, suffixed per
+    # C2PA labelling rules. The Builder auto-suffixes the second; we
+    # just verify both labels and both algs are present.
+    from c2pa import Reader
+    with Reader(str(result.signed_asset_path)) as r:
+        full = json.loads(r.json())
+    active = full["manifests"][full["active_manifest"]]
+
+    sb_assertions = [
+        a for a in active["assertions"] if a["label"].startswith("c2pa.soft-binding")
+    ]
+    sb_by_label = {a["label"]: a["data"]["alg"] for a in sb_assertions}
+    assert sb_by_label == {
+        "c2pa.soft-binding": BINDING_ALG,
+        "c2pa.soft-binding__1": FP_ALG,
+    }
+    # Manifest validates cleanly (no hashedURI mismatch from the suffix
+    # — regression guard for a real bug we hit during this refactor).
+    assert full["validation_state"] == "Valid"

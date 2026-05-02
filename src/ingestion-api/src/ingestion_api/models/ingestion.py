@@ -3,13 +3,21 @@ Models for the audio ingest pipeline.
 
 ``IngestionRecord`` is the persisted shape (filesystem JSON sidecar).
 ``IngestResponse`` is what ``POST /ingest`` returns to the caller.
+
+Both carry ``softBindings`` as a list of ``SoftBindingRecord`` —
+one entry per ``c2pa.soft-binding`` assertion in the signed manifest.
+The list is non-empty (every ingest produces at least one binding);
+when fingerprinting joins watermarking, it'll just be a longer list.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+SoftBindingKind = Literal["watermark", "fingerprint"]
 
 
 class IngestionStatus(str, Enum):
@@ -29,6 +37,13 @@ class ResolutionPushResult(BaseModel):
     error: str | None = None
 
 
+class SoftBindingRecord(BaseModel):
+    """One soft-binding produced during ingest."""
+    alg: str = Field(..., description="Soft-binding algorithm identifier")
+    kind: SoftBindingKind = Field(..., description="watermark | fingerprint")
+    bindingValue: str = Field(..., description="Base64-encoded binding value")
+
+
 class IngestionRecord(BaseModel):
     """Persisted ingestion metadata (JSON sidecar at <storage_root>/ingestions/<id>/metadata.json)."""
 
@@ -42,8 +57,11 @@ class IngestionRecord(BaseModel):
         None,
         description="Local path to the raw signed manifest bytes returned by the SDK",
     )
-    alg: str = Field(..., description="Soft-binding algorithm identifier")
-    bindingValue: str = Field(..., description="Base64-encoded binding value")
+    softBindings: list[SoftBindingRecord] = Field(
+        ...,
+        description="All soft-bindings emitted in this ingest (one per c2pa.soft-binding assertion)",
+        min_length=1,
+    )
     manifestId: str | None = Field(
         None,
         description="C2PA active-manifest URN (if available)",
@@ -68,8 +86,11 @@ class IngestResponse(BaseModel):
     """Response body for ``POST /ingest``."""
     ingestionId: str
     manifestId: str | None
-    alg: str
-    bindingValue: str
+    softBindings: list[SoftBindingRecord] = Field(
+        ...,
+        description="All soft-bindings emitted in this ingest",
+        min_length=1,
+    )
     originalFilename: str
     originalMimeType: str
     outputAssetUrl: str = Field(

@@ -40,7 +40,7 @@ services:
       ALGORITHMS_CATALOG_PATH: /catalog/algorithms.yaml
       STORAGE_ROOT: /var/lib/ingestion-api/storage
       CREDENTIALS_DIR: /credentials
-      DEFAULT_AUDIO_ALG: ${DEFAULT_AUDIO_ALG:-me.deepmark.audio.vigil.128}
+      AUDIO_ALGS: ${AUDIO_ALGS:-["me.deepmark.audio.vigil.128"]}
       SIGNING_ALG: ${SIGNING_ALG:-ES256}
       TA_URL: ${TA_URL:-}
       RESOLUTION_API_URL: http://resolution-api:8000

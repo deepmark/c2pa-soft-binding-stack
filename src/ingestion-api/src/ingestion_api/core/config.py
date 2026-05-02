@@ -31,9 +31,12 @@ class Settings(BaseSettings):
         "Watermark and build a signed C2PA manifests for audio assets."
     )
 
-    # Default soft-binding algorithm for POST /ingest. Must match an entry
-    # in the shared ``algorithms.yaml`` catalog.
-    default_audio_alg: str = "me.deepmark.audio.vigil.128"
+    # Soft-binding algs applied to each audio upload, in order. 
+    # Each id must match an entry in ``algorithms.yaml``. 
+    audio_algs: list[str] = Field(
+        default_factory=lambda: ["me.deepmark.audio.vigil.128"],
+        min_length=1,
+    )
 
     # Algorithm catalog — same file must be mounted into resolution-api.
     algorithms_catalog_path: Path = Field(

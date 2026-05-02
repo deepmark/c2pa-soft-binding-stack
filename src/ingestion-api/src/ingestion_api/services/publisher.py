@@ -1,23 +1,29 @@
 """
 Auto-push to the soft-binding resolution API.
 
-After signing, ingestion-api can post the manifest store + binding to
-resolution-api so the just-ingested asset is immediately resolvable
-via ``GET /matches/byBinding``. Configurable via
-``RESOLUTION_API_URL``; an empty value disables.
+After signing, ingestion-api can post the manifest store + every
+soft-binding to resolution-api so the just-ingested asset is
+immediately resolvable via ``GET /matches/byBinding``. Configurable
+via ``RESOLUTION_API_URL``; an empty value disables.
 
-Two requests:
+Wire shape:
 1. ``POST {RESOLUTION_API_URL}/manifests`` with the raw manifest bytes
    as ``application/c2pa``. Response carries the assigned manifestId.
 2. ``POST {RESOLUTION_API_URL}/bindings`` with
-   ``{alg, bindingValue, manifestId}``.
+   ``{alg, bindingValue, manifestId}`` — one call per binding.
+   Resolution-api's ``/bindings`` is intentionally singular (one
+   binding per request); we loop over the list here.
 
 Failure mode: caller logs + records a ``ResolutionPushResult`` with
 ``status=FAILED`` and an error message; the ingest request still
 succeeds, returning the artifacts so a retry/sync can reconcile later.
+A single ``/bindings`` failure aborts the rest of the loop — partial
+state is signalled via ``status=FAILED`` so the operator can re-push
+with the persisted manifest bytes + sidecar.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import httpx
@@ -29,11 +35,17 @@ from ingestion_api.models.ingestion import ResolutionPushResult, ResolutionPushS
 logger = get_logger(__name__)
 
 
+@dataclass(slots=True, frozen=True)
+class BindingPair:
+    """One (alg, bindingValue) tuple to register against the manifest."""
+    alg: str
+    binding_value: str
+
+
 @dataclass(slots=True)
 class ResolutionPushRequest:
     manifest_bytes: bytes
-    alg: str
-    binding_value: str
+    bindings: Sequence[BindingPair]
     fallback_manifest_id: str | None = None
 
 
@@ -64,13 +76,22 @@ class ResolutionPushClient:
 
     def push(self, req: ResolutionPushRequest) -> tuple[ResolutionPushResult, str | None]:
         """
-        Push manifest + binding. Returns (result, manifestId-on-success).
+        Push manifest + every binding. Returns (result, manifestId-on-success).
 
         Never raises — failure modes are surfaced through
         ``ResolutionPushResult.status=FAILED``.
         """
         if not self.enabled:
             return ResolutionPushResult(status=ResolutionPushStatus.SKIPPED), req.fallback_manifest_id
+
+        if not req.bindings:
+            return (
+                ResolutionPushResult(
+                    status=ResolutionPushStatus.FAILED,
+                    error="ResolutionPushRequest.bindings must be non-empty",
+                ),
+                None,
+            )
 
         try:
             manifest_id = self._post_manifest(req.manifest_bytes) or req.fallback_manifest_id
@@ -82,7 +103,8 @@ class ResolutionPushClient:
                     ),
                     None,
                 )
-            self._post_binding(req.alg, req.binding_value, manifest_id)
+            for pair in req.bindings:
+                self._post_binding(pair.alg, pair.binding_value, manifest_id)
             return ResolutionPushResult(status=ResolutionPushStatus.OK), manifest_id
         except httpx.HTTPError as exc:
             logger.warning("Resolution-api push failed: %s", exc)

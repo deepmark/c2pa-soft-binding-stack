@@ -9,10 +9,19 @@ Wraps ``c2pa.Builder`` for the soft-binding ingest case:
    ``ingredientIds`` — no manual JUMBF URL gymnastics required (see
    https://opensource.contentauthenticity.org/docs/c2pa-python/docs/intents).
 
-2. We add a ``c2pa.watermarked.bound`` action and a ``c2pa.soft-binding``
-   assertion ourselves. The assertion shape follows the C2PA 2.4 soft
-   binding spec: ``{alg, blocks: [{scope, value}]}``. Scope is empty for
-   now (whole-asset binding); when temporal scoping lands, replace the
+2. We add a ``c2pa.watermarked.bound`` action and one
+   ``c2pa.soft-binding`` assertion per ``SoftBindingSpec``. Multiple
+   instances of the same assertion type are labelled
+   ``c2pa.soft-binding``, ``c2pa.soft-binding__1``, ``c2pa.soft-binding__2``,
+   etc. (per C2PA spec). Watermark specs trigger a single
+   ``c2pa.watermarked.bound`` action whose
+   ``parameters.relatedAssertions`` is an array of hashed JUMBF URIs
+   pointing at the watermark soft-binding assertions (per C2PA actions
+   v2). Fingerprint specs only emit the assertion (no action).
+
+   The assertion shape follows the C2PA 2.4 soft binding spec:
+   ``{alg, blocks: [{scope, value}]}``. Scope is empty for now
+   (whole-asset binding); when temporal scoping lands, replace the
    ``scope`` dict with ``{start, end}`` in samples.
 
 3. ``Builder.sign(...)`` writes the signed asset to the output path and
@@ -27,9 +36,10 @@ content's provenance, not a referenced input.
 from __future__ import annotations
 
 import io
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from c2pa import Builder, C2paBuilderIntent, Signer
 
@@ -37,6 +47,36 @@ from ingestion_api.core.config import settings
 from ingestion_api.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+SoftBindingKind = Literal["watermark", "fingerprint"]
+SOFT_BINDING_LABEL = "c2pa.soft-binding"
+# JUMBF URI prefix for self-references to assertions in this manifest.
+# C2PA action v2 ``parameters.relatedAssertions`` requires hashed JUMBF
+# URIs (``self#jumbf=c2pa.assertions/<label>``); the builder fills in
+# the hash at sign time.
+_ASSERTION_JUMBF_PREFIX = "self#jumbf=c2pa.assertions/"
+
+
+@dataclass(slots=True, frozen=True)
+class SoftBindingSpec:
+    """
+    One soft-binding to embed in the manifest.
+
+    One spec -> exactly one ``c2pa.soft-binding`` assertion. Multiple
+    specs -> labels are suffixed (``__1``, ``__2``, ...).
+
+    ``related_to_watermark_action`` is a layering hook: when True, this
+    spec's assertion label is listed in the ``c2pa.watermarked.bound``
+    action's ``relatedAssertions``. Fingerprints leave it False — they
+    don't get a watermark action.
+    """
+    alg: str
+    kind: SoftBindingKind
+    value: str
+    related_to_watermark_action: bool = False
+    # TODO: temporal scoping — replace whole-asset scope with
+    # {"start": <samples>, "end": <samples>} when the plugin layer
+    # starts emitting per-block bindings.
 
 
 @dataclass(slots=True)
@@ -46,25 +86,40 @@ class BuiltManifest:
     manifest_bytes: bytes
 
 
+def soft_binding_label(index: int) -> str:
+    """JUMBF assertion label of the i-th soft-binding in the *signed*
+    manifest.
+
+    First instance is ``c2pa.soft-binding``; subsequent instances are
+    suffixed ``__1``, ``__2``, ... per C2PA assertion-labelling rules.
+
+    NB: this predicts the label the c2pa-rs Builder will assign — we
+    DON'T pass these suffixed labels in on input. The Builder
+    auto-suffixes duplicate assertion type labels itself; pre-suffixing
+    produces double-suffixes (``__1__1``) and a hashedURI mismatch.
+    Use this helper when you need to *reference* a soft-binding
+    assertion (e.g. ``relatedAssertions``).
+    """
+    return SOFT_BINDING_LABEL if index == 0 else f"{SOFT_BINDING_LABEL}__{index}"
+
+
 class ManifestBuilderService:
     """
     Build and sign a C2PA manifest for an audio file.
 
     Stateless — instantiate once at startup (or per-request, both fine) and
-    reuse. The ``Signer`` and the algorithm identifier are injected so this
-    class doesn't reach into config directly; the orchestrator owns wiring.
+    reuse. The ``Signer`` is injected so this class doesn't reach into
+    config directly; the orchestrator owns wiring.
     """
 
     def __init__(
         self,
         *,
         signer: Signer,
-        soft_binding_alg: str,
         claim_generator_name: str | None = None,
         claim_generator_version: str | None = None,
     ) -> None:
         self._signer = signer
-        self._alg = soft_binding_alg
         self._claim_generator_name = claim_generator_name or settings.claim_generator_name
         self._claim_generator_version = (
             claim_generator_version or settings.claim_generator_version
@@ -76,7 +131,7 @@ class ManifestBuilderService:
         source_bytes: bytes,
         dest_path: Path,
         mime_type: str,
-        binding_value_b64: str,
+        soft_bindings: Sequence[SoftBindingSpec],
         title: str | None = None,
     ) -> BuiltManifest:
         """
@@ -92,16 +147,21 @@ class ManifestBuilderService:
                 stream to auto-create the ``parentOf`` ingredient.
             dest_path: Where to write the signed audio.
             mime_type: e.g. ``audio/wav``.
-            binding_value_b64: Base64-encoded soft-binding value.
+            soft_bindings: One or more ``SoftBindingSpec`` to embed. One
+                ``c2pa.soft-binding`` assertion is emitted per entry.
             title: Optional human-readable manifest title.
 
         Returns:
             ``BuiltManifest`` with the output path and the raw manifest bytes.
         """
-        manifest_def = self._manifest_definition(binding_value_b64, title=title)
+        if not soft_bindings:
+            raise ValueError("at least one SoftBindingSpec is required")
+
+        manifest_def = self._manifest_definition(soft_bindings, title=title)
+        algs = ",".join(s.alg for s in soft_bindings)
         logger.debug(
-            "Building manifest -> %s (mime=%s alg=%s, %d input bytes)",
-            dest_path, mime_type, self._alg, len(source_bytes),
+            "Building manifest -> %s (mime=%s algs=%s, %d input bytes)",
+            dest_path, mime_type, algs, len(source_bytes),
         )
 
         with Builder.from_json(manifest_def) as builder:
@@ -119,50 +179,41 @@ class ManifestBuilderService:
         return BuiltManifest(output_path=dest_path, manifest_bytes=manifest_bytes)
 
     def _manifest_definition(
-        self, binding_value_b64: str, *, title: str | None = None,
+        self,
+        soft_bindings: Sequence[SoftBindingSpec],
+        *,
+        title: str | None = None,
     ) -> dict[str, Any]:
         """
         Manifest JSON passed to ``Builder.from_json``.
 
         We deliberately do **not** include ``c2pa.opened`` or the parent
-        ingredient here — the EDIT intent injects both. We only contribute
-        the watermark action and the soft-binding assertion.
+        ingredient here — the EDIT intent injects both. We contribute the
+        watermark action (if any) and one ``c2pa.soft-binding`` assertion
+        per spec.
         """
-        actions_assertion = {
-            "label": "c2pa.actions.v2",
-            "data": {
-                "actions": [
-                    {
-                        "action": "c2pa.watermarked.bound",
-                        "softwareAgent": {
-                            "name": self._claim_generator_name,
-                            "version": self._claim_generator_version,
-                        },
-                        "parameters": {
-                            "description": (
-                                "Bound soft-binding watermark embedded "
-                                f"({self._alg})"
-                            ),
-                        },
-                    }
-                ]
-            },
-        }
+        watermark_labels = [
+            soft_binding_label(i)
+            for i, s in enumerate(soft_bindings)
+            if s.related_to_watermark_action
+        ]
+        watermark_algs = [
+            s.alg for s in soft_bindings if s.related_to_watermark_action
+        ]
 
-        soft_binding_assertion = {
-            "label": "c2pa.soft-binding",
-            "data": {
-                "alg": self._alg,
-                "blocks": [
-                    {
-                        # Whole-asset scope. When temporal scoping is added,
-                        # replace this with {"start": <samples>, "end": <samples>}.
-                        "scope": {},
-                        "value": binding_value_b64,
-                    }
-                ],
-            },
-        }
+        actions: list[dict[str, Any]] = []
+        if watermark_labels:
+            actions.append(self._watermark_action(watermark_algs, watermark_labels))
+
+        assertions: list[dict[str, Any]] = []
+        if actions:
+            assertions.append({
+                "label": "c2pa.actions.v2",
+                "data": {"actions": actions},
+            })
+
+        for i, spec in enumerate(soft_bindings):
+            assertions.append(self._soft_binding_assertion(spec, index=i))
 
         manifest: dict[str, Any] = {
             "claim_generator_info": [
@@ -171,8 +222,57 @@ class ManifestBuilderService:
                     "version": self._claim_generator_version,
                 }
             ],
-            "assertions": [actions_assertion, soft_binding_assertion],
+            "assertions": assertions,
         }
         if title:
             manifest["title"] = title
         return manifest
+
+    def _watermark_action(
+        self, algs: Sequence[str], related_labels: Sequence[str],
+    ) -> dict[str, Any]:
+        # Per C2PA actions v2: relatedAssertions belongs inside
+        # ``parameters`` and is an array of hashed JUMBF URIs. We supply
+        # the URL only ({"url": "self#jumbf=c2pa.assertions/<label>"});
+        # the Builder resolves and fills in alg/hash at sign time.
+        related_uris = [
+            {"url": f"{_ASSERTION_JUMBF_PREFIX}{label}"} for label in related_labels
+        ]
+        return {
+            "action": "c2pa.watermarked.bound",
+            "softwareAgent": {
+                "name": self._claim_generator_name,
+                "version": self._claim_generator_version,
+            },
+            "parameters": {
+                "description": (
+                    f"Bound soft-binding watermark embedded ({', '.join(algs)})"
+                ),
+                "relatedAssertions": related_uris,
+            },
+        }
+
+    def _soft_binding_assertion(
+        self, spec: SoftBindingSpec, *, index: int,
+    ) -> dict[str, Any]:
+        # Always pass the base type label; the Builder auto-suffixes
+        # duplicates to ``c2pa.soft-binding__1``, ``__2``, ... in the
+        # signed manifest. ``index`` is unused on input but kept in the
+        # signature for callers that want to know the eventual JUMBF
+        # label (use ``soft_binding_label(index)``).
+        del index
+        return {
+            "label": SOFT_BINDING_LABEL,
+            "data": {
+                "alg": spec.alg,
+                "blocks": [
+                    {
+                        # Whole-asset scope. Replace with
+                        # {"start": <samples>, "end": <samples>} once
+                        # temporal scoping is supported end-to-end.
+                        "scope": {},
+                        "value": spec.value,
+                    }
+                ],
+            },
+        }

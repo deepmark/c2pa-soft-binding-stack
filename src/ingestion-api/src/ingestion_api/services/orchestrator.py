@@ -4,22 +4,30 @@ Audio ingestion orchestrator.
 End-to-end pipeline:
 
     upload bytes
-        -> POST /embed to plugin container (raw octet-stream),
-           receive watermarked bytes + binding value
+        -> for each configured alg, POST to its plugin container:
+           - watermark plugins: /embed -> watermarked bytes + bindingValue
+             (later passes see the mutated bytes)
+           - fingerprint plugins: /compute -> bindingValue (no mutation)
         -> build C2PA manifest (EDIT intent: parent ingredient + c2pa.opened
-           injected automatically; we add c2pa.watermarked.bound + the
-           c2pa.soft-binding assertion)
+           injected automatically; we add c2pa.watermarked.bound + one
+           c2pa.soft-binding assertion per alg)
         -> sign (Builder.sign)
         -> persist signed asset + manifest bytes + metadata sidecar
-        -> auto-push manifest store + binding to resolution-api
+        -> auto-push manifest store + every binding to resolution-api
 
 Bytes never touch disk on the ingestion-api side until we write the
 signed output. The plugin call is purely HTTP, so plugin containers can
 live on a different host (no shared volume required).
+
+Alg ordering is significant: watermark passes mutate the bytes, so any
+fingerprints listed after a watermark are computed on the watermarked
+asset (the same bytes a downstream consumer would recompute from). Put
+watermarks first.
 """
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,18 +37,19 @@ from ingestion_api.core.logging import get_logger
 from ingestion_api.models.ingestion import (
     IngestionRecord,
     IngestionStatus,
-    ResolutionPushResult,
     ResolutionPushStatus,
+    SoftBindingRecord,
 )
 from ingestion_api.services.algorithms import (
+    AlgorithmEntry,
     AlgorithmNotFoundError,
-    EmbedResult,
     PluginClient,
     PluginUnavailableError,
     resolve as resolve_algorithm,
 )
-from ingestion_api.services.manifest import ManifestBuilderService
+from ingestion_api.services.manifest import ManifestBuilderService, SoftBindingSpec
 from ingestion_api.services.publisher import (
+    BindingPair,
     ResolutionPushClient,
     ResolutionPushRequest,
 )
@@ -79,6 +88,14 @@ class IngestionResult:
     manifest_bytes_path: Path | None
 
 
+@dataclass(slots=True, frozen=True)
+class _BindingPass:
+    """Output of a single plugin pass — one per configured alg."""
+    entry: AlgorithmEntry
+    binding_value: str
+    output_bytes: bytes  # bytes after this pass (watermark mutates, fingerprint passes through)
+
+
 class IngestionService:
     """Holds the long-lived collaborators. Construct once, reuse per request."""
 
@@ -88,12 +105,15 @@ class IngestionService:
         signing_service: SigningService,
         local_store: LocalAssetStore,
         resolution_client: ResolutionPushClient | None = None,
-        soft_binding_alg: str | None = None,
+        soft_binding_algs: Sequence[str] | None = None,
     ) -> None:
         self._signing_service = signing_service
         self._local_store = local_store
         self._resolution_client = resolution_client or ResolutionPushClient()
-        self._alg = soft_binding_alg or settings.default_audio_alg
+        algs = list(soft_binding_algs) if soft_binding_algs else list(settings.audio_algs)
+        if not algs:
+            raise ValueError("IngestionService requires at least one soft-binding alg")
+        self._algs: list[str] = algs
 
     async def ingest(self, payload: IngestionInput) -> IngestionResult:
         mime_type = guess_audio_format(payload.filename, payload.content_type)
@@ -128,38 +148,49 @@ class IngestionService:
         ingestion_id: str,
         artifacts: IngestionArtifacts,
     ) -> IngestionResult:
-        # 1. Resolve plugin and call /embed over HTTP.
+        loop = asyncio.get_running_loop()
+
+        # 1. Resolve every configured alg up front so we fail fast on a
+        # bad catalog before doing any plugin I/O.
         try:
-            entry = resolve_algorithm(self._alg)
+            entries = [resolve_algorithm(alg) for alg in self._algs]
         except AlgorithmNotFoundError as exc:
             raise IngestionError(str(exc)) from exc
 
-        loop = asyncio.get_running_loop()
+        # 2. Run each alg's plugin in order. Watermark passes mutate the
+        # bytes; fingerprint passes are pure reads on whatever bytes the
+        # previous pass produced.
         try:
-            embed_result = await loop.run_in_executor(
-                None,
-                lambda: self._call_plugin_embed(entry, payload.data),
+            passes = await loop.run_in_executor(
+                None, lambda: self._run_plugin_passes(entries, payload.data),
             )
         except PluginUnavailableError as exc:
             raise IngestionError(f"Plugin call failed: {exc}") from exc
 
-        watermarked = embed_result.watermarked_bytes
-        binding_value = embed_result.binding_value
-        if not watermarked:
-            raise IngestionError(
-                f"Plugin {entry.alg!r} returned an empty watermarked payload",
-            )
+        final_bytes = passes[-1].output_bytes
+        if not final_bytes:
+            raise IngestionError("Plugin chain produced an empty payload")
 
-        # 2. Build + sign manifest. Run in a thread because the SDK is sync.
+        soft_binding_specs = [
+            SoftBindingSpec(
+                alg=p.entry.alg,
+                kind=p.entry.type,
+                value=p.binding_value,
+                related_to_watermark_action=(p.entry.type == "watermark"),
+            )
+            for p in passes
+        ]
+
+        # 3. Build + sign manifest. Run in a thread because the SDK is sync.
         builder = self._make_manifest_builder()
         signed_at = datetime.now(timezone.utc)
         built = await loop.run_in_executor(
             None,
             lambda: builder.build_and_sign(
-                source_bytes=watermarked,
+                source_bytes=final_bytes,
                 dest_path=artifacts.signed_path,
                 mime_type=mime_type,
-                binding_value_b64=binding_value,
+                soft_bindings=soft_binding_specs,
                 title=payload.title or payload.filename,
             ),
         )
@@ -170,21 +201,25 @@ class IngestionService:
         else:
             manifest_bytes_path = None
 
-        # 3. Resolve manifest ID best-effort by reading back the signed asset.
+        # 4. Resolve manifest ID best-effort by reading back the signed asset.
         manifest_id = await loop.run_in_executor(
             None, self._read_active_manifest_label, artifacts.signed_path,
         )
         if not manifest_id:
             manifest_id = new_manifest_urn()
 
-        # 4. Auto-push to resolution API.
+        # 5. Auto-push to resolution API: one /manifests + one /bindings
+        # per pass.
+        bindings = [
+            BindingPair(alg=p.entry.alg, binding_value=p.binding_value)
+            for p in passes
+        ]
         push_result, push_manifest_id = await loop.run_in_executor(
             None,
             lambda: self._resolution_client.push(
                 ResolutionPushRequest(
                     manifest_bytes=built.manifest_bytes or b"",
-                    alg=self._alg,
-                    binding_value=binding_value,
+                    bindings=bindings,
                     fallback_manifest_id=manifest_id,
                 ),
             ),
@@ -194,14 +229,20 @@ class IngestionService:
         if push_result.status == ResolutionPushStatus.OK and push_manifest_id:
             manifest_id = push_manifest_id
 
+        soft_binding_records = [
+            SoftBindingRecord(
+                alg=p.entry.alg, kind=p.entry.type, bindingValue=p.binding_value,
+            )
+            for p in passes
+        ]
+
         record = IngestionRecord(
             ingestionId=ingestion_id,
             originalFilename=payload.filename,
             originalMimeType=mime_type,
             outputAssetPath=str(artifacts.signed_path),
             manifestBytesPath=str(manifest_bytes_path) if manifest_bytes_path else None,
-            alg=self._alg,
-            bindingValue=binding_value,
+            softBindings=soft_binding_records,
             manifestId=manifest_id,
             signingAlg=self._signing_service.credentials.signing_alg,
             taUrl=self._signing_service.credentials.ta_url,
@@ -214,8 +255,11 @@ class IngestionService:
         self._local_store.write_metadata(artifacts, record)
 
         logger.info(
-            "Ingestion %s OK alg=%s manifestId=%s push=%s",
-            ingestion_id, self._alg, manifest_id, push_result.status.value,
+            "Ingestion %s OK algs=%s manifestId=%s push=%s",
+            ingestion_id,
+            [r.alg for r in soft_binding_records],
+            manifest_id,
+            push_result.status.value,
         )
         return IngestionResult(
             record=record,
@@ -223,15 +267,44 @@ class IngestionService:
             manifest_bytes_path=manifest_bytes_path,
         )
 
-    def _call_plugin_embed(self, entry, audio_bytes: bytes) -> EmbedResult:
-        with PluginClient(entry) as plugin:
-            return plugin.embed(audio_bytes=audio_bytes)
+    def _run_plugin_passes(
+        self, entries: Sequence[AlgorithmEntry], initial_bytes: bytes,
+    ) -> list[_BindingPass]:
+        """Run every alg's plugin, threading mutated bytes through.
+
+        Watermark plugins replace ``current_bytes`` with their /embed
+        output; fingerprint plugins return only a binding value and
+        leave the bytes untouched.
+        """
+        passes: list[_BindingPass] = []
+        current_bytes = initial_bytes
+        for entry in entries:
+            with PluginClient(entry) as plugin:
+                if entry.type == "watermark":
+                    embed = plugin.embed(audio_bytes=current_bytes)
+                    if not embed.watermarked_bytes:
+                        raise IngestionError(
+                            f"Plugin {entry.alg!r} returned an empty watermarked payload",
+                        )
+                    current_bytes = embed.watermarked_bytes
+                    binding_value = embed.binding_value
+                elif entry.type == "fingerprint":
+                    binding_value = plugin.compute(audio_bytes=current_bytes)
+                else:
+                    raise IngestionError(
+                        f"Unsupported alg type {entry.type!r} for {entry.alg!r}"
+                    )
+            passes.append(
+                _BindingPass(
+                    entry=entry,
+                    binding_value=binding_value,
+                    output_bytes=current_bytes,
+                ),
+            )
+        return passes
 
     def _make_manifest_builder(self) -> ManifestBuilderService:
-        return ManifestBuilderService(
-            signer=self._signing_service.signer,
-            soft_binding_alg=self._alg,
-        )
+        return ManifestBuilderService(signer=self._signing_service.signer)
 
     @staticmethod
     def _read_active_manifest_label(signed_path: Path) -> str | None:

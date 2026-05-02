@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from ingestion_api.services.manifest import ManifestBuilderService
+from ingestion_api.services.manifest import ManifestBuilderService, SoftBindingSpec
 from ingestion_api.services.signing import SigningService
 from ingestion_api.utils.hashing import sha256_truncated_b64
 
@@ -22,6 +22,12 @@ BINDING_ALG = "me.deepmark.audio.vigil.128"
 def compute_binding_value(b: bytes) -> str:
     """Same derivation as the vigil-128 plugin (sha256[:16] -> base64)."""
     return sha256_truncated_b64(b, n_bits=128)
+
+
+def watermark_spec(value: str, alg: str = BINDING_ALG) -> SoftBindingSpec:
+    return SoftBindingSpec(
+        alg=alg, kind="watermark", value=value, related_to_watermark_action=True,
+    )
 
 requires_credentials = pytest.mark.skipif(
     True,
@@ -54,15 +60,12 @@ def test_signed_wav_is_produced(
     dest = tmp_path / "signed.wav"
     binding = compute_binding_value(sample_wav_bytes)
 
-    builder = ManifestBuilderService(
-        signer=signing_service.signer,
-        soft_binding_alg=BINDING_ALG,
-    )
+    builder = ManifestBuilderService(signer=signing_service.signer)
     result = builder.build_and_sign(
         source_bytes=sample_wav_bytes,
         dest_path=dest,
         mime_type="audio/wav",
-        binding_value_b64=binding,
+        soft_bindings=[watermark_spec(binding)],
         title="sample.wav",
     )
 
@@ -81,15 +84,12 @@ def test_signed_manifest_has_opened_watermarked_and_softbinding(
     """End-to-end check of the C2PA contents of the signed asset."""
     dest = tmp_path / "signed.wav"
     binding = compute_binding_value(sample_wav_bytes)
-    builder = ManifestBuilderService(
-        signer=signing_service.signer,
-        soft_binding_alg=BINDING_ALG,
-    )
+    builder = ManifestBuilderService(signer=signing_service.signer)
     builder.build_and_sign(
         source_bytes=sample_wav_bytes,
         dest_path=dest,
         mime_type="audio/wav",
-        binding_value_b64=binding,
+        soft_bindings=[watermark_spec(binding)],
         title="sample.wav",
     )
 
@@ -131,6 +131,15 @@ def test_signed_manifest_has_opened_watermarked_and_softbinding(
     blocks = sb["data"]["blocks"]
     assert blocks and blocks[0]["value"] == binding
 
+    # c2pa.watermarked.bound -> related assertion JUMBF URI points at
+    # the soft-binding we just emitted (per actions v2 spec).
+    bound = next(a for a in actions if a.get("action") == "c2pa.watermarked.bound")
+    related = bound.get("parameters", {}).get("relatedAssertions") or []
+    assert any(
+        "c2pa.soft-binding" in (r.get("url") if isinstance(r, dict) else r)
+        for r in related
+    ), f"expected relatedAssertions to reference c2pa.soft-binding, got {related}"
+
 
 def test_manifest_id_can_be_read_back(
     sample_wav_bytes: bytes,
@@ -140,15 +149,12 @@ def test_manifest_id_can_be_read_back(
     """The Reader-derived active manifest URN should be a urn:c2pa:..."""
     dest = tmp_path / "signed.wav"
     binding = compute_binding_value(sample_wav_bytes)
-    builder = ManifestBuilderService(
-        signer=signing_service.signer,
-        soft_binding_alg=BINDING_ALG,
-    )
+    builder = ManifestBuilderService(signer=signing_service.signer)
     builder.build_and_sign(
         source_bytes=sample_wav_bytes,
         dest_path=dest,
         mime_type="audio/wav",
-        binding_value_b64=binding,
+        soft_bindings=[watermark_spec(binding)],
     )
 
     from c2pa import Reader
