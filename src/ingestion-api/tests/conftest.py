@@ -26,6 +26,10 @@ os.environ.setdefault(
 )
 os.environ.setdefault("MONGODB_URL", "mongodb://localhost:27017")
 os.environ.setdefault("DATABASE_NAME", "ingestion_api_tests")
+# Tests stub the resolution client directly (see test_orchestrator.py),
+# so no real push target exists. Disable the auto-push gate so
+# Settings() validation passes without a URL.
+os.environ.setdefault("RESOLUTION_PUSH_ENABLED", "false")
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

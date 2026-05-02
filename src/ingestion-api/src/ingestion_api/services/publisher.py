@@ -3,8 +3,11 @@ Auto-push to the soft-binding resolution API.
 
 After signing, ingestion-api can post the manifest store + every
 soft-binding to resolution-api so the just-ingested asset is
-immediately resolvable via ``GET /matches/byBinding``. Configurable
-via ``RESOLUTION_API_URL``; an empty value disables.
+immediately resolvable via ``GET /matches/byBinding``. Controlled by
+``RESOLUTION_PUSH_ENABLED`` (default ``true``); when enabled,
+``RESOLUTION_API_URL`` is required (config-time validator). Set
+``RESOLUTION_PUSH_ENABLED=false`` for genuine standalone deployments
+that don't have a resolution-api downstream.
 
 Wire shape:
 1. ``POST {RESOLUTION_API_URL}/manifests`` with the raw manifest bytes
@@ -56,10 +59,22 @@ class ResolutionPushClient:
         self,
         base_url: str | None = None,
         *,
+        enabled: bool | None = None,
         timeout_s: float | None = None,
         client: httpx.Client | None = None,
     ) -> None:
-        self._base_url = (base_url if base_url is not None else settings.resolution_api_url).rstrip("/")
+        # When ``base_url`` is passed explicitly we treat that as "the
+        # caller knows what they want" and enable iff the URL is truthy
+        # — settings.RESOLUTION_PUSH_ENABLED is only the operator-level
+        # kill switch for the bare-call path used by lifespan startup.
+        explicit_url = base_url is not None
+        self._base_url = (base_url if explicit_url else settings.resolution_api_url).rstrip("/")
+        if enabled is not None:
+            self._enabled_flag = enabled
+        elif explicit_url:
+            self._enabled_flag = bool(self._base_url)
+        else:
+            self._enabled_flag = settings.resolution_push_enabled
         self._timeout = (
             timeout_s if timeout_s is not None else settings.resolution_request_timeout_s
         )
@@ -68,7 +83,7 @@ class ResolutionPushClient:
 
     @property
     def enabled(self) -> bool:
-        return bool(self._base_url)
+        return self._enabled_flag and bool(self._base_url)
 
     def close(self) -> None:
         if self._owned_client:

@@ -28,7 +28,7 @@ class IngestionStatus(str, Enum):
 class ResolutionPushStatus(str, Enum):
     OK = "ok"
     FAILED = "failed"
-    SKIPPED = "skipped"  # RESOLUTION_API_URL was empty
+    SKIPPED = "skipped"  # RESOLUTION_PUSH_ENABLED=false (standalone deploy)
 
 
 class ResolutionPushResult(BaseModel):

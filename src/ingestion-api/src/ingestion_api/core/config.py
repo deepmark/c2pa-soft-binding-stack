@@ -7,22 +7,18 @@ This service:
 - builds + signs a C2PA manifest,
 - persists signed asset + manifest bytes to disk,
 - writes an ``IngestionRecord`` to its own MongoDB database,
-- (optionally) auto-pushes the manifest store + binding to the
-  resolution API at ``RESOLUTION_API_URL``.
+- auto-pushes the manifest store + bindings to the resolution API at
+  ``RESOLUTION_API_URL`` (set ``RESOLUTION_PUSH_ENABLED=false`` to opt
+  out for standalone deployments).
 
-MongoDB here is independent of resolution-api's. Each service has its
-own ``MONGODB_URL`` + ``DATABASE_NAME`` so they can run on separate
-instances. They happen to share a container in our dev docker-compose
-but the code treats them as fully separate clusters.
-
-Required env vars: ``MONGODB_URL``, ``DATABASE_NAME``,
-``ALGORITHMS_CATALOG_PATH``, ``STORAGE_ROOT``, ``CREDENTIALS_DIR``.
+Required env vars: ``MONGODB_URL``, ``DATABASE_NAME``, 
+``STORAGE_ROOT``, ``ALGORITHMS_CATALOG_PATH``, ``CREDENTIALS_DIR``.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,7 +30,7 @@ class Settings(BaseSettings):
         "Watermark and build a signed C2PA manifests for audio assets."
     )
 
-    # MongoDB (this service's own cluster — NOT shared with resolution-api).
+    # MongoDB (Ingestion-api's own DB cluster).
     mongodb_url: str = Field(
         ...,
         description="Mongo connection string for ingestion-api's own DB.",
@@ -67,7 +63,12 @@ class Settings(BaseSettings):
     # Plugin HTTP timeouts.
     plugin_request_timeout_s: float = 60.0
 
-    # Resolution API auto-push. Empty string disables.
+    # Resolution-api auto-push. ``resolution_push_enabled=True`` (the
+    # default) requires ``resolution_api_url`` to be set — startup fails
+    # otherwise, so a forgotten env var can't silently produce orphan
+    # records that no resolver can find. Set
+    # ``RESOLUTION_PUSH_ENABLED=false`` for genuine standalone use.
+    resolution_push_enabled: bool = True
     resolution_api_url: str = ""
     resolution_request_timeout_s: float = 10.0
 
@@ -103,6 +104,16 @@ class Settings(BaseSettings):
 
     def resolved_private_key_path(self) -> Path:
         return self.private_key_path or (self.credentials_dir / "es256_private.key")
+
+    @model_validator(mode="after")
+    def _require_url_when_push_enabled(self) -> Settings:
+        if self.resolution_push_enabled and not self.resolution_api_url.strip():
+            raise ValueError(
+                "RESOLUTION_API_URL must be set when RESOLUTION_PUSH_ENABLED=true. "
+                "Set RESOLUTION_PUSH_ENABLED=false for standalone deployments "
+                "with no resolution-api downstream."
+            )
+        return self
 
 
 settings = Settings()

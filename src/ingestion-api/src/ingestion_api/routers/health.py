@@ -78,7 +78,7 @@ async def ready() -> dict:
 
     resolution_ok: bool | None = None
     resolution_err: str | None = None
-    if settings.resolution_api_url:
+    if settings.resolution_push_enabled and settings.resolution_api_url:
         try:
             with httpx.Client(timeout=2.0) as c:
                 r = c.get(settings.resolution_api_url.rstrip("/") + "/health")
@@ -118,6 +118,7 @@ async def ready() -> dict:
         },
         "plugins": plugins_report,
         "resolution_api": {
+            "push_enabled": settings.resolution_push_enabled,
             "url": settings.resolution_api_url or None,
             "ok": resolution_ok,
             "error": resolution_err,

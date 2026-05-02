@@ -6,7 +6,7 @@ App startup wires the long-lived collaborators onto ``app.state``:
 - ``app.state.artifacts``          — filesystem-backed binary artifact store
 - ``app.state.records``            — MongoDB-backed IngestionRecord repository
 - ``app.state.resolution_client``  — auto-push HTTP client (no-op when
-                                     RESOLUTION_API_URL is empty)
+                                     RESOLUTION_PUSH_ENABLED=false)
 - ``app.state.ingestion_service``  — orchestrator tying them all together
 """
 from __future__ import annotations
@@ -37,6 +37,14 @@ async def lifespan(app: FastAPI):
 
     await MongoDB.connect()
     logger.info("Connected to MongoDB at %s db=%s", settings.mongodb_url, settings.database_name)
+
+    if settings.resolution_push_enabled:
+        logger.info("Resolution-api auto-push ENABLED -> %s", settings.resolution_api_url)
+    else:
+        logger.warning(
+            "Resolution-api auto-push DISABLED (RESOLUTION_PUSH_ENABLED=false) — "
+            "ingested records will not be queryable via /matches/byBinding."
+        )
 
     app.state.artifacts = ArtifactStore()
     app.state.records = MongoIngestionRecordRepository(get_ingestions_collection())

@@ -155,7 +155,11 @@ Docker network, so for bare-metal dev you'll likely want:
 
 ```bash
 export ALGORITHMS_CATALOG_PATH=$PWD/algorithms.yaml
-export RESOLUTION_API_URL=http://127.0.0.1:8000
+export STORAGE_ROOT=$PWD/.storage
+export CREDENTIALS_DIR=$PWD/credentials
+export MONGODB_URL=mongodb://127.0.0.1:27017
+export DATABASE_NAME=c2pa_ingestions
+export RESOLUTION_API_URL=http://127.0.0.1:8000   # or RESOLUTION_PUSH_ENABLED=false
 # point ingestion-api at the local plugin instead of the docker hostname
 sed -i 's|http://watermark-vigil-128:8000|http://127.0.0.1:8101|' algorithms.yaml
 ```
@@ -211,14 +215,16 @@ Common knobs:
 
 | Env var | Service | Default | What |
 | --- | --- | --- | --- |
-| `MONGODB_URL` | resolution-api | `mongodb://localhost:27017` | Mongo URL |
-| `ALGORITHMS_CATALOG_PATH` | both | `<repo>/algorithms.yaml` | Shared YAML catalog path |
+| `MONGODB_URL` | both (independent) | resolution: `mongodb://localhost:27017` / ingestion: **required** | Each service has its own Mongo cluster |
+| `DATABASE_NAME` | both (independent) | resolution: `c2pa_soft_bindings` / ingestion: **required** | Each service has its own DB |
+| `ALGORITHMS_CATALOG_PATH` | both | **required** | Shared YAML catalog path |
 | `AUDIO_ALGS` | ingestion-api | `["me.deepmark.audio.vigil.128"]` | JSON list of soft-binding algs per ingest (watermarks first, fingerprints last) |
-| `STORAGE_ROOT` | ingestion-api | `<service>/storage` | Where signed assets + manifests + sidecars land |
-| `CREDENTIALS_DIR` | ingestion-api | `<repo>/credentials` | Cert + key root |
+| `STORAGE_ROOT` | ingestion-api | **required** | Where signed assets + manifest bytes land (records live in Mongo) |
+| `CREDENTIALS_DIR` | ingestion-api | **required** | Cert + key root |
 | `SIGNING_ALG` | ingestion-api | `ES256` | C2PA signing algorithm |
 | `TA_URL` | ingestion-api | _(unset)_ | RFC 3161 timestamp authority |
-| `RESOLUTION_API_URL` | ingestion-api | _(unset)_ → SKIP | Auto-push target. Empty = no push. |
+| `RESOLUTION_PUSH_ENABLED` | ingestion-api | `true` | Auto-push to resolution-api after sign |
+| `RESOLUTION_API_URL` | ingestion-api | _(required when push enabled)_ | Auto-push target |
 
 ## Known limitations / next steps
 

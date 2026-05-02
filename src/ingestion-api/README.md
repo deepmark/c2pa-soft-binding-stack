@@ -20,8 +20,8 @@ ingestion-api                # uvicorn on port 8001
   (default: `http://watermark-vigil-128:8000` from inside the docker
   network),
 - an ES256 cert chain + private key under `<repo>/credentials/`,
-- (optional) the resolution API URL via `RESOLUTION_API_URL=` to enable
-  auto-push.
+- a reachable resolution-api at `RESOLUTION_API_URL` (or
+  `RESOLUTION_PUSH_ENABLED=false` to opt out of auto-push entirely).
 
 ## Config
 
@@ -30,12 +30,15 @@ Settings live in `src/ingestion_api/core/config.py`. Common overrides:
 | Var | Default | What |
 | --- | --- | --- |
 | `AUDIO_ALGS` | `["me.deepmark.audio.vigil.128"]` | JSON list of soft-binding algs per ingest (watermarks first, fingerprints last) |
-| `ALGORITHMS_CATALOG_PATH` | `<repo>/algorithms.yaml` | Shared catalog |
-| `STORAGE_ROOT` | `<service>/storage` | Local artifact store |
-| `CREDENTIALS_DIR` | `<repo>/credentials` | ES256 cert + key root |
+| `MONGODB_URL` | **required** | Ingestion-api's own Mongo cluster |
+| `DATABASE_NAME` | **required** | Database for the `ingestions` collection |
+| `ALGORITHMS_CATALOG_PATH` | **required** | Shared catalog (compose mounts `/catalog/algorithms.yaml`) |
+| `STORAGE_ROOT` | **required** | Local artifact store directory |
+| `CREDENTIALS_DIR` | **required** | ES256 cert + key root |
 | `SIGNING_ALG` | `ES256` | C2PA signing algorithm |
 | `TA_URL` | _(unset)_ | RFC 3161 timestamp authority |
-| `RESOLUTION_API_URL` | _(unset)_ → SKIP | Auto-push target |
+| `RESOLUTION_PUSH_ENABLED` | `true` | Auto-push to resolution-api after sign |
+| `RESOLUTION_API_URL` | _(required when push enabled)_ | Auto-push target |
 | `LOG_LEVEL` / `LOG_JSON` | `INFO` / `false` | Logging |
 
 ## Tests
