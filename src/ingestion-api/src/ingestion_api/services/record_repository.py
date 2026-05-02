@@ -12,8 +12,7 @@ Two collections, each with a Mongo-backed and an in-memory variant:
 
 Both surfaces expose ``write`` / ``get`` / ``delete`` and are duck-typed
 across mem/Mongo so the orchestrator and routes don't care which they
-got. Writes always stamp ``updatedAt = utcnow()`` so the reconciler
-can find stale records cheaply.
+got.
 
 The split between this module (``record_repository``) and
 ``artifact_store`` is intentional: "repository" = typed records in a
@@ -21,19 +20,15 @@ database, "store" = opaque binary files on disk.
 
 A future failed-push reconciliation worker will live alongside this
 module and query Mongo directly via ``get_ingestions_collection()``;
-the indexes in ``core.database`` are sized for that workload.
+the ``push_retry_idx`` index in ``core.database`` is sized for that
+workload (sorts by ``lastPushAttemptAt`` so retries naturally drift to
+the back of the queue).
 """
 from __future__ import annotations
-
-from datetime import datetime, timezone
 
 from motor.motor_asyncio import AsyncIOMotorCollection
 
 from ingestion_api.models.ingestion import FailedIngestion, IngestionRecord
-
-
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _to_doc_ingestion(record: IngestionRecord) -> dict:
@@ -76,10 +71,6 @@ class MongoIngestionRecordRepository:
         self._col = collection
 
     async def write(self, record: IngestionRecord) -> None:
-        # Auto-stamp updatedAt so callers don't have to remember.
-        # model_copy(update=...) keeps the original immutable, which is
-        # nice for tests asserting on the input record.
-        record = record.model_copy(update={"updatedAt": _now_utc()})
         doc = _to_doc_ingestion(record)
         await self._col.replace_one({"_id": record.ingestionId}, doc, upsert=True)
 
@@ -98,9 +89,7 @@ class InMemoryIngestionRecordRepository:
         self._records: dict[str, IngestionRecord] = {}
 
     async def write(self, record: IngestionRecord) -> None:
-        self._records[record.ingestionId] = record.model_copy(
-            update={"updatedAt": _now_utc()},
-        )
+        self._records[record.ingestionId] = record
 
     async def get(self, ingestion_id: str) -> IngestionRecord | None:
         return self._records.get(ingestion_id)
@@ -121,7 +110,6 @@ class MongoFailedIngestionRepository:
         self._col = collection
 
     async def write(self, record: FailedIngestion) -> None:
-        record = record.model_copy(update={"updatedAt": _now_utc()})
         doc = _to_doc_failed(record)
         await self._col.replace_one({"_id": record.ingestionId}, doc, upsert=True)
 
@@ -140,9 +128,7 @@ class InMemoryFailedIngestionRepository:
         self._records: dict[str, FailedIngestion] = {}
 
     async def write(self, record: FailedIngestion) -> None:
-        self._records[record.ingestionId] = record.model_copy(
-            update={"updatedAt": _now_utc()},
-        )
+        self._records[record.ingestionId] = record
 
     async def get(self, ingestion_id: str) -> FailedIngestion | None:
         return self._records.get(ingestion_id)

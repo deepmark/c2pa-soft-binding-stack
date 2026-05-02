@@ -389,7 +389,6 @@ class IngestionService:
             taUrl=self._signing_service.credentials.ta_url,
             signedAt=signed_at,
             createdAt=signed_at,
-            updatedAt=signed_at,
             resolutionPushStatus=push_result.status,
             resolutionPushError=push_result.error,
             resolutionPushAttempts=push_attempts,
@@ -445,7 +444,6 @@ class IngestionService:
             attemptedAlgs=attempted_algs,
             signingCertSha1=cert_sha1,
             createdAt=now,
-            updatedAt=now,
         )
         try:
             await self._failed_records.write(record)

@@ -235,7 +235,6 @@ def test_ingest_produces_signed_asset_and_record(
     # Push happened (1 attempt) and timestamps line up.
     assert record.resolutionPushAttempts == 1
     assert record.lastPushAttemptAt == record.createdAt
-    assert record.updatedAt >= record.createdAt
 
     # Only binary artifacts on disk now — record metadata moved to Mongo.
     base = result.signed_asset_path.parent

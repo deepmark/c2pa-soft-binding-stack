@@ -10,13 +10,6 @@ Two persisted shapes, one wire shape:
   Carries whatever metadata was knowable at the failure point plus the failure stage and error.
 - ``IngestResponse`` — body of ``POST /ingest`` 
     (success path only — failures surface as HTTP 5xx).
-
-Successful records carry ``softBindings`` as a list of soft-binding
-records discriminated by ``kind`` (``watermark`` vs ``fingerprint``),
-one entry per ``c2pa.soft-binding`` assertion in the signed manifest.
-The discriminated-union pattern lets the two kinds diverge in the
-future (e.g. fingerprint adds a confidence score) without touching
-construction sites.
 """
 from __future__ import annotations
 
@@ -119,12 +112,6 @@ def make_soft_binding(
     raise ValueError(f"Unknown soft-binding kind: {kind!r}")
 
 
-# ---------------------------------------------------------------------------
-# Common shape between persisted record and HTTP response — a single
-# source of truth for the fields they share, so they can't drift.
-# ---------------------------------------------------------------------------
-
-
 class _IngestionCommon(BaseModel):
     """Fields shared by IngestionRecord and IngestResponse."""
     ingestionId: str = Field(..., description="Internal ingestion identifier")
@@ -170,10 +157,10 @@ class IngestionRecord(_IngestionCommon):
         description="Schema version of this record; migrations branch on this",
     )
 
-    # Content identity for the signed asset + the raw upload. The signed
-    # hash is the canonical fingerprint of what we serve back; the upload
-    # hash lets you detect duplicate uploads even when each gets a fresh
-    # signature/timestamp (signatures are non-deterministic for ECDSA).
+    # Content identity for the signed asset + the raw upload. 
+    # The signed hash is the canonical fingerprint of what we serve back; 
+    # the upload hash lets you detect duplicate uploads even when each gets a fresh signature/timestamp 
+    # (signatures are non-deterministic for ECDSA).
     assetSha256: str = Field(
         ..., description="SHA-256 hex digest of the signed asset bytes (64 chars)",
     )
@@ -182,23 +169,22 @@ class IngestionRecord(_IngestionCommon):
         ..., description="SHA-256 hex digest of the raw uploaded bytes (64 chars)",
     )
 
-    # Signing material identity — survives cert rotation. SHA-1 of the
-    # DER-encoded leaf cert is the standard X.509 fingerprint format.
+    # Signing material identity — survives cert rotation. 
+    # SHA-1 of the DER-encoded leaf cert is the standard X.509 fingerprint format.
     signingCertSha1: str | None = Field(
         None,
         description="SHA-1 fingerprint of the leaf signing cert (DER), 40-char hex",
     )
 
-    # Snapshot of plugin /info per alg at ingest time. Forensic value:
-    # months later you can tell which plugin version produced a binding.
+    # Snapshot of plugin /info per alg at ingest time. 
+    # Forensic value: months later you can tell which plugin version produced a binding.
     # Captured via a process-local cache to avoid an /info call per ingest.
     pluginVersions: dict[str, dict] | None = Field(
         None,
         description="Snapshot of /info per alg at ingest time (cached per process)",
     )
 
-    # Resolution-api auto-push outcome — flat columns so the reconciler
-    # can build cheap (status, age) queries without unwinding nested objects.
+    # Resolution-api auto-push outcome
     resolutionPushStatus: ResolutionPushStatus = Field(
         default=ResolutionPushStatus.SKIPPED,
         description="Outcome of pushing the signed manifest to the resolution API",
@@ -216,10 +202,6 @@ class IngestionRecord(_IngestionCommon):
         None,
         description="When the push was last attempted (None if status=SKIPPED throughout)",
     )
-
-    # Updated on every write (initial create + every reconciler retry).
-    # Lets ops queries find stale records ("not touched in 24h") cheaply.
-    updatedAt: datetime = Field(..., description="When the record was last written")
 
     @model_validator(mode="after")
     def _check_consistency(self) -> "IngestionRecord":
@@ -273,7 +255,6 @@ class FailedIngestion(BaseModel):
     )
     signingCertSha1: str | None = Field(None)
     createdAt: datetime = Field(...)
-    updatedAt: datetime = Field(...)
 
 
 # ---------------------------------------------------------------------------

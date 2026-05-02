@@ -62,64 +62,19 @@ class MongoDB:
 
     @staticmethod
     async def _ensure_ingestions_indexes(col: AsyncIOMotorCollection) -> None:
-        # Reconciliation worker — find pushes by status, ordered by age.
+        # Reconciliation worker will need to find FAILED pushes that haven't been retried recently. 
+        # Sort key is ``lastPushAttemptAt`` (not createdAt) because the reconciler
+        # bumps that field on each retry, naturally drifting the record to the back of the queue.
         await col.create_index(
-            [("resolutionPushStatus", ASCENDING), ("createdAt", ASCENDING)],
-            name="push_status_created_idx",
-        )
-        # Reconciler retry filter — "stale" records not touched recently.
-        await col.create_index(
-            [("resolutionPushStatus", ASCENDING), ("updatedAt", ASCENDING)],
-            name="push_status_updated_idx",
-        )
-        # Listing endpoint will want most-recent-first.
-        await col.create_index(
-            [("createdAt", DESCENDING)],
-            name="created_desc_idx",
-        )
-        # Cross-ingest dedup / "have I seen this exact upload before?".
-        await col.create_index(
-            [("uploadSha256", ASCENDING)],
-            name="upload_sha_idx",
-        )
-        # Lookup by canonical signed-asset identity (e.g. for verification flows).
-        await col.create_index(
-            [("assetSha256", ASCENDING)],
-            name="asset_sha_idx",
-        )
-        # Foreign-key into resolution-api — given a manifestId, find which
-        # ingestion produced it.
-        await col.create_index(
-            [("manifestId", ASCENDING)],
-            name="manifest_id_idx",
-        )
-        # Filter by media category for ops/analytics queries.
-        await col.create_index(
-            [("mediaType", ASCENDING), ("createdAt", DESCENDING)],
-            name="media_type_created_idx",
+            [("resolutionPushStatus", ASCENDING), ("lastPushAttemptAt", ASCENDING)],
+            name="push_retry_idx",
         )
 
     @staticmethod
     async def _ensure_failed_ingestions_indexes(col: AsyncIOMotorCollection) -> None:
-        # Ops dashboard — recent failures.
         await col.create_index(
             [("createdAt", DESCENDING)],
             name="failed_created_desc_idx",
-        )
-        # Drill-down by failure stage.
-        await col.create_index(
-            [("failureStage", ASCENDING), ("createdAt", DESCENDING)],
-            name="failed_stage_created_idx",
-        )
-        # Cross-correlate with successful records on the same upload.
-        await col.create_index(
-            [("uploadSha256", ASCENDING)],
-            name="failed_upload_sha_idx",
-        )
-        # Filter failures by media category.
-        await col.create_index(
-            [("mediaType", ASCENDING), ("createdAt", DESCENDING)],
-            name="failed_media_type_created_idx",
         )
 
 
