@@ -39,16 +39,16 @@ import io
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from c2pa import Builder, C2paBuilderIntent, Signer
 
 from ingestion_api.core.config import settings
 from ingestion_api.core.logging import get_logger
+from ingestion_api.models.ingestion import SoftBindingKind
 
 logger = get_logger(__name__)
 
-SoftBindingKind = Literal["watermark", "fingerprint"]
 SOFT_BINDING_LABEL = "c2pa.soft-binding"
 # JUMBF URI prefix for self-references to assertions in this manifest.
 # C2PA action v2 ``parameters.relatedAssertions`` requires hashed JUMBF

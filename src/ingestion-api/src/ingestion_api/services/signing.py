@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from c2pa import C2paSigningAlg, Signer
+from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 
@@ -51,6 +52,24 @@ class SignerCredentials:
             signing_alg=settings.signing_alg,
             ta_url=settings.ta_url,
         )
+
+    def cert_sha1(self) -> str | None:
+        """SHA-1 fingerprint of the leaf cert (DER) — standard X.509 fingerprint.
+
+        The leaf is the FIRST certificate in the chain PEM. Returns None
+        if the chain file is missing or unparseable; signing itself
+        validates presence, so a None here is forensic-only.
+        """
+        try:
+            pem_bytes = self.cert_chain_path.read_bytes()
+            certs = x509.load_pem_x509_certificates(pem_bytes)
+            if not certs:
+                return None
+            der = certs[0].public_bytes(serialization.Encoding.DER)
+            import hashlib
+            return hashlib.sha1(der).hexdigest()  # noqa: S324 - X.509 fingerprint format
+        except (OSError, ValueError):
+            return None
 
     def validate(self) -> None:
         if not self.cert_chain_path.is_file():

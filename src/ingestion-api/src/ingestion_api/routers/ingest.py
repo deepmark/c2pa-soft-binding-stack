@@ -21,7 +21,6 @@ from ingestion_api.models.ingestion import (
     IngestionRecord,
     IngestResponse,
     ResolutionPushResult,
-    ResolutionPushStatus,
 )
 from ingestion_api.services.artifact_store import ArtifactStore
 from ingestion_api.services.orchestrator import (
@@ -60,12 +59,18 @@ def get_record_repository(request: Request) -> MongoIngestionRecordRepository:
     return repo
 
 
-def _build_response(record: IngestionRecord, request: Request) -> IngestResponse:
+def _build_response(
+    record: IngestionRecord,
+    request: Request,
+    artifacts: ArtifactStore,
+) -> IngestResponse:
     base = str(request.base_url).rstrip("/")
     output_url = f"{base}/ingest/{record.ingestionId}/asset"
+    # Derive manifestUrl from the artifact store rather than persisting
+    # path metadata on the record. Cheap (single stat() call).
     manifest_url = (
         f"{base}/ingest/{record.ingestionId}/manifest"
-        if record.manifestBytesPath
+        if artifacts.load_manifest_bytes_path(record.ingestionId)
         else None
     )
     push_result = ResolutionPushResult(
@@ -76,8 +81,8 @@ def _build_response(record: IngestionRecord, request: Request) -> IngestResponse
         ingestionId=record.ingestionId,
         manifestId=record.manifestId,
         softBindings=record.softBindings,
-        originalFilename=record.originalFilename,
-        originalMimeType=record.originalMimeType,
+        mimeType=record.mimeType,
+        assetSha256=record.assetSha256,
         outputAssetUrl=output_url,
         manifestUrl=manifest_url,
         signingAlg=record.signingAlg,
@@ -104,6 +109,7 @@ async def ingest_audio(
     file: UploadFile = File(..., description="Audio file (WAV preferred)"),
     title: str | None = Form(None, description="Optional manifest title"),
     service: IngestionService = Depends(get_ingestion_service),
+    artifacts: ArtifactStore = Depends(get_artifact_store),
 ) -> IngestResponse:
     data = await file.read()
     if not data:
@@ -131,7 +137,7 @@ async def ingest_audio(
         logger.exception("Unexpected ingest failure")
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
 
-    return _build_response(result.record, request)
+    return _build_response(result.record, request, artifacts)
 
 
 @router.get(
@@ -167,7 +173,7 @@ async def get_signed_asset(
     if path is None:
         raise HTTPException(status_code=404, detail="Signed asset not found")
     record = await records.get(ingestionId)
-    media_type = record.originalMimeType if record else "application/octet-stream"
+    media_type = record.mimeType if record else "application/octet-stream"
     return FileResponse(path, media_type=media_type, filename=path.name)
 
 
@@ -195,9 +201,6 @@ async def get_manifest_bytes(
     include_in_schema=False,
 )
 async def ingest_root() -> JSONResponse:
-    # Suppress unused import warning when ResolutionPushStatus isn't referenced
-    # anywhere else in this module (keeps the model API surface explicit).
-    _ = ResolutionPushStatus
     return JSONResponse(
         {"detail": "POST /ingest with a multipart form field `file=` to ingest audio."}
     )

@@ -19,21 +19,30 @@ from pathlib import Path
 import pytest
 
 from ingestion_api.models.ingestion import (
-    IngestionStatus,
+    FailureStage,
     ResolutionPushResult,
     ResolutionPushStatus,
 )
 from ingestion_api.services import algorithms as algorithms_module
-from ingestion_api.services.algorithms import AlgorithmEntry, EmbedResult
+from ingestion_api.services.algorithms import (
+    AlgorithmEntry,
+    EmbedResult,
+    PluginUnavailableError,
+    reset_plugin_info_cache,
+)
 from ingestion_api.services.artifact_store import ArtifactStore
 from ingestion_api.services.orchestrator import (
+    IngestionError,
     IngestionInput,
     IngestionService,
     UnsupportedAudioFormatError,
 )
-from ingestion_api.services.record_repository import InMemoryIngestionRecordRepository
+from ingestion_api.services.record_repository import (
+    InMemoryFailedIngestionRepository,
+    InMemoryIngestionRecordRepository,
+)
 from ingestion_api.services.signing import SigningService
-from ingestion_api.utils.hashing import sha256_truncated_b64
+from ingestion_api.utils.hashing import sha256_hex, sha256_truncated_b64
 
 BINDING_ALG = "me.deepmark.audio.vigil.128"
 
@@ -68,6 +77,14 @@ class _StubPluginClient:
         # Stand-in for a fingerprint plugin: pure read, deterministic value.
         return "fp:" + _binding_value(audio_bytes)
 
+    def info_cached(self) -> dict:
+        return {
+            "alg": self.entry.alg,
+            "type": self.entry.type,
+            "valueBits": self.entry.value_bits,
+            "version": "stub-0.0.1",
+        }
+
 
 class _StubResolutionClient:
     """Always-OK auto-push stub. Records calls for assertions."""
@@ -96,6 +113,19 @@ def artifacts(tmp_path: Path) -> ArtifactStore:
 @pytest.fixture
 def records() -> InMemoryIngestionRecordRepository:
     return InMemoryIngestionRecordRepository()
+
+
+@pytest.fixture
+def failed_records() -> InMemoryFailedIngestionRepository:
+    return InMemoryFailedIngestionRepository()
+
+
+@pytest.fixture(autouse=True)
+def _reset_plugin_info_cache():
+    """The plugin info cache is process-global; wipe between tests."""
+    reset_plugin_info_cache()
+    yield
+    reset_plugin_info_cache()
 
 
 @pytest.fixture
@@ -140,6 +170,7 @@ def ingestion_service(
     signing_service: SigningService,
     artifacts: ArtifactStore,
     records: InMemoryIngestionRecordRepository,
+    failed_records: InMemoryFailedIngestionRepository,
     stub_resolution: _StubResolutionClient,
     patched_plugin: AlgorithmEntry,
 ) -> IngestionService:
@@ -147,6 +178,7 @@ def ingestion_service(
         signing_service=signing_service,
         artifacts=artifacts,
         records=records,
+        failed_records=failed_records,
         resolution_client=stub_resolution,
         soft_binding_algs=[BINDING_ALG],
     )
@@ -177,15 +209,30 @@ def test_ingest_produces_signed_asset_and_record(
     assert result.manifest_bytes_path.is_file()
 
     record = result.record
-    assert record.status is IngestionStatus.OK
     assert len(record.softBindings) == 1
     only = record.softBindings[0]
     assert only.alg == BINDING_ALG
     assert only.kind == "watermark"
     assert only.bindingValue == _binding_value(sample_wav_bytes)
-    assert record.originalFilename == "sample.wav"
-    assert record.originalMimeType == "audio/wav"
+    assert record.mimeType == "audio/wav"
     assert record.resolutionPushStatus is ResolutionPushStatus.OK
+    # New: content identity + cert + plugin snapshot.
+    assert record.uploadSha256 == sha256_hex(sample_wav_bytes)
+    assert len(record.assetSha256) == 64  # SHA-256 hex
+    assert record.assetSizeBytes > 0
+    assert record.signingCertSha1 is None or len(record.signingCertSha1) == 40
+    assert record.pluginVersions == {
+        BINDING_ALG: {
+            "alg": BINDING_ALG,
+            "type": "watermark",
+            "valueBits": 128,
+            "version": "stub-0.0.1",
+        },
+    }
+    # Push happened (1 attempt) and timestamps line up.
+    assert record.resolutionPushAttempts == 1
+    assert record.lastPushAttemptAt == record.createdAt
+    assert record.updatedAt >= record.createdAt
 
     # Only binary artifacts on disk now — record metadata moved to Mongo.
     base = result.signed_asset_path.parent
@@ -233,10 +280,13 @@ def test_ingest_records_failed_push(
     signing_service: SigningService,
     artifacts: ArtifactStore,
     records: InMemoryIngestionRecordRepository,
+    failed_records: InMemoryFailedIngestionRepository,
     patched_plugin: AlgorithmEntry,
     sample_wav_bytes: bytes,
 ):
-    """Resolution-api 5xx -> record FAILED, ingest still succeeds."""
+    """Resolution-api 5xx -> ingestion record persisted with push status FAILED.
+    No FailedIngestion is written (this is a downstream push failure, not a
+    pipeline failure)."""
 
     class _FailingResolution:
         enabled = True
@@ -251,6 +301,7 @@ def test_ingest_records_failed_push(
         signing_service=signing_service,
         artifacts=artifacts,
         records=records,
+        failed_records=failed_records,
         resolution_client=_FailingResolution(),
         soft_binding_algs=[BINDING_ALG],
     )
@@ -264,9 +315,86 @@ def test_ingest_records_failed_push(
             )
         )
     )
-    assert result.record.status is IngestionStatus.OK
     assert result.record.resolutionPushStatus is ResolutionPushStatus.FAILED
     assert result.record.resolutionPushError == "boom"
+    assert result.record.resolutionPushAttempts == 1
+    # Pipeline succeeded; FailedIngestion collection stays empty.
+    assert asyncio.run(failed_records.get(result.record.ingestionId)) is None
+
+
+def test_pipeline_failure_persists_failed_ingestion(
+    signing_service: SigningService,
+    artifacts: ArtifactStore,
+    records: InMemoryIngestionRecordRepository,
+    failed_records: InMemoryFailedIngestionRepository,
+    monkeypatch,
+    stub_resolution: _StubResolutionClient,
+    sample_wav_bytes: bytes,
+):
+    """Plugin /embed unreachable -> IngestionError + FailedIngestion persisted."""
+    entry = AlgorithmEntry(
+        alg=BINDING_ALG,
+        type="watermark",
+        value_bits=128,
+        media_types=("audio/wav",),
+        url="http://stubbed:8000",
+    )
+    from ingestion_api.services import orchestrator as orchestrator_module
+
+    class _BrokenPluginClient:
+        def __init__(self, e, **_kw):
+            self.entry = e
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def embed(self, **_kw):
+            raise PluginUnavailableError("connection refused")
+
+        def info_cached(self):
+            return {"version": "broken"}
+
+    monkeypatch.setattr(algorithms_module, "resolve", lambda alg, **_: entry)
+    monkeypatch.setattr(orchestrator_module, "PluginClient", _BrokenPluginClient)
+    monkeypatch.setattr(orchestrator_module, "resolve_algorithm", lambda a, **_: entry)
+
+    svc = IngestionService(
+        signing_service=signing_service,
+        artifacts=artifacts,
+        records=records,
+        failed_records=failed_records,
+        resolution_client=stub_resolution,
+        soft_binding_algs=[BINDING_ALG],
+    )
+
+    with pytest.raises(IngestionError) as exc_info:
+        asyncio.run(
+            svc.ingest(
+                IngestionInput(
+                    filename="sample.wav",
+                    content_type="audio/wav",
+                    data=sample_wav_bytes,
+                )
+            )
+        )
+
+    assert exc_info.value.stage is FailureStage.PLUGIN_PASS
+
+    # Failed record persisted with stage + upload identity preserved.
+    failures = list(failed_records._records.values())  # noqa: SLF001
+    assert len(failures) == 1
+    failed = failures[0]
+    assert failed.failureStage is FailureStage.PLUGIN_PASS
+    assert failed.uploadSha256 == sha256_hex(sample_wav_bytes)
+    assert failed.attemptedAlgs == [BINDING_ALG]
+    assert "connection refused" in failed.error
+    assert failed.mimeType == "audio/wav"
+
+    # No success record written.
+    assert asyncio.run(records.get(failed.ingestionId)) is None
 
 
 def test_ingest_rejects_unsupported_format(
@@ -325,6 +453,7 @@ def test_ingest_with_watermark_plus_fingerprint(
     signing_service: SigningService,
     artifacts: ArtifactStore,
     records: InMemoryIngestionRecordRepository,
+    failed_records: InMemoryFailedIngestionRepository,
     stub_resolution: _StubResolutionClient,
     sample_wav_bytes: bytes,
 ):
@@ -357,6 +486,7 @@ def test_ingest_with_watermark_plus_fingerprint(
         signing_service=signing_service,
         artifacts=artifacts,
         records=records,
+        failed_records=failed_records,
         resolution_client=stub_resolution,
         soft_binding_algs=[BINDING_ALG, FP_ALG],
     )

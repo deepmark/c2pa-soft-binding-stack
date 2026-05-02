@@ -33,20 +33,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import httpx
 import yaml
 
 from ingestion_api.core.config import settings
 from ingestion_api.core.logging import get_logger
+from ingestion_api.models.ingestion import SoftBindingKind
 
 logger = get_logger(__name__)
 
-AlgorithmType = Literal["watermark", "fingerprint"]
-
 BINDING_VALUE_HEADER = "X-Binding-Value"
 OCTET_STREAM = "application/octet-stream"
+
+# Process-local cache for ``/info`` results, keyed on the plugin URL.
+# No TTL: assumes plugin redeploys are paired with a rolling restart of
+# ingestion-api. Per-worker (each uvicorn worker has its own dict).
+_PLUGIN_INFO_CACHE: dict[str | None, dict] = {}
+
+
+def reset_plugin_info_cache() -> None:
+    """Test/admin helper. Production code shouldn't need this."""
+    _PLUGIN_INFO_CACHE.clear()
 
 
 class AlgorithmNotFoundError(LookupError):
@@ -60,7 +68,7 @@ class PluginUnavailableError(RuntimeError):
 @dataclass(slots=True, frozen=True)
 class AlgorithmEntry:
     alg: str
-    type: AlgorithmType
+    type: SoftBindingKind
     value_bits: int | None
     media_types: tuple[str, ...]
     url: str | None
@@ -137,7 +145,7 @@ class PluginClient:
         return self._entry.alg
 
     @property
-    def type(self) -> AlgorithmType:
+    def type(self) -> SoftBindingKind:
         return self._entry.type
 
     def close(self) -> None:
@@ -152,6 +160,23 @@ class PluginClient:
 
     def info(self) -> dict:
         return self._get_json("/info")
+
+    def info_cached(self) -> dict:
+        """``/info`` result, cached per-process keyed on plugin URL.
+
+        Forensic data we capture per-ingest (``IngestionRecord.pluginVersions``)
+        rarely changes — caching avoids one HTTP call per plugin per
+        ingest. Cache is wiped on process restart, so deploying a new
+        plugin version + a rolling restart of ingestion-api is the
+        canonical way to refresh it.
+        """
+        cached = _PLUGIN_INFO_CACHE.get(self._entry.url)
+        if cached is not None:
+            return cached
+        info = self.info()
+        if self._entry.url:
+            _PLUGIN_INFO_CACHE[self._entry.url] = info
+        return info
 
     def health(self) -> dict:
         return self._get_json("/health")

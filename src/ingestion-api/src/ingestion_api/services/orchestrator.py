@@ -14,10 +14,16 @@ End-to-end pipeline:
         -> sign (Builder.sign)
         -> extract canonical manifestId from signed asset (hard fail
            if SDK can't surface it — better than fabricating a UUID)
-        -> persist signed asset + manifest bytes to disk
-        -> persist IngestionRecord to MongoDB
+        -> persist signed asset + manifest bytes to disk (ArtifactStore)
+        -> persist IngestionRecord to MongoDB (with content hashes,
+           cert fingerprint, plugin /info snapshot)
         -> auto-push manifest store + every binding to resolution-api
            (which derives the same manifestId from the same bytes)
+
+Pipeline failures (after we've allocated an ingestion_id) get
+persisted to the ``failed_ingestions`` collection with whatever
+metadata was knowable at the failure point. Pre-allocate failures
+(unsupported MIME) still raise as 4xx and are not persisted.
 
 Bytes never touch disk on the ingestion-api side until we write the
 signed output. The plugin call is purely HTTP, so plugin containers can
@@ -39,10 +45,12 @@ from pathlib import Path
 from ingestion_api.core.config import settings
 from ingestion_api.core.logging import get_logger
 from ingestion_api.models.ingestion import (
+    FailedIngestion,
+    FailureStage,
     IngestionRecord,
-    IngestionStatus,
     ResolutionPushStatus,
     SoftBindingRecord,
+    make_soft_binding,
 )
 from ingestion_api.services.algorithms import (
     AlgorithmEntry,
@@ -58,24 +66,36 @@ from ingestion_api.services.publisher import (
     ResolutionPushClient,
     ResolutionPushRequest,
 )
-from ingestion_api.services.record_repository import MongoIngestionRecordRepository
+from ingestion_api.services.record_repository import (
+    MongoFailedIngestionRepository,
+    MongoIngestionRecordRepository,
+)
 from ingestion_api.services.signing import SigningService
 from ingestion_api.utils.audio import (
     SUPPORTED_AUDIO_EXTENSIONS,
     SUPPORTED_AUDIO_MIME_TYPES,
     guess_audio_format,
 )
+from ingestion_api.utils.hashing import sha256_hex
 from ingestion_api.utils.ids import new_ingestion_id
 
 logger = get_logger(__name__)
 
 
 class IngestionError(RuntimeError):
-    """Generic ingestion failure with a stable HTTP-friendly message."""
+    """Generic ingestion failure with a stable HTTP-friendly message.
+
+    Carries a ``stage`` so the orchestrator's failure-persistence layer
+    can record where in the pipeline things blew up.
+    """
+
+    def __init__(self, msg: str, *, stage: FailureStage = FailureStage.UNKNOWN) -> None:
+        super().__init__(msg)
+        self.stage = stage
 
 
 class UnsupportedAudioFormatError(IngestionError):
-    pass
+    """4xx-class — raised before we've allocated an ingestion id, never persisted."""
 
 
 @dataclass(slots=True)
@@ -110,12 +130,14 @@ class IngestionService:
         signing_service: SigningService,
         artifacts: ArtifactStore,
         records: MongoIngestionRecordRepository,
+        failed_records: MongoFailedIngestionRepository | None = None,
         resolution_client: ResolutionPushClient | None = None,
         soft_binding_algs: Sequence[str] | None = None,
     ) -> None:
         self._signing_service = signing_service
         self._artifacts = artifacts
         self._records = records
+        self._failed_records = failed_records
         self._resolution_client = resolution_client or ResolutionPushClient()
         algs = list(soft_binding_algs) if soft_binding_algs else list(settings.audio_algs)
         if not algs:
@@ -125,6 +147,7 @@ class IngestionService:
     async def ingest(self, payload: IngestionInput) -> IngestionResult:
         mime_type = guess_audio_format(payload.filename, payload.content_type)
         if mime_type is None:
+            # Pre-allocate failure: caller bug, never persisted.
             raise UnsupportedAudioFormatError(
                 f"Unsupported audio format: filename={payload.filename!r} "
                 f"content_type={payload.content_type!r}. "
@@ -137,13 +160,22 @@ class IngestionService:
             ext = upload_ext
 
         ingestion_id = new_ingestion_id()
+        upload_sha256 = sha256_hex(payload.data)
         artifacts = self._artifacts.allocate(ingestion_id, ext=ext)
 
         try:
             return await self._run_pipeline(
-                payload, mime_type, ext, ingestion_id, artifacts,
+                payload, mime_type, ingestion_id, upload_sha256, artifacts,
             )
-        except Exception:
+        except Exception as exc:
+            stage = getattr(exc, "stage", FailureStage.UNKNOWN)
+            await self._persist_failure(
+                ingestion_id=ingestion_id,
+                mime_type=mime_type,
+                upload_sha256=upload_sha256,
+                stage=stage,
+                error=str(exc),
+            )
             self._artifacts.cleanup(artifacts)
             raise
 
@@ -151,8 +183,8 @@ class IngestionService:
         self,
         payload: IngestionInput,
         mime_type: str,
-        ext: str,
         ingestion_id: str,
+        upload_sha256: str,
         artifacts: IngestionArtifacts,
     ) -> IngestionResult:
         loop = asyncio.get_running_loop()
@@ -162,7 +194,7 @@ class IngestionService:
         try:
             entries = [resolve_algorithm(alg) for alg in self._algs]
         except AlgorithmNotFoundError as exc:
-            raise IngestionError(str(exc)) from exc
+            raise IngestionError(str(exc), stage=FailureStage.PLUGIN_PASS) from exc
 
         # 2. Run each alg's plugin in order. Watermark passes mutate the
         # bytes; fingerprint passes are pure reads on whatever bytes the
@@ -172,11 +204,16 @@ class IngestionService:
                 None, lambda: self._run_plugin_passes(entries, payload.data),
             )
         except PluginUnavailableError as exc:
-            raise IngestionError(f"Plugin call failed: {exc}") from exc
+            raise IngestionError(
+                f"Plugin call failed: {exc}", stage=FailureStage.PLUGIN_PASS,
+            ) from exc
 
         final_bytes = passes[-1].output_bytes
         if not final_bytes:
-            raise IngestionError("Plugin chain produced an empty payload")
+            raise IngestionError(
+                "Plugin chain produced an empty payload",
+                stage=FailureStage.PLUGIN_PASS,
+            )
 
         soft_binding_specs = [
             SoftBindingSpec(
@@ -191,16 +228,23 @@ class IngestionService:
         # 3. Build + sign manifest. Run in a thread because the SDK is sync.
         builder = self._make_manifest_builder()
         signed_at = datetime.now(timezone.utc)
-        built = await loop.run_in_executor(
-            None,
-            lambda: builder.build_and_sign(
-                source_bytes=final_bytes,
-                dest_path=artifacts.signed_path,
-                mime_type=mime_type,
-                soft_bindings=soft_binding_specs,
-                title=payload.title or payload.filename,
-            ),
-        )
+        try:
+            built = await loop.run_in_executor(
+                None,
+                lambda: builder.build_and_sign(
+                    source_bytes=final_bytes,
+                    dest_path=artifacts.signed_path,
+                    mime_type=mime_type,
+                    soft_bindings=soft_binding_specs,
+                    title=payload.title or payload.filename,
+                ),
+            )
+        except IngestionError:
+            raise
+        except Exception as exc:
+            raise IngestionError(
+                f"Manifest sign failed: {exc}", stage=FailureStage.MANIFEST_SIGN,
+            ) from exc
 
         if built.manifest_bytes:
             self._artifacts.write_manifest_bytes(artifacts, built.manifest_bytes)
@@ -209,11 +253,6 @@ class IngestionService:
             manifest_bytes_path = None
 
         # 4. Extract the canonical manifest URN from the signed asset.
-        # This is the single source of truth: resolution-api will derive
-        # the same value from the same manifest bytes, so we don't need
-        # a fallback or override path. If extraction fails, the signing
-        # pipeline produced something we can't identify — treat as a
-        # hard error rather than fabricating a UUID.
         manifest_id = await loop.run_in_executor(
             None, self._read_active_manifest_label, artifacts.signed_path,
         )
@@ -221,8 +260,16 @@ class IngestionService:
             raise IngestionError(
                 "Could not extract active manifestId from signed asset — "
                 "C2PA Reader returned no active_manifest label. This "
-                "indicates a signing pipeline bug."
+                "indicates a signing pipeline bug.",
+                stage=FailureStage.MANIFEST_ID_EXTRACT,
             )
+
+        # Content + signing identity for the persisted record.
+        signed_bytes = artifacts.signed_path.read_bytes()
+        asset_sha256 = sha256_hex(signed_bytes)
+        asset_size_bytes = len(signed_bytes)
+        signing_cert_sha1 = self._signing_service.credentials.cert_sha1()
+        plugin_versions = self._capture_plugin_versions(entries)
 
         # 5. Auto-push to resolution API: one /manifests + one /bindings
         # per pass. Resolution-api derives the same manifestId from the
@@ -231,6 +278,7 @@ class IngestionService:
             BindingPair(alg=p.entry.alg, binding_value=p.binding_value)
             for p in passes
         ]
+        push_attempted = self._resolution_client.enabled
         push_result = await loop.run_in_executor(
             None,
             lambda: self._resolution_client.push(
@@ -241,9 +289,11 @@ class IngestionService:
                 ),
             ),
         )
+        last_push_attempt_at = signed_at if push_attempted else None
+        push_attempts = 1 if push_attempted else 0
 
-        soft_binding_records = [
-            SoftBindingRecord(
+        soft_binding_records: list[SoftBindingRecord] = [
+            make_soft_binding(
                 alg=p.entry.alg, kind=p.entry.type, bindingValue=p.binding_value,
             )
             for p in passes
@@ -251,27 +301,32 @@ class IngestionService:
 
         record = IngestionRecord(
             ingestionId=ingestion_id,
-            originalFilename=payload.filename,
-            originalMimeType=mime_type,
-            outputAssetPath=str(artifacts.signed_path),
-            manifestBytesPath=str(manifest_bytes_path) if manifest_bytes_path else None,
+            mimeType=mime_type,
             softBindings=soft_binding_records,
             manifestId=manifest_id,
+            assetSha256=asset_sha256,
+            assetSizeBytes=asset_size_bytes,
+            uploadSha256=upload_sha256,
+            signingCertSha1=signing_cert_sha1,
+            pluginVersions=plugin_versions,
             signingAlg=self._signing_service.credentials.signing_alg,
             taUrl=self._signing_service.credentials.ta_url,
             signedAt=signed_at,
             createdAt=signed_at,
-            status=IngestionStatus.OK,
+            updatedAt=signed_at,
             resolutionPushStatus=push_result.status,
             resolutionPushError=push_result.error,
+            resolutionPushAttempts=push_attempts,
+            lastPushAttemptAt=last_push_attempt_at,
         )
         await self._records.write(record)
 
         logger.info(
-            "Ingestion %s OK algs=%s manifestId=%s push=%s",
+            "Ingestion %s OK algs=%s manifestId=%s asset_sha=%s push=%s",
             ingestion_id,
             [r.alg for r in soft_binding_records],
             manifest_id,
+            asset_sha256[:12],
             push_result.status.value,
         )
         return IngestionResult(
@@ -279,6 +334,67 @@ class IngestionService:
             signed_asset_path=artifacts.signed_path,
             manifest_bytes_path=manifest_bytes_path,
         )
+
+    async def _persist_failure(
+        self,
+        *,
+        ingestion_id: str,
+        mime_type: str | None,
+        upload_sha256: str,
+        stage: FailureStage,
+        error: str,
+    ) -> None:
+        """Best-effort write of a FailedIngestion. Never raises."""
+        if self._failed_records is None:
+            logger.warning(
+                "Pipeline failure %s stage=%s not persisted (no failed_records repo)",
+                ingestion_id, stage.value,
+            )
+            return
+        now = datetime.now(timezone.utc)
+        try:
+            cert_sha1 = self._signing_service.credentials.cert_sha1()
+        except Exception:
+            cert_sha1 = None
+        record = FailedIngestion(
+            ingestionId=ingestion_id,
+            failureStage=stage,
+            error=error,
+            mimeType=mime_type,
+            uploadSha256=upload_sha256,
+            attemptedAlgs=list(self._algs),
+            signingCertSha1=cert_sha1,
+            createdAt=now,
+            updatedAt=now,
+        )
+        try:
+            await self._failed_records.write(record)
+            logger.info(
+                "Persisted failed ingestion %s stage=%s", ingestion_id, stage.value,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist FailedIngestion for %s", ingestion_id,
+            )
+
+    def _capture_plugin_versions(
+        self, entries: Sequence[AlgorithmEntry],
+    ) -> dict[str, dict] | None:
+        """Snapshot ``/info`` per alg via the cached PluginClient.info_cached().
+
+        Returns None if every plugin probe fails — keeps the record
+        clean (no `{}`) when plugin metadata isn't available.
+        """
+        snapshots: dict[str, dict] = {}
+        for entry in entries:
+            try:
+                with PluginClient(entry) as plugin:
+                    snapshots[entry.alg] = plugin.info_cached()
+            except Exception:
+                logger.debug(
+                    "Could not capture /info for alg=%s", entry.alg, exc_info=True,
+                )
+        return snapshots or None
 
     def _run_plugin_passes(
         self, entries: Sequence[AlgorithmEntry], initial_bytes: bytes,
@@ -298,6 +414,7 @@ class IngestionService:
                     if not embed.watermarked_bytes:
                         raise IngestionError(
                             f"Plugin {entry.alg!r} returned an empty watermarked payload",
+                            stage=FailureStage.PLUGIN_PASS,
                         )
                     current_bytes = embed.watermarked_bytes
                     binding_value = embed.binding_value
@@ -305,7 +422,8 @@ class IngestionService:
                     binding_value = plugin.compute(audio_bytes=current_bytes)
                 else:
                     raise IngestionError(
-                        f"Unsupported alg type {entry.type!r} for {entry.alg!r}"
+                        f"Unsupported alg type {entry.type!r} for {entry.alg!r}",
+                        stage=FailureStage.PLUGIN_PASS,
                     )
             passes.append(
                 _BindingPass(

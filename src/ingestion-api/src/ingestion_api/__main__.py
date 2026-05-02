@@ -18,13 +18,20 @@ import uvicorn
 from fastapi import FastAPI
 
 from ingestion_api.core.config import settings
-from ingestion_api.core.database import MongoDB, get_ingestions_collection
+from ingestion_api.core.database import (
+    MongoDB,
+    get_failed_ingestions_collection,
+    get_ingestions_collection,
+)
 from ingestion_api.core.logging import configure_logging, get_logger
 from ingestion_api.routers import health, ingest
 from ingestion_api.services.artifact_store import ArtifactStore
 from ingestion_api.services.orchestrator import IngestionService
 from ingestion_api.services.publisher import ResolutionPushClient
-from ingestion_api.services.record_repository import MongoIngestionRecordRepository
+from ingestion_api.services.record_repository import (
+    MongoFailedIngestionRepository,
+    MongoIngestionRecordRepository,
+)
 from ingestion_api.services.signing import SigningService
 
 logger = get_logger(__name__)
@@ -48,12 +55,16 @@ async def lifespan(app: FastAPI):
 
     app.state.artifacts = ArtifactStore()
     app.state.records = MongoIngestionRecordRepository(get_ingestions_collection())
+    app.state.failed_records = MongoFailedIngestionRepository(
+        get_failed_ingestions_collection(),
+    )
     app.state.signing_service = SigningService()
     app.state.resolution_client = ResolutionPushClient()
     app.state.ingestion_service = IngestionService(
         signing_service=app.state.signing_service,
         artifacts=app.state.artifacts,
         records=app.state.records,
+        failed_records=app.state.failed_records,
         resolution_client=app.state.resolution_client,
         soft_binding_algs=settings.audio_algs,
     )
