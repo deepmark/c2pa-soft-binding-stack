@@ -8,20 +8,40 @@ auto-pushes to the resolution API, and returns JSON describing the
 resulting artifacts with download URLs.
 
 Helpers:
-- ``GET /ingest/{ingestionId}/asset``    download signed asset
-- ``GET /ingest/{ingestionId}/manifest`` download raw signed manifest bytes
-- ``GET /ingest/{ingestionId}``          ingestion record (from MongoDB)
+- ``GET    /ingestions``                  page through ingestions (cursor)
+- ``GET    /ingest/{ingestionId}``        ingestion record (from MongoDB)
+- ``GET    /ingest/{ingestionId}/asset``    download signed asset
+- ``GET    /ingest/{ingestionId}/manifest`` download raw signed manifest bytes
+- ``DELETE /ingest/{ingestionId}``        local takedown (artifacts + record)
+
+Edge concerns owned here (out-of-scope: auth, rate limiting, body-size
+caps — the last is the reverse proxy's job):
+- 415 for unsupported MIME, 400 for caller-shape errors.
+- 503 mapped from ``MissingSigningMaterialError`` (cert/key vanished).
+- Hybrid absolute-URL builder: ``settings.public_base_url`` wins,
+  otherwise ``request.base_url`` rewritten by ProxyHeadersMiddleware.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from fastapi.responses import FileResponse, JSONResponse, Response
 
+from ingestion_api.core.config import settings
 from ingestion_api.core.logging import get_logger
 from ingestion_api.models.ingestion import (
     IngestionRecord,
     IngestResponse,
     ResolutionPushResult,
+    ResolutionPushStatus,
 )
 from ingestion_api.services.artifact_store import ArtifactStore
 from ingestion_api.services.orchestrator import (
@@ -31,34 +51,63 @@ from ingestion_api.services.orchestrator import (
     InvalidAlgRequestError,
     UnsupportedMediaError,
 )
-from ingestion_api.services.record_repository import MongoIngestionRecordRepository
+from ingestion_api.services.record_repository import (
+    IngestionListPage,
+    MongoIngestionRecordRepository,
+)
+from ingestion_api.services.signing import MissingSigningMaterialError
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["ingest"])
 
+# Manifest download Content-Type — matches what the resolution-api push
+# uses on the wire and what c2pa-rs expects on inspection.
+_MANIFEST_MEDIA_TYPE = "application/c2pa"
 
-def get_ingestion_service(request: Request) -> IngestionService:
-    svc: IngestionService | None = getattr(request.app.state, "ingestion_service", None)
-    if svc is None:
+
+# ---------------------------------------------------------------------------
+# Dependency providers (deduped via _state).
+# ---------------------------------------------------------------------------
+
+
+def _state(request: Request, name: str, label: str) -> object:
+    obj = getattr(request.app.state, name, None)
+    if obj is None:
         raise HTTPException(
             status_code=503,
-            detail="Ingestion service not initialised (check /ready)",
+            detail=f"{label} not initialised (check /ready)",
         )
-    return svc
+    return obj
+
+
+def get_ingestion_service(request: Request) -> IngestionService:
+    return _state(request, "ingestion_service", "Ingestion service")  # type: ignore[return-value]
 
 
 def get_artifact_store(request: Request) -> ArtifactStore:
-    store: ArtifactStore | None = getattr(request.app.state, "artifacts", None)
-    if store is None:
-        raise HTTPException(status_code=503, detail="Artifact store not initialised")
-    return store
+    return _state(request, "artifacts", "Artifact store")  # type: ignore[return-value]
 
 
 def get_record_repository(request: Request) -> MongoIngestionRecordRepository:
-    repo: MongoIngestionRecordRepository | None = getattr(request.app.state, "records", None)
-    if repo is None:
-        raise HTTPException(status_code=503, detail="Record repository not initialised")
-    return repo
+    return _state(request, "records", "Record repository")  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Response builders.
+# ---------------------------------------------------------------------------
+
+
+def _public_base(request: Request) -> str:
+    """Hybrid absolute-URL base.
+
+    ``settings.public_base_url`` wins when set (production: pin the
+    canonical host regardless of forwarded headers). Otherwise fall
+    back to ``request.base_url``, which has been rewritten by the
+    proxy-headers middleware to honor X-Forwarded-Proto/Host.
+    """
+    if settings.public_base_url:
+        return settings.public_base_url.rstrip("/")
+    return str(request.base_url).rstrip("/")
 
 
 def _build_response(
@@ -66,7 +115,7 @@ def _build_response(
     request: Request,
     artifacts: ArtifactStore,
 ) -> IngestResponse:
-    base = str(request.base_url).rstrip("/")
+    base = _public_base(request)
     output_url = f"{base}/ingest/{record.ingestionId}/asset"
     # Derive manifestUrl from the artifact store rather than persisting
     # path metadata on the record. Cheap (single stat() call).
@@ -96,20 +145,21 @@ def _build_response(
     )
 
 
+# ---------------------------------------------------------------------------
+# Routes.
+# ---------------------------------------------------------------------------
+
+
 @router.post(
     "/ingest",
     response_model=IngestResponse,
     summary="Ingest a media asset: apply soft-bindings, build C2PA manifest, sign, store, push",
     responses={
         200: {"description": "Asset ingested successfully"},
-        400: {
-            "description": (
-                "Unsupported media format, empty upload, empty / unknown / "
-                "MIME-incompatible algs"
-            ),
-        },
+        400: {"description": "Empty upload, empty / unknown / MIME-incompatible algs"},
+        415: {"description": "Unsupported media format"},
         500: {"description": "Pipeline failure"},
-        503: {"description": "Service not ready (certs missing or plugin unreachable)"},
+        503: {"description": "Service not ready (signing material missing or plugin unreachable)"},
     },
 )
 async def ingest_audio(
@@ -127,14 +177,37 @@ async def ingest_audio(
             "Ordered list of soft-binding algorithm IDs to apply. Each must "
             "exist in algorithms.yaml and declare the upload's MIME in its "
             "`mediaTypes`. Order matters: watermark passes mutate bytes for "
-            "subsequent passes (put watermarks first). "
-            "Pass repeated form fields: `algs=a&algs=b`."
+            "subsequent passes (put watermarks first). Pass repeated form "
+            f"fields: `algs=a&algs=b`. Capped at {settings.max_algs_per_ingest} "
+            "entries per request."
         ),
     ),
-    title: str | None = Form(None, description="Optional manifest title"),
+    title: str | None = Form(
+        None,
+        description=(
+            "Optional manifest title. Capped at "
+            f"{settings.max_title_length} characters."
+        ),
+    ),
     service: IngestionService = Depends(get_ingestion_service),
     artifacts: ArtifactStore = Depends(get_artifact_store),
 ) -> IngestResponse:
+    if len(algs) > settings.max_algs_per_ingest:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Too many algs: {len(algs)} (max {settings.max_algs_per_ingest})."
+            ),
+        )
+    if title is not None and len(title) > settings.max_title_length:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Title too long: {len(title)} chars "
+                f"(max {settings.max_title_length})."
+            ),
+        )
+
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload")
@@ -149,20 +222,62 @@ async def ingest_audio(
 
     try:
         result = await service.ingest(payload)
-    except (UnsupportedMediaError, InvalidAlgRequestError) as exc:
+    except UnsupportedMediaError as exc:
+        # 415 is the right status for "MIME you sent isn't supported"
+        # (RFC 9110 §15.5.16).
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    except InvalidAlgRequestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except MissingSigningMaterialError as exc:
+        # Cert/key vanished or became unreadable mid-flight. 503 — we
+        # can't sign without them, and there's no client-side fix.
+        logger.exception("Missing signing material")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except IngestionError as exc:
         logger.exception("Ingestion error")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        # Missing certs surface as a clean 503.
-        logger.exception("Missing signing material")
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("Unexpected ingest failure")
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {exc}") from exc
 
     return _build_response(result.record, request, artifacts)
+
+
+@router.get(
+    "/ingestions",
+    summary="List ingestions newest-first (cursor pagination)",
+    responses={
+        200: {"description": "Page of ingestions"},
+        400: {"description": "Invalid cursor"},
+    },
+)
+async def list_ingestions(
+    limit: int = Query(50, ge=1, le=200, description="Page size, 1..200"),
+    cursor: str | None = Query(
+        None, description="Opaque cursor from a previous page's nextCursor",
+    ),
+    resolutionPushStatus: ResolutionPushStatus | None = Query(  # noqa: N803
+        None,
+        description=(
+            "Filter to ingestions with this push status (ok / failed / skipped)"
+        ),
+    ),
+    records: MongoIngestionRecordRepository = Depends(get_record_repository),
+) -> JSONResponse:
+    try:
+        page: IngestionListPage = await records.list(
+            limit=limit, cursor=cursor, status=resolutionPushStatus,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Hand-marshal so we can name the cursor field idiomatically while
+    # still leaning on Pydantic for the items.
+    return JSONResponse(
+        {
+            "items": [r.model_dump(mode="json") for r in page.items],
+            "nextCursor": page.next_cursor,
+        },
+    )
 
 
 @router.get(
@@ -217,7 +332,43 @@ async def get_manifest_bytes(
     path = artifacts.load_manifest_bytes_path(ingestionId)
     if path is None:
         raise HTTPException(status_code=404, detail="Manifest bytes not stored")
-    return FileResponse(path, media_type="application/c2pa", filename=path.name)
+    return FileResponse(path, media_type=_MANIFEST_MEDIA_TYPE, filename=path.name)
+
+
+@router.delete(
+    "/ingest/{ingestionId}",
+    status_code=204,
+    summary="Delete an ingestion (artifacts + record). Local only.",
+    responses={
+        204: {"description": "Deleted (or nothing was there to delete)"},
+        404: {"description": "Neither artifacts nor a record exist for this id"},
+    },
+)
+async def delete_ingestion(
+    ingestionId: str,
+    artifacts: ArtifactStore = Depends(get_artifact_store),
+    records: MongoIngestionRecordRepository = Depends(get_record_repository),
+):
+    """Local takedown: removes artifacts on disk and the Mongo record.
+
+    Resolution-api is intentionally NOT touched here — leave the
+    upstream manifest registration in place so resolution still
+    works for already-distributed assets. Operators who need a remote
+    purge can call resolution-api directly.
+
+    Idempotent: succeeds with 204 even when only one of the two
+    states exists. Returns 404 only when there is genuinely nothing
+    on either side to remove.
+    """
+    artifacts_existed = artifacts.delete(ingestionId)
+    record_existed = await records.delete(ingestionId)
+    if not (artifacts_existed or record_existed):
+        raise HTTPException(status_code=404, detail="Ingestion not found")
+    logger.info(
+        "Deleted ingestion %s (artifacts=%s record=%s)",
+        ingestionId, artifacts_existed, record_existed,
+    )
+    return Response(status_code=204)
 
 
 @router.get(

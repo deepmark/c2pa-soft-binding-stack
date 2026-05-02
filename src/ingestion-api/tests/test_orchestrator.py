@@ -92,10 +92,12 @@ class _StubResolutionClient:
     """Always-OK auto-push stub. Records calls for assertions."""
     def __init__(self):
         self.calls = []
+        self.request_ids = []
         self.enabled = True
 
-    def push(self, req):
+    def push(self, req, *, request_id=None):
         self.calls.append(req)
+        self.request_ids.append(request_id)
         return ResolutionPushResult(status=ResolutionPushStatus.OK)
 
     def close(self):
@@ -294,7 +296,7 @@ def test_ingest_records_failed_push(
     class _FailingResolution:
         enabled = True
 
-        def push(self, req):
+        def push(self, req, *, request_id=None):
             return ResolutionPushResult(status=ResolutionPushStatus.FAILED, error="boom")
 
         def close(self):

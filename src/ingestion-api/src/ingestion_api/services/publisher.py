@@ -37,7 +37,7 @@ from dataclasses import dataclass
 import httpx
 
 from ingestion_api.core.config import settings
-from ingestion_api.core.logging import get_logger
+from ingestion_api.core.logging import REQUEST_ID_HEADER, get_logger, get_request_id
 from ingestion_api.models.ingestion import ResolutionPushResult, ResolutionPushStatus
 
 logger = get_logger(__name__)
@@ -102,7 +102,12 @@ class ResolutionPushClient:
         if self._owned_client:
             self._client.close()
 
-    def push(self, req: ResolutionPushRequest) -> ResolutionPushResult:
+    def push(
+        self,
+        req: ResolutionPushRequest,
+        *,
+        request_id: str | None = None,
+    ) -> ResolutionPushResult:
         """
         Push manifest + every binding to resolution-api.
 
@@ -111,6 +116,11 @@ class ResolutionPushClient:
         ``req.manifest_id`` is used directly for the binding posts;
         resolution-api derives the same ID from ``req.manifest_bytes``,
         so the manifest POST is idempotent.
+
+        ``request_id`` is forwarded as ``X-Request-ID`` on every call
+        so resolution-api logs collate with ours. Falls back to the
+        active contextvar if not passed (won't be set inside an
+        executor thread, hence the explicit kwarg from the orchestrator).
         """
         if not self.enabled:
             return ResolutionPushResult(status=ResolutionPushStatus.SKIPPED)
@@ -121,10 +131,11 @@ class ResolutionPushClient:
                 error="ResolutionPushRequest.bindings must be non-empty",
             )
 
+        rid = request_id if request_id is not None else get_request_id()
         try:
-            self._post_manifest(req.manifest_bytes)
+            self._post_manifest(req.manifest_bytes, rid)
             for pair in req.bindings:
-                self._post_binding(pair.alg, pair.binding_value, req.manifest_id)
+                self._post_binding(pair.alg, pair.binding_value, req.manifest_id, rid)
             return ResolutionPushResult(status=ResolutionPushStatus.OK)
         except httpx.HTTPError as exc:
             logger.warning("Resolution-api push failed: %s", exc)
@@ -133,20 +144,32 @@ class ResolutionPushClient:
             logger.exception("Unexpected resolution-api push failure")
             return ResolutionPushResult(status=ResolutionPushStatus.FAILED, error=str(exc))
 
-    def _post_manifest(self, manifest_bytes: bytes) -> None:
+    def _post_manifest(self, manifest_bytes: bytes, request_id: str | None) -> None:
         url = f"{self._base_url}/manifests"
         self._send_with_retry(
             "POST", url,
             content=manifest_bytes,
-            headers={"Content-Type": "application/c2pa"},
+            headers=self._headers({"Content-Type": "application/c2pa"}, request_id),
         )
 
-    def _post_binding(self, alg: str, binding_value: str, manifest_id: str) -> None:
+    def _post_binding(
+        self, alg: str, binding_value: str, manifest_id: str, request_id: str | None,
+    ) -> None:
         url = f"{self._base_url}/bindings"
         self._send_with_retry(
             "POST", url,
             json={"alg": alg, "bindingValue": binding_value, "manifestId": manifest_id},
+            headers=self._headers(None, request_id),
         )
+
+    @staticmethod
+    def _headers(
+        base: dict[str, str] | None, request_id: str | None,
+    ) -> dict[str, str]:
+        headers = dict(base or {})
+        if request_id:
+            headers[REQUEST_ID_HEADER] = request_id
+        return headers
 
     def _send_with_retry(self, method: str, url: str, **httpx_kwargs) -> httpx.Response:
         """

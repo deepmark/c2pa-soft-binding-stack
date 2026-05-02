@@ -61,6 +61,23 @@ class Settings(BaseSettings):
     # Plugin HTTP timeouts.
     plugin_request_timeout_s: float = 60.0
 
+    # Request shape limits enforced at the route layer.
+    max_algs_per_ingest: int = 8
+    max_title_length: int = 128
+
+    # Public base URL used when building absolute URLs in IngestResponse
+    # (outputAssetUrl, manifestUrl). When unset, the app falls back to
+    # request.base_url (rewritten by the proxy-headers middleware so
+    # X-Forwarded-Proto/Host are honored). Set this in production behind
+    # an LB to pin the canonical host regardless of forwarded headers.
+    public_base_url: str = ""
+
+    # Trusted proxy CIDRs for ProxyHeadersMiddleware. ``*`` accepts
+    # X-Forwarded-* from any peer — fine when the pod is only reachable
+    # from a known proxy (k8s ClusterIP, Docker overlay). Lock down to
+    # the proxy's CIDR for hardened deploys.
+    forwarded_allow_ips: str = "*"
+
     # Resolution-api auto-push. 
     # ``resolution_push_enabled=True`` (the default) requires ``resolution_api_url`` to be set.
     # Set ``RESOLUTION_PUSH_ENABLED=false`` for standalone use.

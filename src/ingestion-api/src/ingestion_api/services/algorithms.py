@@ -38,7 +38,7 @@ import httpx
 import yaml
 
 from ingestion_api.core.config import settings
-from ingestion_api.core.logging import get_logger
+from ingestion_api.core.logging import REQUEST_ID_HEADER, get_logger, get_request_id
 from ingestion_api.models.ingestion import SoftBindingKind
 
 logger = get_logger(__name__)
@@ -122,7 +122,13 @@ class EmbedResult:
 
 
 class PluginClient:
-    """Thin HTTP wrapper around a single plugin container."""
+    """Thin HTTP wrapper around a single plugin container.
+
+    ``request_id`` is forwarded as ``X-Request-ID`` on every outbound
+    HTTP call so plugin-side logs collate with ingestion-api's logs
+    for the same end-to-end request. When None (e.g. test harness or
+    background reconciliation), no header is added.
+    """
 
     def __init__(
         self,
@@ -130,6 +136,7 @@ class PluginClient:
         *,
         timeout_s: float | None = None,
         client: httpx.Client | None = None,
+        request_id: str | None = None,
     ) -> None:
         if not entry.url:
             raise PluginUnavailableError(
@@ -139,6 +146,10 @@ class PluginClient:
         self._timeout = timeout_s if timeout_s is not None else settings.plugin_request_timeout_s
         self._owned_client = client is None
         self._client = client or httpx.Client(timeout=self._timeout)
+        # Capture explicitly when constructed in async context, fall
+        # back to the contextvar otherwise. Safe across thread-pool
+        # executor calls because the value is held on the instance.
+        self._request_id = request_id if request_id is not None else get_request_id()
 
     @property
     def alg(self) -> str:
@@ -192,7 +203,7 @@ class PluginClient:
             raise PluginUnavailableError(
                 f"alg={self.alg!r} is not a watermark plugin (type={self._entry.type})"
             )
-        headers = {"Content-Type": OCTET_STREAM}
+        headers = self._headers({"Content-Type": OCTET_STREAM})
         if value is not None:
             headers[BINDING_VALUE_HEADER] = value
         url = self._url("/embed")
@@ -231,10 +242,16 @@ class PluginClient:
     def _url(self, path: str) -> str:
         return self._entry.url.rstrip("/") + path
 
+    def _headers(self, base: dict[str, str] | None = None) -> dict[str, str]:
+        headers = dict(base or {})
+        if self._request_id:
+            headers[REQUEST_ID_HEADER] = self._request_id
+        return headers
+
     def _get_json(self, path: str) -> dict:
         url = self._url(path)
         try:
-            r = self._client.get(url)
+            r = self._client.get(url, headers=self._headers())
             r.raise_for_status()
         except httpx.HTTPError as exc:
             raise PluginUnavailableError(f"GET {url}: {exc}") from exc
@@ -244,7 +261,9 @@ class PluginClient:
         url = self._url(path)
         try:
             r = self._client.post(
-                url, content=body, headers={"Content-Type": OCTET_STREAM},
+                url,
+                content=body,
+                headers=self._headers({"Content-Type": OCTET_STREAM}),
             )
             r.raise_for_status()
         except httpx.HTTPError as exc:

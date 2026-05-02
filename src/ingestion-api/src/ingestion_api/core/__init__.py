@@ -1,1 +1,1 @@
-"""Core infrastructure: configuration + logging."""
+"""Core infrastructure: configuration, logging, middleware, and database."""

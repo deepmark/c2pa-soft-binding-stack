@@ -5,15 +5,58 @@ Single entry point ``configure_logging`` is called once on app startup. Two
 modes:
 - plain (default): human-readable, single-line log records
 - json: one JSON document per line, suitable for log shippers
+
+A per-request correlation id (``X-Request-ID``) is stored in a
+``ContextVar`` set by ``RequestIDMiddleware`` and stamped onto every
+``LogRecord`` via ``_RequestIDFilter`` so log shippers can collate
+request flows without each log site having to plumb the id manually.
+The contextvar is async-safe (each request has its own context) but
+does **not** auto-propagate into thread-pool executor calls — for that
+case capture the value in the async frame and pass it explicitly to
+the executor target.
 """
 from __future__ import annotations
 
 import json
 import logging
 import sys
+from contextvars import ContextVar, Token
 from typing import Any
 
 from ingestion_api.core.config import settings
+
+REQUEST_ID_HEADER = "X-Request-ID"
+
+# Populated per-request by ``RequestIDMiddleware``. 
+# Default is None so a log statement made outside of a request flow gets a placeholder.
+# Cap to 128 chars to defang clients sending unbounded ids that would end up in our logs verbatim.
+_request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None, max_len=128)
+
+
+def get_request_id() -> str | None:
+    """Return the current request's id, or None if not in a request scope."""
+    return _request_id_var.get()
+
+
+def set_request_id(request_id: str) -> Token[str | None]:
+    """Bind ``request_id`` to the current context. Pair with ``reset_request_id``."""
+    return _request_id_var.set(request_id)
+
+
+def reset_request_id(token: Token[str | None]) -> None:
+    _request_id_var.reset(token)
+
+
+class _RequestIDFilter(logging.Filter):
+    """Stamps the active ``request_id`` onto every ``LogRecord``.
+
+    Logger format strings reference ``%(request_id)s`` (plain mode) and
+    the JSON formatter picks it up via the LogRecord __dict__ scan.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = _request_id_var.get() or "-"
+        return True
 
 
 class _JsonFormatter(logging.Formatter):
@@ -24,6 +67,9 @@ class _JsonFormatter(logging.Formatter):
             "logger": record.name,
             "msg": record.getMessage(),
         }
+        rid = getattr(record, "request_id", None)
+        if rid and rid != "-":
+            payload["request_id"] = rid
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
         for k, v in record.__dict__.items():
@@ -31,7 +77,7 @@ class _JsonFormatter(logging.Formatter):
                      "filename", "module", "exc_info", "exc_text", "stack_info",
                      "lineno", "funcName", "created", "msecs", "relativeCreated",
                      "thread", "threadName", "processName", "process",
-                     "taskName"}:
+                     "taskName", "request_id"}:
                 continue
             try:
                 json.dumps(v)
@@ -53,12 +99,13 @@ def configure_logging() -> None:
         root.removeHandler(h)
 
     handler = logging.StreamHandler(sys.stderr)
+    handler.addFilter(_RequestIDFilter())
     if settings.log_json:
         handler.setFormatter(_JsonFormatter())
     else:
         handler.setFormatter(
             logging.Formatter(
-                "%(asctime)s %(levelname)s %(name)s — %(message)s",
+                "%(asctime)s %(levelname)s [%(request_id)s] %(name)s — %(message)s",
                 datefmt="%Y-%m-%dT%H:%M:%S",
             )
         )

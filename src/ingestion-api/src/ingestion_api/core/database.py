@@ -69,12 +69,20 @@ class MongoDB:
             [("resolutionPushStatus", ASCENDING), ("lastPushAttemptAt", ASCENDING)],
             name="push_retry_idx",
         )
+        # Backs ``GET /ingestions`` cursor pagination
+        # (sort: createdAt desc, _id desc).
+        # Indexed on (createdAt, _id) so identical createdAt values
+        # still tie-break deterministically without a collection scan.
+        await col.create_index(
+            [("createdAt", DESCENDING), ("_id", DESCENDING)],
+            name="created_at_id_desc_idx",
+        )
 
     @staticmethod
     async def _ensure_failed_ingestions_indexes(col: AsyncIOMotorCollection) -> None:
         await col.create_index(
-            [("createdAt", DESCENDING)],
-            name="failed_created_desc_idx",
+            [("createdAt", DESCENDING), ("_id", DESCENDING)],
+            name="failed_created_at_id_desc_idx",
         )
 
 

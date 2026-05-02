@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from c2pa import C2paSigningAlg, Signer
@@ -35,6 +36,15 @@ from ingestion_api.core.config import settings
 from ingestion_api.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+class MissingSigningMaterialError(RuntimeError):
+    """Cert/key files vanished or became unreadable at sign time.
+
+    Distinct type so the ingest router can map it to a 503 cleanly,
+    rather than catching a bare ``FileNotFoundError`` (which would
+    swallow unrelated FS failures from anywhere in the call tree).
+    """
 
 
 @dataclass(slots=True)
@@ -73,17 +83,34 @@ class SignerCredentials:
 
     def validate(self) -> None:
         if not self.cert_chain_path.is_file():
-            raise FileNotFoundError(
+            raise MissingSigningMaterialError(
                 f"Certificate chain not found at {self.cert_chain_path}. "
                 "Place ES256 test certs under ./credentials/es256_certs.pem "
                 "or override CERT_CHAIN_PATH."
             )
         if not self.private_key_path.is_file():
-            raise FileNotFoundError(
+            raise MissingSigningMaterialError(
                 f"Private key not found at {self.private_key_path}. "
                 "Place ES256 test private key under "
                 "./credentials/es256_private.key or override PRIVATE_KEY_PATH."
             )
+
+    def leaf_not_after(self) -> datetime | None:
+        """Parse the leaf cert and return its ``notAfter`` (UTC), or None
+        if the chain is missing / unparseable.
+
+        Used by ``/health/deep`` to surface impending cert expiry to
+        ops dashboards. Never raises — this is forensic data, not a
+        readiness gate.
+        """
+        try:
+            pem_bytes = self.cert_chain_path.read_bytes()
+            certs = x509.load_pem_x509_certificates(pem_bytes)
+            if not certs:
+                return None
+            return certs[0].not_valid_after_utc
+        except (OSError, ValueError, AttributeError):
+            return None
 
 
 def _signing_alg(name: str) -> C2paSigningAlg:
@@ -151,8 +178,13 @@ def _make_callback(alg: C2paSigningAlg, key_pem: bytes) -> Callable[[bytes], byt
 def build_signer(creds: SignerCredentials) -> Signer:
     """Load PEMs from disk and instantiate a ``c2pa.Signer`` (callback-backed)."""
     creds.validate()
-    cert_pem = creds.cert_chain_path.read_text(encoding="utf-8")
-    key_pem = creds.private_key_path.read_bytes()
+    try:
+        cert_pem = creds.cert_chain_path.read_text(encoding="utf-8")
+        key_pem = creds.private_key_path.read_bytes()
+    except FileNotFoundError as exc:
+        # Race between validate() and read — surface as the same typed
+        # error so the router can map to 503 without a bare except.
+        raise MissingSigningMaterialError(str(exc)) from exc
     alg = _signing_alg(creds.signing_alg)
     callback = _make_callback(alg, key_pem)
 
@@ -179,8 +211,10 @@ class SigningService:
     """
     Holds a single ``Signer`` instance for the app's lifetime.
 
-    Construction is lazy: ``ensure_loaded()`` is called on first use so
-    missing certs surface as a clean 503 rather than tearing down startup.
+    The signer is built eagerly when ``validate()`` is called at app
+    startup (so a missing-cert deploy fails fast instead of throwing
+    503s on first ingest). ``ensure_loaded()`` remains so
+    pre-validate code paths still work in tests.
     """
 
     def __init__(self, creds: SignerCredentials | None = None) -> None:
@@ -190,6 +224,22 @@ class SigningService:
     @property
     def credentials(self) -> SignerCredentials:
         return self._creds
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._signer is not None
+
+    def validate(self) -> None:
+        """Verify cert+key are present and parseable, build the Signer.
+
+        Called from app startup. Raises ``MissingSigningMaterialError``
+        if either file is missing, ``ValueError`` if the PEMs are
+        malformed for the configured signing alg.
+        """
+        self._creds.validate()
+        # Forces a parse of the private key + a Signer.from_callback —
+        # any malformed PEM surfaces here, not on first ingest.
+        self.ensure_loaded()
 
     def ensure_loaded(self) -> Signer:
         if self._signer is None:

@@ -1,14 +1,57 @@
-"""Health/readiness endpoints for ingestion-api."""
+"""
+Health / readiness endpoints for ingestion-api.
+
+Three endpoints, each scoped for a different consumer:
+
+- ``GET /health`` — liveness. Cheap, never reaches outside the process.
+  Always 200 unless the process is itself crashed.
+- ``GET /ready`` — kubelet-style readiness. Process state + Mongo ping
+  only. Bounded sub-2s. Returns 503 when degraded so orchestrators can
+  actually route traffic away.
+- ``GET /health/deep`` — full fan-out: catalog plugins ``/health``, the
+  resolution-api ``/health`` (when push is enabled), and signing-cert
+  ``notAfter`` (informational, never gates readiness). Designed for
+  monitoring dashboards / human ops consumption, NOT for kubelets:
+  every call probes every plugin in parallel.
+
+Design notes:
+
+- All probes use ``httpx.AsyncClient`` so a slow plugin doesn't park
+  the worker; plugin probes are run concurrently via
+  ``asyncio.gather(return_exceptions=True)``.
+- ``/ready`` wraps the Mongo ``ping`` in ``asyncio.wait_for`` so a
+  hung primary can't extend the probe past the timeout budget.
+- Degraded ``/ready`` and ``/health/deep`` return HTTP 503 — body
+  shape unchanged so existing dashboards keep parsing fields, but the
+  status code now actually reflects the verdict.
+"""
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
+from typing import Any
+
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from ingestion_api.core.config import settings
 from ingestion_api.core.database import MongoDB
-from ingestion_api.services.algorithms import load_catalog
+from ingestion_api.core.logging import get_logger
+from ingestion_api.services.algorithms import AlgorithmEntry, load_catalog
+from ingestion_api.services.signing import SigningService
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["health"])
+
+# Mongo ``ping`` is bounded by ``serverSelectionTimeoutMS=5_000`` from
+# core/database.py; tighten further for the readiness probe so a hung
+# primary can't extend us past the orchestrator's budget.
+_READY_MONGO_TIMEOUT_S = 1.5
+# Per-probe HTTP timeout for the deep fan-out. Plugins respond to
+# ``/health`` in tens of milliseconds locally; 2s is a generous cap.
+_DEEP_HTTP_TIMEOUT_S = 2.0
 
 
 @router.get("/health", summary="Liveness probe")
@@ -20,92 +63,108 @@ async def health() -> dict:
     }
 
 
-@router.get("/ready", summary="Readiness probe")
-async def ready() -> dict:
+@router.get(
+    "/ready",
+    summary="Readiness probe (process + Mongo only)",
+    responses={
+        200: {"description": "Service is ready to accept traffic"},
+        503: {"description": "Service is degraded — body details which subsystem"},
+    },
+)
+async def ready(request: Request) -> JSONResponse:
     """
-    Best-effort readiness:
-    - MongoDB ping
-    - cert + key files present
-    - algorithm catalog loadable
-    - every catalog plugin /health responding (catalog is the source of
-      truth for which algs this deployment can serve)
-    - resolution-api /health responding (if RESOLUTION_API_URL set)
+    Cheap readiness check, suitable for kubelet polling every ~10s.
+
+    Checks:
+    - process state: signing service has loaded a Signer at startup
+    - cert + key files present on disk (existence only — no parse)
+    - MongoDB ping (bounded)
     """
-    mongo_ok = False
-    mongo_err: str | None = None
-    if MongoDB.client is not None:
-        try:
-            await MongoDB.client.admin.command("ping")
-            mongo_ok = True
-        except Exception as exc:  # noqa: BLE001
-            mongo_err = str(exc)
-    else:
-        mongo_err = "MongoDB not connected"
-
-    cert_path = settings.resolved_cert_chain_path()
-    key_path = settings.resolved_private_key_path()
-    creds_ok = cert_path.is_file() and key_path.is_file()
-
-    catalog = load_catalog()
-
-    plugins_report: list[dict] = []
-    plugins_ok = True
-    with httpx.Client(timeout=2.0) as c:
-        for entry in catalog:
-            if not entry.url:
-                plugins_ok = False
-                plugins_report.append({
-                    "alg": entry.alg,
-                    "ok": False,
-                    "url": None,
-                    "error": f"alg {entry.alg!r} has no URL in algorithms.yaml",
-                })
-                continue
-            try:
-                r = c.get(entry.url.rstrip("/") + "/health")
-                r.raise_for_status()
-                plugins_report.append({
-                    "alg": entry.alg, "ok": True, "url": entry.url, "error": None,
-                })
-            except httpx.HTTPError as exc:
-                plugins_ok = False
-                plugins_report.append({
-                    "alg": entry.alg, "ok": False, "url": entry.url, "error": str(exc),
-                })
-
-    resolution_ok: bool | None = None
-    resolution_err: str | None = None
-    if settings.resolution_push_enabled and settings.resolution_api_url:
-        try:
-            with httpx.Client(timeout=2.0) as c:
-                r = c.get(settings.resolution_api_url.rstrip("/") + "/health")
-                r.raise_for_status()
-                resolution_ok = True
-        except httpx.HTTPError as exc:
-            resolution_ok = False
-            resolution_err = str(exc)
-
-    overall = (
-        "ok"
-        if mongo_ok and creds_ok and plugins_ok and (resolution_ok is None or resolution_ok)
-        else "degraded"
+    mongo = await _check_mongo()
+    creds_ok = (
+        settings.resolved_cert_chain_path().is_file()
+        and settings.resolved_private_key_path().is_file()
     )
+    signing_loaded = _signing_loaded(request)
 
-    return {
-        "status": overall,
-        "mongodb": {
-            "ok": mongo_ok,
-            "url": settings.mongodb_url,
-            "database": settings.database_name,
-            "error": mongo_err,
-        },
+    overall_ok = mongo["ok"] and creds_ok and signing_loaded
+    body: dict[str, Any] = {
+        "status": "ok" if overall_ok else "degraded",
+        "service": settings.api_title,
+        "version": settings.api_version,
+        "mongodb": mongo,
         "credentials": {
             "ok": creds_ok,
-            "cert_chain_path": str(cert_path),
-            "private_key_path": str(key_path),
+            "cert_chain_path": str(settings.resolved_cert_chain_path()),
+            "private_key_path": str(settings.resolved_private_key_path()),
         },
-        "ingest": {
-            "signing_alg": settings.signing_alg,
+        "signing": {
+            "loaded": signing_loaded,
+            "alg": settings.signing_alg,
+            "ta_url": settings.ta_url,
+        },
+    }
+    return JSONResponse(body, status_code=200 if overall_ok else 503)
+
+
+@router.get(
+    "/health/deep",
+    summary="Full fan-out diagnostics (plugins + resolution-api + cert expiry)",
+    responses={
+        200: {"description": "All probed subsystems healthy"},
+        503: {
+            "description": (
+                "Some probed subsystem is degraded. Body details which one(s)."
+            ),
+        },
+    },
+)
+async def health_deep(request: Request) -> JSONResponse:
+    """
+    Heavy diagnostic probe. NOT for orchestrator readiness checks —
+    each call concurrently probes every catalog plugin's ``/health``
+    plus resolution-api's ``/health`` (when push is enabled). Use for
+    monitoring dashboards or on-demand troubleshooting.
+
+    Cert expiry (``notAfter``) is exposed on the response but never
+    gates the status; treat as informational and alert externally.
+    """
+    mongo = await _check_mongo()
+    creds_ok = (
+        settings.resolved_cert_chain_path().is_file()
+        and settings.resolved_private_key_path().is_file()
+    )
+    signing_loaded = _signing_loaded(request)
+    cert_info = _cert_info(request)
+    catalog = load_catalog()
+
+    async with httpx.AsyncClient(timeout=_DEEP_HTTP_TIMEOUT_S) as client:
+        plugin_task = asyncio.create_task(_probe_plugins(client, catalog))
+        resolution_task = asyncio.create_task(_probe_resolution(client))
+        plugins_report, plugins_ok = await plugin_task
+        resolution = await resolution_task
+
+    overall_ok = (
+        mongo["ok"]
+        and creds_ok
+        and signing_loaded
+        and plugins_ok
+        and resolution["status"] in ("ok", "skipped")
+    )
+    body: dict[str, Any] = {
+        "status": "ok" if overall_ok else "degraded",
+        "service": settings.api_title,
+        "version": settings.api_version,
+        "mongodb": mongo,
+        "credentials": {
+            "ok": creds_ok,
+            "cert_chain_path": str(settings.resolved_cert_chain_path()),
+            "private_key_path": str(settings.resolved_private_key_path()),
+            **cert_info,
+        },
+        "signing": {
+            "loaded": signing_loaded,
+            "alg": settings.signing_alg,
             "ta_url": settings.ta_url,
         },
         "catalog": {
@@ -113,10 +172,129 @@ async def ready() -> dict:
             "entries": len(catalog),
         },
         "plugins": plugins_report,
-        "resolution_api": {
+        "resolution_api": resolution,
+    }
+    return JSONResponse(body, status_code=200 if overall_ok else 503)
+
+
+# ---------------------------------------------------------------------------
+# Probe helpers.
+# ---------------------------------------------------------------------------
+
+
+async def _check_mongo() -> dict[str, Any]:
+    """Bounded Mongo ``ping``. Never raises."""
+    if MongoDB.client is None:
+        return {
+            "ok": False,
+            "url": settings.mongodb_url,
+            "database": settings.database_name,
+            "error": "MongoDB not connected",
+        }
+    try:
+        await asyncio.wait_for(
+            MongoDB.client.admin.command("ping"),
+            timeout=_READY_MONGO_TIMEOUT_S,
+        )
+        return {
+            "ok": True,
+            "url": settings.mongodb_url,
+            "database": settings.database_name,
+            "error": None,
+        }
+    except asyncio.TimeoutError:
+        return {
+            "ok": False,
+            "url": settings.mongodb_url,
+            "database": settings.database_name,
+            "error": f"ping timed out after {_READY_MONGO_TIMEOUT_S}s",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "url": settings.mongodb_url,
+            "database": settings.database_name,
+            "error": str(exc),
+        }
+
+
+def _signing_loaded(request: Request) -> bool:
+    svc: SigningService | None = getattr(request.app.state, "signing_service", None)
+    return bool(svc and svc.is_loaded)
+
+
+def _cert_info(request: Request) -> dict[str, Any]:
+    """Best-effort leaf-cert metadata for /health/deep. Never raises."""
+    svc: SigningService | None = getattr(request.app.state, "signing_service", None)
+    if svc is None:
+        return {"not_after": None, "expires_in_days": None}
+    not_after = svc.credentials.leaf_not_after()
+    if not_after is None:
+        return {"not_after": None, "expires_in_days": None}
+    now = datetime.now(timezone.utc)
+    delta = not_after - now
+    return {
+        "not_after": not_after.isoformat(),
+        "expires_in_days": int(delta.total_seconds() // 86400),
+    }
+
+
+async def _probe_plugins(
+    client: httpx.AsyncClient, catalog: list[AlgorithmEntry],
+) -> tuple[list[dict[str, Any]], bool]:
+    """Concurrently GET ``/health`` against every cataloged plugin."""
+
+    async def _one(entry: AlgorithmEntry) -> dict[str, Any]:
+        if not entry.url:
+            return {
+                "alg": entry.alg,
+                "ok": False,
+                "url": None,
+                "error": f"alg {entry.alg!r} has no URL in algorithms.yaml",
+            }
+        url = entry.url.rstrip("/") + "/health"
+        try:
+            r = await client.get(url)
+            r.raise_for_status()
+            return {"alg": entry.alg, "ok": True, "url": entry.url, "error": None}
+        except httpx.HTTPError as exc:
+            return {
+                "alg": entry.alg,
+                "ok": False,
+                "url": entry.url,
+                "error": str(exc),
+            }
+
+    results = await asyncio.gather(
+        *[_one(e) for e in catalog], return_exceptions=False,
+    )
+    plugins_ok = all(r["ok"] for r in results) if results else True
+    return list(results), plugins_ok
+
+
+async def _probe_resolution(client: httpx.AsyncClient) -> dict[str, Any]:
+    """Probe resolution-api ``/health``. Returns a tri-state status."""
+    if not settings.resolution_push_enabled or not settings.resolution_api_url:
+        return {
+            "status": "skipped",
             "push_enabled": settings.resolution_push_enabled,
             "url": settings.resolution_api_url or None,
-            "ok": resolution_ok,
-            "error": resolution_err,
-        },
-    }
+            "error": None,
+        }
+    url = settings.resolution_api_url.rstrip("/") + "/health"
+    try:
+        r = await client.get(url)
+        r.raise_for_status()
+        return {
+            "status": "ok",
+            "push_enabled": True,
+            "url": settings.resolution_api_url,
+            "error": None,
+        }
+    except httpx.HTTPError as exc:
+        return {
+            "status": "failed",
+            "push_enabled": True,
+            "url": settings.resolution_api_url,
+            "error": str(exc),
+        }

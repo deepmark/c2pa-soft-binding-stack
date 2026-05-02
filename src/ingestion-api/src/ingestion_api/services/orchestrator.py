@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ingestion_api.core.logging import get_logger
+from ingestion_api.core.logging import get_logger, get_request_id
 from ingestion_api.models.ingestion import (
     FailedIngestion,
     FailureStage,
@@ -197,10 +197,17 @@ class IngestionService:
         upload_sha256 = sha256_hex(payload.data)
         artifacts = self._artifacts.allocate(ingestion_id, ext=ext)
 
+        # Capture the active request id NOW (in async context) so the
+        # executor-bound plugin and resolution-push calls can stamp it
+        # as ``X-Request-ID``. ContextVars don't auto-propagate into
+        # ``loop.run_in_executor`` workers, hence the explicit pass.
+        request_id = get_request_id()
+
         try:
             return await self._run_pipeline(
                 payload, media_type, mime_type, entries,
                 ingestion_id, upload_sha256, artifacts,
+                request_id=request_id,
             )
         except Exception as exc:
             stage = getattr(exc, "stage", FailureStage.UNKNOWN)
@@ -268,6 +275,8 @@ class IngestionService:
         ingestion_id: str,
         upload_sha256: str,
         artifacts: IngestionArtifacts,
+        *,
+        request_id: str | None = None,
     ) -> IngestionResult:
         loop = asyncio.get_running_loop()
 
@@ -276,7 +285,10 @@ class IngestionService:
         # previous pass produced.
         try:
             passes = await loop.run_in_executor(
-                None, lambda: self._run_plugin_passes(entries, payload.data),
+                None,
+                lambda: self._run_plugin_passes(
+                    entries, payload.data, request_id=request_id,
+                ),
             )
         except PluginUnavailableError as exc:
             raise IngestionError(
@@ -362,6 +374,7 @@ class IngestionService:
                     manifest_id=manifest_id,
                     bindings=bindings,
                 ),
+                request_id=request_id,
             ),
         )
         last_push_attempt_at = signed_at if push_attempted else None
@@ -475,7 +488,11 @@ class IngestionService:
         return snapshots or None
 
     def _run_plugin_passes(
-        self, entries: Sequence[AlgorithmEntry], initial_bytes: bytes,
+        self,
+        entries: Sequence[AlgorithmEntry],
+        initial_bytes: bytes,
+        *,
+        request_id: str | None = None,
     ) -> list[_BindingPass]:
         """Run every alg's plugin, threading mutated bytes through.
 
@@ -486,7 +503,7 @@ class IngestionService:
         passes: list[_BindingPass] = []
         current_bytes = initial_bytes
         for entry in entries:
-            with PluginClient(entry) as plugin:
+            with PluginClient(entry, request_id=request_id) as plugin:
                 if entry.type == "watermark":
                     embed = plugin.embed(audio_bytes=current_bytes)
                     if not embed.watermarked_bytes:

@@ -81,3 +81,25 @@ class ArtifactStore:
             artifacts.base_dir.rmdir()
         except OSError:
             pass
+
+    def delete(self, ingestion_id: str) -> bool:
+        """Remove the per-ingestion directory if present. Idempotent.
+
+        Returns True if anything was on disk to delete, False if the
+        directory was already absent. Safe to call from a takedown
+        path even when only the record (or only the artifacts)
+        previously existed.
+        """
+        base = self._ingest_root / ingestion_id
+        if not base.exists():
+            return False
+        existed = False
+        try:
+            for child in base.glob("*"):
+                child.unlink(missing_ok=True)
+                existed = True
+            base.rmdir()
+            existed = True
+        except OSError:
+            return existed
+        return existed
