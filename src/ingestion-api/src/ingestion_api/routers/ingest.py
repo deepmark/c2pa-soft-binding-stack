@@ -2,13 +2,14 @@
 Ingest routes.
 
 ``POST /ingest`` accepts a single audio file upload, runs the full
-watermark + manifest + sign pipeline, auto-pushes to the resolution API,
-and returns JSON describing the resulting artifacts with download URLs.
+watermark + manifest + sign pipeline, persists the record to MongoDB,
+auto-pushes to the resolution API, and returns JSON describing the
+resulting artifacts with download URLs.
 
 Helpers:
 - ``GET /ingest/{ingestionId}/asset``    download signed audio
 - ``GET /ingest/{ingestionId}/manifest`` download raw signed manifest bytes
-- ``GET /ingest/{ingestionId}``          ingestion metadata sidecar
+- ``GET /ingest/{ingestionId}``          ingestion record (from MongoDB)
 """
 from __future__ import annotations
 
@@ -22,13 +23,14 @@ from ingestion_api.models.ingestion import (
     ResolutionPushResult,
     ResolutionPushStatus,
 )
+from ingestion_api.services.artifact_store import ArtifactStore
 from ingestion_api.services.orchestrator import (
     IngestionError,
     IngestionInput,
     IngestionService,
     UnsupportedAudioFormatError,
 )
-from ingestion_api.services.storage import LocalAssetStore
+from ingestion_api.services.record_repository import MongoIngestionRecordRepository
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["ingest"])
@@ -44,11 +46,18 @@ def get_ingestion_service(request: Request) -> IngestionService:
     return svc
 
 
-def get_local_store(request: Request) -> LocalAssetStore:
-    store: LocalAssetStore | None = getattr(request.app.state, "local_store", None)
+def get_artifact_store(request: Request) -> ArtifactStore:
+    store: ArtifactStore | None = getattr(request.app.state, "artifacts", None)
     if store is None:
-        raise HTTPException(status_code=503, detail="Local store not initialised")
+        raise HTTPException(status_code=503, detail="Artifact store not initialised")
     return store
+
+
+def get_record_repository(request: Request) -> MongoIngestionRecordRepository:
+    repo: MongoIngestionRecordRepository | None = getattr(request.app.state, "records", None)
+    if repo is None:
+        raise HTTPException(status_code=503, detail="Record repository not initialised")
+    return repo
 
 
 def _build_response(record: IngestionRecord, request: Request) -> IngestResponse:
@@ -128,14 +137,14 @@ async def ingest_audio(
 @router.get(
     "/ingest/{ingestionId}",
     response_model=IngestionRecord,
-    summary="Get ingestion metadata",
+    summary="Get ingestion record",
     responses={404: {"description": "Ingestion not found"}},
 )
 async def get_ingestion(
     ingestionId: str,
-    store: LocalAssetStore = Depends(get_local_store),
+    records: MongoIngestionRecordRepository = Depends(get_record_repository),
 ) -> IngestionRecord:
-    record = store.load_metadata(ingestionId)
+    record = await records.get(ingestionId)
     if record is None:
         raise HTTPException(status_code=404, detail="Ingestion not found")
     return record
@@ -151,12 +160,13 @@ async def get_ingestion(
 )
 async def get_signed_asset(
     ingestionId: str,
-    store: LocalAssetStore = Depends(get_local_store),
+    artifacts: ArtifactStore = Depends(get_artifact_store),
+    records: MongoIngestionRecordRepository = Depends(get_record_repository),
 ):
-    path = store.load_signed_asset(ingestionId)
+    path = artifacts.load_signed_asset(ingestionId)
     if path is None:
         raise HTTPException(status_code=404, detail="Signed asset not found")
-    record = store.load_metadata(ingestionId)
+    record = await records.get(ingestionId)
     media_type = record.originalMimeType if record else "application/octet-stream"
     return FileResponse(path, media_type=media_type, filename=path.name)
 
@@ -171,9 +181,9 @@ async def get_signed_asset(
 )
 async def get_manifest_bytes(
     ingestionId: str,
-    store: LocalAssetStore = Depends(get_local_store),
+    artifacts: ArtifactStore = Depends(get_artifact_store),
 ):
-    path = store.load_manifest_bytes_path(ingestionId)
+    path = artifacts.load_manifest_bytes_path(ingestionId)
     if path is None:
         raise HTTPException(status_code=404, detail="Manifest bytes not stored")
     return FileResponse(path, media_type="application/c2pa", filename=path.name)

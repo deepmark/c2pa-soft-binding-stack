@@ -5,15 +5,18 @@ This service:
 - accepts audio uploads,
 - delegates watermark embed to a plugin container over HTTP,
 - builds + signs a C2PA manifest,
-- persists signed asset + manifest bytes + metadata JSON sidecar to disk,
+- persists signed asset + manifest bytes to disk,
+- writes an ``IngestionRecord`` to its own MongoDB database,
 - (optionally) auto-pushes the manifest store + binding to the
   resolution API at ``RESOLUTION_API_URL``.
 
-No MongoDB. The on-disk metadata sidecar is the source of truth for
-ingestion records on this service.
+MongoDB here is independent of resolution-api's. Each service has its
+own ``MONGODB_URL`` + ``DATABASE_NAME`` so they can run on separate
+instances. They happen to share a container in our dev docker-compose
+but the code treats them as fully separate clusters.
 
-Required path settings: ``algorithms_catalog_path``, ``storage_root``,
-``credentials_dir``.
+Required env vars: ``MONGODB_URL``, ``DATABASE_NAME``,
+``ALGORITHMS_CATALOG_PATH``, ``STORAGE_ROOT``, ``CREDENTIALS_DIR``.
 """
 from __future__ import annotations
 
@@ -31,6 +34,16 @@ class Settings(BaseSettings):
         "Watermark and build a signed C2PA manifests for audio assets."
     )
 
+    # MongoDB (this service's own cluster — NOT shared with resolution-api).
+    mongodb_url: str = Field(
+        ...,
+        description="Mongo connection string for ingestion-api's own DB.",
+    )
+    database_name: str = Field(
+        ...,
+        description="Database name for the ingestions collection.",
+    )
+
     # Soft-binding algs applied to each audio upload, in order. 
     # Each id must match an entry in ``algorithms.yaml``. 
     audio_algs: list[str] = Field(
@@ -44,8 +57,8 @@ class Settings(BaseSettings):
         description="Absolute path to the shared algorithms.yaml catalog.",
     )
 
-    # Persistent on-disk artifact store (signed asset + manifest bytes +
-    # metadata sidecar). Must be a writable directory.
+    # Persistent on-disk artifact store (signed asset + manifest bytes
+    # only — record metadata lives in MongoDB). Must be a writable directory.
     storage_root: Path = Field(
         ...,
         description="Absolute path to the artifact store directory.",

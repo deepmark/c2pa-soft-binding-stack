@@ -1,14 +1,17 @@
 """
-Local filesystem storage for ingest artifacts.
+Local filesystem store for ingest binary artifacts (the signed asset
+and the raw signed manifest bytes).
 
 We never persist the raw upload or any plugin-side watermarked
 intermediate — plugin bytes flow over HTTP and stay in memory until
-the signing step. This module only manages the *durable* artifact set:
+the signing step. This module only manages the *durable* binary set:
 
     <storage_root>/ingestions/<ingestionId>/
       signed.<ext>            # signed asset emitted by Builder.sign
       manifest.c2pa           # raw manifest bytes returned by the SDK
-      metadata.json           # IngestionRecord serialised
+
+Structured ingestion records (alg list, manifestId, push status, etc.)
+live in MongoDB — see ``services.record_repository``.
 """
 from __future__ import annotations
 
@@ -16,7 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ingestion_api.core.config import settings
-from ingestion_api.models.ingestion import IngestionRecord
 
 
 @dataclass(slots=True)
@@ -25,11 +27,10 @@ class IngestionArtifacts:
     base_dir: Path
     signed_path: Path
     manifest_bytes_path: Path
-    metadata_path: Path
 
 
-class LocalAssetStore:
-    """File-backed artifact store. Safe to reuse across requests."""
+class ArtifactStore:
+    """File-backed binary artifact store. Safe to reuse across requests."""
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = (root or settings.storage_root).resolve()
@@ -55,23 +56,10 @@ class LocalAssetStore:
             base_dir=base,
             signed_path=base / f"signed{ext}",
             manifest_bytes_path=base / "manifest.c2pa",
-            metadata_path=base / "metadata.json",
         )
 
     def write_manifest_bytes(self, artifacts: IngestionArtifacts, data: bytes) -> None:
         artifacts.manifest_bytes_path.write_bytes(data)
-
-    def write_metadata(self, artifacts: IngestionArtifacts, record: IngestionRecord) -> None:
-        artifacts.metadata_path.write_text(
-            record.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
-
-    def load_metadata(self, ingestion_id: str) -> IngestionRecord | None:
-        metadata_path = self._ingest_root / ingestion_id / "metadata.json"
-        if not metadata_path.is_file():
-            return None
-        return IngestionRecord.model_validate_json(metadata_path.read_text("utf-8"))
 
     def load_signed_asset(self, ingestion_id: str) -> Path | None:
         base = self._ingest_root / ingestion_id

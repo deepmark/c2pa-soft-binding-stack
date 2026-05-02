@@ -3,7 +3,8 @@ FastAPI application entry point for ingestion-api.
 
 App startup wires the long-lived collaborators onto ``app.state``:
 - ``app.state.signing_service``    — single C2PA Signer for the process
-- ``app.state.local_store``        — filesystem-backed asset store
+- ``app.state.artifacts``          — filesystem-backed binary artifact store
+- ``app.state.records``            — MongoDB-backed IngestionRecord repository
 - ``app.state.resolution_client``  — auto-push HTTP client (no-op when
                                      RESOLUTION_API_URL is empty)
 - ``app.state.ingestion_service``  — orchestrator tying them all together
@@ -17,12 +18,14 @@ import uvicorn
 from fastapi import FastAPI
 
 from ingestion_api.core.config import settings
+from ingestion_api.core.database import MongoDB, get_ingestions_collection
 from ingestion_api.core.logging import configure_logging, get_logger
 from ingestion_api.routers import health, ingest
+from ingestion_api.services.artifact_store import ArtifactStore
 from ingestion_api.services.orchestrator import IngestionService
 from ingestion_api.services.publisher import ResolutionPushClient
+from ingestion_api.services.record_repository import MongoIngestionRecordRepository
 from ingestion_api.services.signing import SigningService
-from ingestion_api.services.storage import LocalAssetStore
 
 logger = get_logger(__name__)
 
@@ -32,12 +35,17 @@ async def lifespan(app: FastAPI):
     configure_logging()
     logger.info("Starting %s v%s", settings.api_title, settings.api_version)
 
-    app.state.local_store = LocalAssetStore()
+    await MongoDB.connect()
+    logger.info("Connected to MongoDB at %s db=%s", settings.mongodb_url, settings.database_name)
+
+    app.state.artifacts = ArtifactStore()
+    app.state.records = MongoIngestionRecordRepository(get_ingestions_collection())
     app.state.signing_service = SigningService()
     app.state.resolution_client = ResolutionPushClient()
     app.state.ingestion_service = IngestionService(
         signing_service=app.state.signing_service,
-        local_store=app.state.local_store,
+        artifacts=app.state.artifacts,
+        records=app.state.records,
         resolution_client=app.state.resolution_client,
         soft_binding_algs=settings.audio_algs,
     )
@@ -54,6 +62,10 @@ async def lifespan(app: FastAPI):
             app.state.resolution_client.close()
         except Exception:
             logger.exception("Error closing resolution client")
+        try:
+            await MongoDB.close()
+        except Exception:
+            logger.exception("Error closing MongoDB connection")
 
 
 app = FastAPI(

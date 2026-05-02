@@ -25,13 +25,14 @@ from ingestion_api.models.ingestion import (
 )
 from ingestion_api.services import algorithms as algorithms_module
 from ingestion_api.services.algorithms import AlgorithmEntry, EmbedResult
+from ingestion_api.services.artifact_store import ArtifactStore
 from ingestion_api.services.orchestrator import (
     IngestionInput,
     IngestionService,
     UnsupportedAudioFormatError,
 )
+from ingestion_api.services.record_repository import InMemoryIngestionRecordRepository
 from ingestion_api.services.signing import SigningService
-from ingestion_api.services.storage import LocalAssetStore
 from ingestion_api.utils.hashing import sha256_truncated_b64
 
 BINDING_ALG = "me.deepmark.audio.vigil.128"
@@ -88,8 +89,13 @@ class _StubResolutionClient:
 
 
 @pytest.fixture
-def local_store(tmp_path: Path) -> LocalAssetStore:
-    return LocalAssetStore(root=tmp_path / "storage")
+def artifacts(tmp_path: Path) -> ArtifactStore:
+    return ArtifactStore(root=tmp_path / "storage")
+
+
+@pytest.fixture
+def records() -> InMemoryIngestionRecordRepository:
+    return InMemoryIngestionRecordRepository()
 
 
 @pytest.fixture
@@ -132,13 +138,15 @@ def patched_plugin(monkeypatch):
 @pytest.fixture
 def ingestion_service(
     signing_service: SigningService,
-    local_store: LocalAssetStore,
+    artifacts: ArtifactStore,
+    records: InMemoryIngestionRecordRepository,
     stub_resolution: _StubResolutionClient,
     patched_plugin: AlgorithmEntry,
 ) -> IngestionService:
     return IngestionService(
         signing_service=signing_service,
-        local_store=local_store,
+        artifacts=artifacts,
+        records=records,
         resolution_client=stub_resolution,
         soft_binding_algs=[BINDING_ALG],
     )
@@ -149,8 +157,9 @@ def ingestion_service(
 # ---------------------------------------------------------------------------
 
 
-def test_ingest_produces_signed_asset_and_metadata(
+def test_ingest_produces_signed_asset_and_record(
     ingestion_service: IngestionService,
+    records: InMemoryIngestionRecordRepository,
     sample_wav_bytes: bytes,
     stub_resolution: _StubResolutionClient,
 ):
@@ -178,19 +187,17 @@ def test_ingest_produces_signed_asset_and_metadata(
     assert record.originalMimeType == "audio/wav"
     assert record.resolutionPushStatus is ResolutionPushStatus.OK
 
-    # Only signed.<ext>, manifest.c2pa, metadata.json — no original / watermarked.
+    # Only binary artifacts on disk now — record metadata moved to Mongo.
     base = result.signed_asset_path.parent
     written = sorted(p.name for p in base.iterdir())
-    assert written == ["manifest.c2pa", "metadata.json", "signed.wav"], written
+    assert written == ["manifest.c2pa", "signed.wav"], written
 
-    # Metadata sidecar matches the returned record.
-    sidecar = json.loads((base / "metadata.json").read_text("utf-8"))
-    assert sidecar["softBindings"] == [
-        {"alg": BINDING_ALG, "kind": "watermark", "bindingValue": only.bindingValue},
-    ]
-    assert sidecar["ingestionId"] == record.ingestionId
-    assert sidecar["resolutionPushStatus"] == "ok"
-    assert "originalAssetPath" not in sidecar
+    # Record persisted into the repository and round-trips identically.
+    persisted = asyncio.run(records.get(record.ingestionId))
+    assert persisted is not None
+    assert persisted.ingestionId == record.ingestionId
+    assert persisted.softBindings == record.softBindings
+    assert persisted.resolutionPushStatus is ResolutionPushStatus.OK
 
     # Resolution-api stub received the manifest + a binding-pair list.
     assert len(stub_resolution.calls) == 1
@@ -220,7 +227,8 @@ def test_ingest_uses_resolution_returned_manifest_id(
 
 def test_ingest_records_failed_push(
     signing_service: SigningService,
-    local_store: LocalAssetStore,
+    artifacts: ArtifactStore,
+    records: InMemoryIngestionRecordRepository,
     patched_plugin: AlgorithmEntry,
     sample_wav_bytes: bytes,
 ):
@@ -240,7 +248,8 @@ def test_ingest_records_failed_push(
 
     svc = IngestionService(
         signing_service=signing_service,
-        local_store=local_store,
+        artifacts=artifacts,
+        records=records,
         resolution_client=_FailingResolution(),
         soft_binding_algs=[BINDING_ALG],
     )
@@ -313,7 +322,8 @@ def test_signed_asset_round_trips_through_reader(
 def test_ingest_with_watermark_plus_fingerprint(
     monkeypatch,
     signing_service: SigningService,
-    local_store: LocalAssetStore,
+    artifacts: ArtifactStore,
+    records: InMemoryIngestionRecordRepository,
     stub_resolution: _StubResolutionClient,
     sample_wav_bytes: bytes,
 ):
@@ -344,7 +354,8 @@ def test_ingest_with_watermark_plus_fingerprint(
 
     svc = IngestionService(
         signing_service=signing_service,
-        local_store=local_store,
+        artifacts=artifacts,
+        records=records,
         resolution_client=stub_resolution,
         soft_binding_algs=[BINDING_ALG, FP_ALG],
     )

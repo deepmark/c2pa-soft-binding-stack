@@ -5,6 +5,7 @@ import httpx
 from fastapi import APIRouter
 
 from ingestion_api.core.config import settings
+from ingestion_api.core.database import MongoDB
 from ingestion_api.services.algorithms import load_catalog
 
 router = APIRouter(tags=["health"])
@@ -23,11 +24,23 @@ async def health() -> dict:
 async def ready() -> dict:
     """
     Best-effort readiness:
+    - MongoDB ping
     - cert + key files present
     - algorithm catalog loadable
     - every configured ``audio_algs`` plugin /health responding
     - resolution-api /health responding (if RESOLUTION_API_URL set)
     """
+    mongo_ok = False
+    mongo_err: str | None = None
+    if MongoDB.client is not None:
+        try:
+            await MongoDB.client.admin.command("ping")
+            mongo_ok = True
+        except Exception as exc:  # noqa: BLE001
+            mongo_err = str(exc)
+    else:
+        mongo_err = "MongoDB not connected"
+
     cert_path = settings.resolved_cert_chain_path()
     key_path = settings.resolved_private_key_path()
     creds_ok = cert_path.is_file() and key_path.is_file()
@@ -77,12 +90,18 @@ async def ready() -> dict:
 
     overall = (
         "ok"
-        if creds_ok and plugins_ok and (resolution_ok is None or resolution_ok)
+        if mongo_ok and creds_ok and plugins_ok and (resolution_ok is None or resolution_ok)
         else "degraded"
     )
 
     return {
         "status": overall,
+        "mongodb": {
+            "ok": mongo_ok,
+            "url": settings.mongodb_url,
+            "database": settings.database_name,
+            "error": mongo_err,
+        },
         "credentials": {
             "ok": creds_ok,
             "cert_chain_path": str(cert_path),

@@ -12,7 +12,8 @@ End-to-end pipeline:
            injected automatically; we add c2pa.watermarked.bound + one
            c2pa.soft-binding assertion per alg)
         -> sign (Builder.sign)
-        -> persist signed asset + manifest bytes + metadata sidecar
+        -> persist signed asset + manifest bytes to disk
+        -> persist IngestionRecord to MongoDB
         -> auto-push manifest store + every binding to resolution-api
 
 Bytes never touch disk on the ingestion-api side until we write the
@@ -47,14 +48,15 @@ from ingestion_api.services.algorithms import (
     PluginUnavailableError,
     resolve as resolve_algorithm,
 )
+from ingestion_api.services.artifact_store import ArtifactStore, IngestionArtifacts
 from ingestion_api.services.manifest import ManifestBuilderService, SoftBindingSpec
 from ingestion_api.services.publisher import (
     BindingPair,
     ResolutionPushClient,
     ResolutionPushRequest,
 )
+from ingestion_api.services.record_repository import MongoIngestionRecordRepository
 from ingestion_api.services.signing import SigningService
-from ingestion_api.services.storage import IngestionArtifacts, LocalAssetStore
 from ingestion_api.utils.audio import (
     SUPPORTED_AUDIO_EXTENSIONS,
     SUPPORTED_AUDIO_MIME_TYPES,
@@ -103,12 +105,14 @@ class IngestionService:
         self,
         *,
         signing_service: SigningService,
-        local_store: LocalAssetStore,
+        artifacts: ArtifactStore,
+        records: MongoIngestionRecordRepository,
         resolution_client: ResolutionPushClient | None = None,
         soft_binding_algs: Sequence[str] | None = None,
     ) -> None:
         self._signing_service = signing_service
-        self._local_store = local_store
+        self._artifacts = artifacts
+        self._records = records
         self._resolution_client = resolution_client or ResolutionPushClient()
         algs = list(soft_binding_algs) if soft_binding_algs else list(settings.audio_algs)
         if not algs:
@@ -130,14 +134,14 @@ class IngestionService:
             ext = upload_ext
 
         ingestion_id = new_ingestion_id()
-        artifacts = self._local_store.allocate(ingestion_id, ext=ext)
+        artifacts = self._artifacts.allocate(ingestion_id, ext=ext)
 
         try:
             return await self._run_pipeline(
                 payload, mime_type, ext, ingestion_id, artifacts,
             )
         except Exception:
-            self._local_store.cleanup(artifacts)
+            self._artifacts.cleanup(artifacts)
             raise
 
     async def _run_pipeline(
@@ -196,7 +200,7 @@ class IngestionService:
         )
 
         if built.manifest_bytes:
-            self._local_store.write_manifest_bytes(artifacts, built.manifest_bytes)
+            self._artifacts.write_manifest_bytes(artifacts, built.manifest_bytes)
             manifest_bytes_path: Path | None = artifacts.manifest_bytes_path
         else:
             manifest_bytes_path = None
@@ -252,7 +256,7 @@ class IngestionService:
             resolutionPushStatus=push_result.status,
             resolutionPushError=push_result.error,
         )
-        self._local_store.write_metadata(artifacts, record)
+        await self._records.write(record)
 
         logger.info(
             "Ingestion %s OK algs=%s manifestId=%s push=%s",

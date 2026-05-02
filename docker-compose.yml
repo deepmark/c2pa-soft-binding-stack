@@ -32,11 +32,17 @@ services:
     container_name: ingestion-api
     restart: unless-stopped
     depends_on:
+      - mongo
       - resolution-api
       - watermark-vigil-128
     ports:
       - "${INGESTION_API_PORT:-8001}:8001"
     environment:
+      # Ingestion-api owns its own DB on the Mongo cluster. In a real
+      # deployment MONGODB_URL can point at a completely separate cluster
+      # from resolution-api's; here we share a container in dev.
+      MONGODB_URL: mongodb://mongo:27017
+      DATABASE_NAME: c2pa_ingestions
       ALGORITHMS_CATALOG_PATH: /catalog/algorithms.yaml
       STORAGE_ROOT: /var/lib/ingestion-api/storage
       CREDENTIALS_DIR: /credentials
