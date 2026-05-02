@@ -66,7 +66,6 @@ async def lifespan(app: FastAPI):
         records=app.state.records,
         failed_records=app.state.failed_records,
         resolution_client=app.state.resolution_client,
-        soft_binding_algs=settings.audio_algs,
     )
 
     try:

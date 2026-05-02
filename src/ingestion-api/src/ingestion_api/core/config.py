@@ -2,8 +2,9 @@
 Application configuration for ingestion-api.
 
 This service:
-- accepts audio uploads,
-- delegates watermark embed to a plugin container over HTTP,
+- accepts media uploads (audio today; video / image as plugins ship),
+- delegates watermark embed and fingerprint compute to plugin
+  containers over HTTP — selected per request from the catalog,
 - builds + signs a C2PA manifest,
 - persists signed asset + manifest bytes to disk,
 - writes an ``IngestionRecord`` to its own MongoDB database,
@@ -11,8 +12,11 @@ This service:
   ``RESOLUTION_API_URL`` (set ``RESOLUTION_PUSH_ENABLED=false`` to opt
   out for standalone deployments).
 
-Required env vars: ``MONGODB_URL``, ``DATABASE_NAME``, 
+Required env vars: ``MONGODB_URL``, ``DATABASE_NAME``,
 ``STORAGE_ROOT``, ``ALGORITHMS_CATALOG_PATH``, ``CREDENTIALS_DIR``.
+
+Note: the per-ingest alg list is supplied by the caller in the
+``POST /ingest`` form field ``algs``; there is no service-wide default.
 """
 from __future__ import annotations
 
@@ -44,13 +48,6 @@ class Settings(BaseSettings):
     storage_root: Path = Field(
         ...,
         description="Absolute path to the artifact store directory.",
-    )
-
-    # Soft-binding algs applied to each audio upload, in order. 
-    # Each id must match an entry in ``algorithms.yaml``. 
-    audio_algs: list[str] = Field(
-        default_factory=lambda: ["me.deepmark.audio.vigil.128"],
-        min_length=1,
     )
 
     # Algorithm catalog.

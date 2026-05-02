@@ -93,6 +93,11 @@ class MongoDB:
             [("manifestId", ASCENDING)],
             name="manifest_id_idx",
         )
+        # Filter by media category for ops/analytics queries.
+        await col.create_index(
+            [("mediaType", ASCENDING), ("createdAt", DESCENDING)],
+            name="media_type_created_idx",
+        )
 
     @staticmethod
     async def _ensure_failed_ingestions_indexes(col: AsyncIOMotorCollection) -> None:
@@ -110,6 +115,11 @@ class MongoDB:
         await col.create_index(
             [("uploadSha256", ASCENDING)],
             name="failed_upload_sha_idx",
+        )
+        # Filter failures by media category.
+        await col.create_index(
+            [("mediaType", ASCENDING), ("createdAt", DESCENDING)],
+            name="failed_media_type_created_idx",
         )
 
 

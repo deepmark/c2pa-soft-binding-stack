@@ -20,6 +20,7 @@ import pytest
 
 from ingestion_api.models.ingestion import (
     FailureStage,
+    MediaType,
     ResolutionPushResult,
     ResolutionPushStatus,
 )
@@ -35,7 +36,8 @@ from ingestion_api.services.orchestrator import (
     IngestionError,
     IngestionInput,
     IngestionService,
-    UnsupportedAudioFormatError,
+    InvalidAlgRequestError,
+    UnsupportedMediaError,
 )
 from ingestion_api.services.record_repository import (
     InMemoryFailedIngestionRepository,
@@ -180,7 +182,6 @@ def ingestion_service(
         records=records,
         failed_records=failed_records,
         resolution_client=stub_resolution,
-        soft_binding_algs=[BINDING_ALG],
     )
 
 
@@ -199,6 +200,7 @@ def test_ingest_produces_signed_asset_and_record(
         filename="sample.wav",
         content_type="audio/wav",
         data=sample_wav_bytes,
+        algs=[BINDING_ALG],
         title="sample test",
     )
     result = asyncio.run(ingestion_service.ingest(payload))
@@ -215,6 +217,7 @@ def test_ingest_produces_signed_asset_and_record(
     assert only.kind == "watermark"
     assert only.bindingValue == _binding_value(sample_wav_bytes)
     assert record.mimeType == "audio/wav"
+    assert record.mediaType is MediaType.AUDIO
     assert record.resolutionPushStatus is ResolutionPushStatus.OK
     # New: content identity + cert + plugin snapshot.
     assert record.uploadSha256 == sha256_hex(sample_wav_bytes)
@@ -266,6 +269,7 @@ def test_ingest_manifest_id_matches_signed_asset(
                 filename="sample.wav",
                 content_type="audio/wav",
                 data=sample_wav_bytes,
+                algs=[BINDING_ALG],
             )
         )
     )
@@ -303,7 +307,6 @@ def test_ingest_records_failed_push(
         records=records,
         failed_records=failed_records,
         resolution_client=_FailingResolution(),
-        soft_binding_algs=[BINDING_ALG],
     )
 
     result = asyncio.run(
@@ -312,6 +315,7 @@ def test_ingest_records_failed_push(
                 filename="sample.wav",
                 content_type="audio/wav",
                 data=sample_wav_bytes,
+                algs=[BINDING_ALG],
             )
         )
     )
@@ -367,7 +371,6 @@ def test_pipeline_failure_persists_failed_ingestion(
         records=records,
         failed_records=failed_records,
         resolution_client=stub_resolution,
-        soft_binding_algs=[BINDING_ALG],
     )
 
     with pytest.raises(IngestionError) as exc_info:
@@ -377,6 +380,7 @@ def test_pipeline_failure_persists_failed_ingestion(
                     filename="sample.wav",
                     content_type="audio/wav",
                     data=sample_wav_bytes,
+                    algs=[BINDING_ALG],
                 )
             )
         )
@@ -397,19 +401,127 @@ def test_pipeline_failure_persists_failed_ingestion(
     assert asyncio.run(records.get(failed.ingestionId)) is None
 
 
-def test_ingest_rejects_unsupported_format(
+def test_ingest_rejects_unsupported_media_format(
     ingestion_service: IngestionService,
 ):
-    with pytest.raises(UnsupportedAudioFormatError):
+    with pytest.raises(UnsupportedMediaError):
         asyncio.run(
             ingestion_service.ingest(
                 IngestionInput(
                     filename="not_audio.txt",
                     content_type="text/plain",
                     data=b"hello",
+                    algs=[BINDING_ALG],
                 )
             )
         )
+
+
+def test_ingest_rejects_empty_algs(
+    ingestion_service: IngestionService,
+    sample_wav_bytes: bytes,
+):
+    with pytest.raises(InvalidAlgRequestError, match="at least one alg"):
+        asyncio.run(
+            ingestion_service.ingest(
+                IngestionInput(
+                    filename="sample.wav",
+                    content_type="audio/wav",
+                    data=sample_wav_bytes,
+                    algs=[],
+                )
+            )
+        )
+
+
+def test_ingest_rejects_unknown_alg(
+    monkeypatch,
+    signing_service: SigningService,
+    artifacts: ArtifactStore,
+    records: InMemoryIngestionRecordRepository,
+    failed_records: InMemoryFailedIngestionRepository,
+    stub_resolution: _StubResolutionClient,
+    sample_wav_bytes: bytes,
+):
+    """Caller asks for an alg not in the catalog -> 400 (no record persisted)."""
+    from ingestion_api.services import orchestrator as orchestrator_module
+    from ingestion_api.services.algorithms import AlgorithmNotFoundError
+
+    def _resolve(alg, **_):
+        raise AlgorithmNotFoundError(f"unknown alg: {alg}")
+
+    monkeypatch.setattr(orchestrator_module, "resolve_algorithm", _resolve)
+
+    svc = IngestionService(
+        signing_service=signing_service,
+        artifacts=artifacts,
+        records=records,
+        failed_records=failed_records,
+        resolution_client=stub_resolution,
+    )
+
+    with pytest.raises(InvalidAlgRequestError, match="unknown algs"):
+        asyncio.run(
+            svc.ingest(
+                IngestionInput(
+                    filename="sample.wav",
+                    content_type="audio/wav",
+                    data=sample_wav_bytes,
+                    algs=["nope.does.not.exist"],
+                )
+            )
+        )
+
+    # Pre-allocate failure -> nothing persisted in either collection.
+    assert failed_records._records == {}  # noqa: SLF001
+    assert records._records == {}  # noqa: SLF001
+
+
+def test_ingest_rejects_alg_incompatible_with_mime(
+    monkeypatch,
+    signing_service: SigningService,
+    artifacts: ArtifactStore,
+    records: InMemoryIngestionRecordRepository,
+    failed_records: InMemoryFailedIngestionRepository,
+    stub_resolution: _StubResolutionClient,
+    sample_wav_bytes: bytes,
+):
+    """Caller asks for an alg that exists but doesn't list audio/wav in mediaTypes."""
+    video_only_entry = AlgorithmEntry(
+        alg="me.example.video.wm",
+        type="watermark",
+        value_bits=128,
+        media_types=("video/mp4",),  # NOT audio/wav
+        url="http://stubbed:9000",
+    )
+    from ingestion_api.services import orchestrator as orchestrator_module
+    monkeypatch.setattr(
+        orchestrator_module, "resolve_algorithm",
+        lambda alg, **_: video_only_entry,
+    )
+
+    svc = IngestionService(
+        signing_service=signing_service,
+        artifacts=artifacts,
+        records=records,
+        failed_records=failed_records,
+        resolution_client=stub_resolution,
+    )
+
+    with pytest.raises(InvalidAlgRequestError, match="incompatible"):
+        asyncio.run(
+            svc.ingest(
+                IngestionInput(
+                    filename="sample.wav",
+                    content_type="audio/wav",
+                    data=sample_wav_bytes,
+                    algs=["me.example.video.wm"],
+                )
+            )
+        )
+
+    assert failed_records._records == {}  # noqa: SLF001
+    assert records._records == {}  # noqa: SLF001
 
 
 def test_signed_asset_round_trips_through_reader(
@@ -422,6 +534,7 @@ def test_signed_asset_round_trips_through_reader(
                 filename="sample.wav",
                 content_type="audio/wav",
                 data=sample_wav_bytes,
+                algs=[BINDING_ALG],
             )
         )
     )
@@ -488,7 +601,6 @@ def test_ingest_with_watermark_plus_fingerprint(
         records=records,
         failed_records=failed_records,
         resolution_client=stub_resolution,
-        soft_binding_algs=[BINDING_ALG, FP_ALG],
     )
 
     result = asyncio.run(
@@ -497,6 +609,7 @@ def test_ingest_with_watermark_plus_fingerprint(
                 filename="sample.wav",
                 content_type="audio/wav",
                 data=sample_wav_bytes,
+                algs=[BINDING_ALG, FP_ALG],
             )
         )
     )

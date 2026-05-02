@@ -3,13 +3,13 @@ Models for the audio ingest pipeline.
 
 Two persisted shapes, one wire shape:
 
-- ``IngestionRecord`` — successful ingestions (``ingestions`` Mongo
-  collection, ``_id == ingestionId``). All success-only fields populated.
+- ``IngestionRecord`` — successful ingestions 
+    (``ingestions`` Mongo collection, ``_id == ingestionId``). 
 - ``FailedIngestion`` — pipeline failures captured for ops/forensics
-  (``failed_ingestions`` Mongo collection). Carries whatever metadata
-  was knowable at the failure point plus the failure stage and error.
-- ``IngestResponse`` — body of ``POST /ingest`` (success path only —
-  failures surface as HTTP 5xx).
+    (``failed_ingestions`` Mongo collection). 
+  Carries whatever metadata was knowable at the failure point plus the failure stage and error.
+- ``IngestResponse`` — body of ``POST /ingest`` 
+    (success path only — failures surface as HTTP 5xx).
 
 Successful records carry ``softBindings`` as a list of soft-binding
 records discriminated by ``kind`` (``watermark`` vs ``fingerprint``),
@@ -28,7 +28,24 @@ from pydantic import BaseModel, Field, model_validator
 
 SoftBindingKind = Literal["watermark", "fingerprint"]
 
+# Stamped onto every persisted doc (IngestionRecord, FailedIngestion) via
+# ``schemaVersion``. Bump on any breaking change to either model so read-side
+# code / migrations can branch on the version of the doc in hand.
 SCHEMA_VERSION = 1
+
+
+class MediaType(str, Enum):
+    """Top-level media category an ingest belongs to.
+
+    Derived from the upload's MIME at ingest time and persisted on the
+    record so ops queries can filter by media without parsing MIME
+    strings. 
+    
+    Add a new value when adding support for a new media family.
+    """
+    AUDIO = "audio"
+    VIDEO = "video"
+    IMAGE = "image"
 
 
 class FailureStage(str, Enum):
@@ -123,6 +140,10 @@ class _IngestionCommon(BaseModel):
     mimeType: str = Field(
         ...,
         description="MIME type of the signed asset (same container as the upload)",
+    )
+    mediaType: MediaType = Field(
+        ...,
+        description="Top-level media category (audio/video/image) derived from mimeType",
     )
     signingAlg: str = Field(..., description="Signing algorithm (e.g. ES256)")
     taUrl: str | None = Field(None, description="RFC3161 timestamp authority used")
@@ -239,6 +260,9 @@ class FailedIngestion(BaseModel):
     error: str = Field(..., description="Error message captured at the failure point")
     mimeType: str | None = Field(
         None, description="MIME type if guessed before failure (always set in practice)",
+    )
+    mediaType: MediaType | None = Field(
+        None, description="Media category if MIME was identified before failure",
     )
     uploadSha256: str = Field(
         ..., description="SHA-256 hex of the raw upload (always known when persisted)",

@@ -107,13 +107,19 @@ curl http://localhost:8101/info  | jq .
 curl http://localhost:8000/services/supportedAlgorithms | jq .
 ```
 
-Ingest an audio asset end-to-end:
+Ingest a media asset end-to-end (caller picks the algs, which must
+exist in `algorithms.yaml` and declare the upload's MIME):
 
 ```bash
 curl -X POST http://localhost:8001/ingest \
   -F "file=@/path/to/audio.wav;type=audio/wav" \
+  -F "algs=me.deepmark.audio.vigil.128" \
   -F "title=Hello world" | jq .
 ```
+
+Pass multiple algs by repeating the form field
+(`-F 'algs=foo' -F 'algs=bar'`); order matters (watermark passes
+mutate bytes for subsequent passes — put watermarks first).
 
 The response carries `outputAssetUrl`, `manifestUrl`, and
 `resolutionPush.status` so you can confirm the auto-push succeeded.
@@ -218,7 +224,6 @@ Common knobs:
 | `MONGODB_URL` | both (independent) | resolution: `mongodb://localhost:27017` / ingestion: **required** | Each service has its own Mongo cluster |
 | `DATABASE_NAME` | both (independent) | resolution: `c2pa_soft_bindings` / ingestion: **required** | Each service has its own DB |
 | `ALGORITHMS_CATALOG_PATH` | both | **required** | Shared YAML catalog path |
-| `AUDIO_ALGS` | ingestion-api | `["me.deepmark.audio.vigil.128"]` | JSON list of soft-binding algs per ingest (watermarks first, fingerprints last) |
 | `STORAGE_ROOT` | ingestion-api | **required** | Where signed assets + manifest bytes land (records live in Mongo) |
 | `CREDENTIALS_DIR` | ingestion-api | **required** | Cert + key root |
 | `SIGNING_ALG` | ingestion-api | `ES256` | C2PA signing algorithm |

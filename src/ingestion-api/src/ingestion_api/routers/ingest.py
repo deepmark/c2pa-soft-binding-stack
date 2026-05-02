@@ -1,13 +1,14 @@
 """
 Ingest routes.
 
-``POST /ingest`` accepts a single audio file upload, runs the full
-watermark + manifest + sign pipeline, persists the record to MongoDB,
+``POST /ingest`` accepts a single media asset upload + a caller-supplied
+``algs`` list (repeated multipart form field), runs the full
+soft-binding + manifest + sign pipeline, persists the record to MongoDB,
 auto-pushes to the resolution API, and returns JSON describing the
 resulting artifacts with download URLs.
 
 Helpers:
-- ``GET /ingest/{ingestionId}/asset``    download signed audio
+- ``GET /ingest/{ingestionId}/asset``    download signed asset
 - ``GET /ingest/{ingestionId}/manifest`` download raw signed manifest bytes
 - ``GET /ingest/{ingestionId}``          ingestion record (from MongoDB)
 """
@@ -27,7 +28,8 @@ from ingestion_api.services.orchestrator import (
     IngestionError,
     IngestionInput,
     IngestionService,
-    UnsupportedAudioFormatError,
+    InvalidAlgRequestError,
+    UnsupportedMediaError,
 )
 from ingestion_api.services.record_repository import MongoIngestionRecordRepository
 
@@ -82,6 +84,7 @@ def _build_response(
         manifestId=record.manifestId,
         softBindings=record.softBindings,
         mimeType=record.mimeType,
+        mediaType=record.mediaType,
         assetSha256=record.assetSha256,
         outputAssetUrl=output_url,
         manifestUrl=manifest_url,
@@ -96,17 +99,38 @@ def _build_response(
 @router.post(
     "/ingest",
     response_model=IngestResponse,
-    summary="Ingest an audio asset: watermark, build C2PA manifest, sign, store, push",
+    summary="Ingest a media asset: apply soft-bindings, build C2PA manifest, sign, store, push",
     responses={
         200: {"description": "Asset ingested successfully"},
-        400: {"description": "Unsupported audio format / empty upload"},
+        400: {
+            "description": (
+                "Unsupported media format, empty upload, empty / unknown / "
+                "MIME-incompatible algs"
+            ),
+        },
         500: {"description": "Pipeline failure"},
         503: {"description": "Service not ready (certs missing or plugin unreachable)"},
     },
 )
 async def ingest_audio(
     request: Request,
-    file: UploadFile = File(..., description="Audio file (WAV preferred)"),
+    file: UploadFile = File(
+        ...,
+        description=(
+            "Media asset to ingest. MIME / extension must match a supported "
+            "type (audio/wav, audio/mpeg, audio/flac, audio/ogg today)."
+        ),
+    ),
+    algs: list[str] = Form(
+        ...,
+        description=(
+            "Ordered list of soft-binding algorithm IDs to apply. Each must "
+            "exist in algorithms.yaml and declare the upload's MIME in its "
+            "`mediaTypes`. Order matters: watermark passes mutate bytes for "
+            "subsequent passes (put watermarks first). "
+            "Pass repeated form fields: `algs=a&algs=b`."
+        ),
+    ),
     title: str | None = Form(None, description="Optional manifest title"),
     service: IngestionService = Depends(get_ingestion_service),
     artifacts: ArtifactStore = Depends(get_artifact_store),
@@ -119,12 +143,13 @@ async def ingest_audio(
         filename=file.filename or "upload.bin",
         content_type=file.content_type,
         data=data,
+        algs=algs,
         title=title,
     )
 
     try:
         result = await service.ingest(payload)
-    except UnsupportedAudioFormatError as exc:
+    except (UnsupportedMediaError, InvalidAlgRequestError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except IngestionError as exc:
         logger.exception("Ingestion error")
@@ -202,5 +227,10 @@ async def get_manifest_bytes(
 )
 async def ingest_root() -> JSONResponse:
     return JSONResponse(
-        {"detail": "POST /ingest with a multipart form field `file=` to ingest audio."}
+        {
+            "detail": (
+                "POST /ingest with multipart form fields `file=<asset>` and "
+                "`algs=<alg-id>` (repeat for multiple algs)."
+            ),
+        },
     )

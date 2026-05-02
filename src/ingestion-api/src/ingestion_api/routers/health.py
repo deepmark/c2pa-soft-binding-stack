@@ -27,7 +27,8 @@ async def ready() -> dict:
     - MongoDB ping
     - cert + key files present
     - algorithm catalog loadable
-    - every configured ``audio_algs`` plugin /health responding
+    - every catalog plugin /health responding (catalog is the source of
+      truth for which algs this deployment can serve)
     - resolution-api /health responding (if RESOLUTION_API_URL set)
     """
     mongo_ok = False
@@ -46,34 +47,30 @@ async def ready() -> dict:
     creds_ok = cert_path.is_file() and key_path.is_file()
 
     catalog = load_catalog()
-    by_alg = {e.alg: e for e in catalog}
 
     plugins_report: list[dict] = []
     plugins_ok = True
     with httpx.Client(timeout=2.0) as c:
-        for alg in settings.audio_algs:
-            entry = by_alg.get(alg)
-            if entry is None or not entry.url:
+        for entry in catalog:
+            if not entry.url:
                 plugins_ok = False
                 plugins_report.append({
-                    "alg": alg,
+                    "alg": entry.alg,
                     "ok": False,
-                    "url": entry.url if entry else None,
-                    "error": (
-                        f"alg {alg!r} missing or has no URL in algorithms.yaml"
-                    ),
+                    "url": None,
+                    "error": f"alg {entry.alg!r} has no URL in algorithms.yaml",
                 })
                 continue
             try:
                 r = c.get(entry.url.rstrip("/") + "/health")
                 r.raise_for_status()
                 plugins_report.append({
-                    "alg": alg, "ok": True, "url": entry.url, "error": None,
+                    "alg": entry.alg, "ok": True, "url": entry.url, "error": None,
                 })
             except httpx.HTTPError as exc:
                 plugins_ok = False
                 plugins_report.append({
-                    "alg": alg, "ok": False, "url": entry.url, "error": str(exc),
+                    "alg": entry.alg, "ok": False, "url": entry.url, "error": str(exc),
                 })
 
     resolution_ok: bool | None = None
@@ -108,7 +105,6 @@ async def ready() -> dict:
             "private_key_path": str(key_path),
         },
         "ingest": {
-            "audio_algs": list(settings.audio_algs),
             "signing_alg": settings.signing_alg,
             "ta_url": settings.ta_url,
         },

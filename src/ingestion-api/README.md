@@ -27,9 +27,14 @@ ingestion-api                # uvicorn on port 8001
 
 Settings live in `src/ingestion_api/core/config.py`. Common overrides:
 
+Soft-binding algs are now passed per request via the `algs` form field
+on `POST /ingest` (repeated form fields, e.g.
+`-F 'algs=me.deepmark.audio.vigil.128'`). The catalog
+(`algorithms.yaml`) is the source of truth for which algs this
+deployment can serve; there is no service-wide default.
+
 | Var | Default | What |
 | --- | --- | --- |
-| `AUDIO_ALGS` | `["me.deepmark.audio.vigil.128"]` | JSON list of soft-binding algs per ingest (watermarks first, fingerprints last) |
 | `MONGODB_URL` | **required** | Ingestion-api's own Mongo cluster |
 | `DATABASE_NAME` | **required** | Database for the `ingestions` collection |
 | `ALGORITHMS_CATALOG_PATH` | **required** | Shared catalog (compose mounts `/catalog/algorithms.yaml`) |
