@@ -39,6 +39,8 @@ Settings live in `src/ingestion_api/core/config.py`. Common overrides:
 | `TA_URL` | _(unset)_ | RFC 3161 timestamp authority |
 | `RESOLUTION_PUSH_ENABLED` | `true` | Auto-push to resolution-api after sign |
 | `RESOLUTION_API_URL` | _(required when push enabled)_ | Auto-push target |
+| `RESOLUTION_MAX_RETRIES` | `1` | Per-HTTP-call retries on transient failure (5xx, timeout, network). 4xx never retries. |
+| `RESOLUTION_RETRY_BACKOFF_S` | `0.5` | Initial backoff between retries (doubles each attempt) |
 | `LOG_LEVEL` / `LOG_JSON` | `INFO` / `false` | Logging |
 
 ## Tests

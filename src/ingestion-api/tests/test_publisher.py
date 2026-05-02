@@ -101,3 +101,54 @@ def test_failed_when_empty_bindings():
     result, _ = rc.push(ResolutionPushRequest(b"m", []))
     assert result.status is ResolutionPushStatus.FAILED
     assert "non-empty" in (result.error or "")
+
+
+def test_retries_transient_5xx_then_succeeds():
+    """One transient 503 on /manifests, then 200 — exactly one retry consumed."""
+    manifests_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal manifests_calls
+        if request.url.path == "/manifests":
+            manifests_calls += 1
+            if manifests_calls == 1:
+                return httpx.Response(503, text="warming up")
+            return httpx.Response(200, json={"manifestId": "urn:c2pa:retried"})
+        if request.url.path == "/bindings":
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+    with _client(handler) as http:
+        rc = ResolutionPushClient(
+            base_url="http://soft-binding:8000",
+            client=http,
+            max_retries=1,
+            retry_backoff_s=0,  # no sleep in tests
+        )
+        result, mid = rc.push(_req(("alg", "v")))
+
+    assert result.status is ResolutionPushStatus.OK
+    assert mid == "urn:c2pa:retried"
+    assert manifests_calls == 2  # one initial + one retry
+
+
+def test_does_not_retry_4xx():
+    """4xx is permanent — no retry, immediate FAILED."""
+    manifests_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal manifests_calls
+        manifests_calls += 1
+        return httpx.Response(400, text="bad request")
+
+    with _client(handler) as http:
+        rc = ResolutionPushClient(
+            base_url="http://soft-binding:8000",
+            client=http,
+            max_retries=3,
+            retry_backoff_s=0,
+        )
+        result, _ = rc.push(_req(("alg", "v")))
+
+    assert result.status is ResolutionPushStatus.FAILED
+    assert manifests_calls == 1  # no retries on 4xx

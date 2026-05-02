@@ -30,6 +30,10 @@ os.environ.setdefault("DATABASE_NAME", "ingestion_api_tests")
 # so no real push target exists. Disable the auto-push gate so
 # Settings() validation passes without a URL.
 os.environ.setdefault("RESOLUTION_PUSH_ENABLED", "false")
+# Default retries to 0 in tests so 5xx-failure cases don't sleep
+# through backoff. Tests that exercise the retry branch construct
+# ResolutionPushClient with explicit max_retries.
+os.environ.setdefault("RESOLUTION_MAX_RETRIES", "0")
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

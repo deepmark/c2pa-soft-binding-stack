@@ -225,6 +225,8 @@ Common knobs:
 | `TA_URL` | ingestion-api | _(unset)_ | RFC 3161 timestamp authority |
 | `RESOLUTION_PUSH_ENABLED` | ingestion-api | `true` | Auto-push to resolution-api after sign |
 | `RESOLUTION_API_URL` | ingestion-api | _(required when push enabled)_ | Auto-push target |
+| `RESOLUTION_MAX_RETRIES` | ingestion-api | `1` | Per-HTTP-call retries on transient failure (5xx, timeout, network); 4xx never retries |
+| `RESOLUTION_RETRY_BACKOFF_S` | ingestion-api | `0.5` | Initial backoff between retries (doubles each attempt) |
 
 ## Known limitations / next steps
 

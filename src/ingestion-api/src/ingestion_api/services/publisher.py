@@ -26,6 +26,7 @@ with the persisted manifest bytes + sidecar.
 """
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -61,6 +62,8 @@ class ResolutionPushClient:
         *,
         enabled: bool | None = None,
         timeout_s: float | None = None,
+        max_retries: int | None = None,
+        retry_backoff_s: float | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         # When ``base_url`` is passed explicitly we treat that as "the
@@ -77,6 +80,12 @@ class ResolutionPushClient:
             self._enabled_flag = settings.resolution_push_enabled
         self._timeout = (
             timeout_s if timeout_s is not None else settings.resolution_request_timeout_s
+        )
+        self._max_retries = (
+            max_retries if max_retries is not None else settings.resolution_max_retries
+        )
+        self._retry_backoff_s = (
+            retry_backoff_s if retry_backoff_s is not None else settings.resolution_retry_backoff_s
         )
         self._owned_client = client is None
         self._client = client or httpx.Client(timeout=self._timeout)
@@ -130,12 +139,11 @@ class ResolutionPushClient:
 
     def _post_manifest(self, manifest_bytes: bytes) -> str | None:
         url = f"{self._base_url}/manifests"
-        r = self._client.post(
-            url,
+        r = self._send_with_retry(
+            "POST", url,
             content=manifest_bytes,
             headers={"Content-Type": "application/c2pa"},
         )
-        r.raise_for_status()
         try:
             data = r.json()
         except ValueError:
@@ -144,8 +152,40 @@ class ResolutionPushClient:
 
     def _post_binding(self, alg: str, binding_value: str, manifest_id: str) -> None:
         url = f"{self._base_url}/bindings"
-        r = self._client.post(
-            url,
+        self._send_with_retry(
+            "POST", url,
             json={"alg": alg, "bindingValue": binding_value, "manifestId": manifest_id},
         )
-        r.raise_for_status()
+
+    def _send_with_retry(self, method: str, url: str, **httpx_kwargs) -> httpx.Response:
+        """
+        Issue a single HTTP request with bounded retries on transient
+        failures. Transient = network/timeout errors and 5xx responses;
+        4xx surfaces immediately (deterministic, won't recover by
+        retrying). Sleeps with exponential backoff between attempts.
+        """
+        last_exc: Exception | None = None
+        attempts = self._max_retries + 1
+        for attempt in range(attempts):
+            try:
+                r = self._client.request(method, url, **httpx_kwargs)
+                r.raise_for_status()
+                return r
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                last_exc = exc
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code < 500:
+                    raise  # 4xx is permanent — no point retrying
+                last_exc = exc
+
+            remaining = attempts - attempt - 1
+            if remaining > 0:
+                backoff = self._retry_backoff_s * (2 ** attempt)
+                logger.warning(
+                    "Resolution-api %s %s transient failure (attempt %d/%d): %s — retrying in %.2fs",
+                    method, url, attempt + 1, attempts, last_exc, backoff,
+                )
+                time.sleep(backoff)
+
+        assert last_exc is not None  # loop above either returns or sets last_exc
+        raise last_exc
