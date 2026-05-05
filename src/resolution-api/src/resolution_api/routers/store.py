@@ -31,21 +31,27 @@ def _extract_manifest_id(manifest_data: bytes) -> str:
     identical bytes both services derive the same ID — that's what
     makes ``POST /manifests`` idempotent.
     """
-    try:
-        with Reader("application/c2pa", io.BytesIO(manifest_data)) as r:
-            data = json.loads(r.json())
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid C2PA manifest store: {exc}",
-        )
-    manifest_id = data.get("active_manifest")
-    if not manifest_id:
+
+    # Create a reader from the manifest data
+    # We need to provide a format, but since we're reading from manifest_data,
+    # the format doesn't matter as much - it won't read the stream
+    dummy_stream = io.BytesIO(b"")
+    reader = Reader(
+        format_or_path="audio/wav",  # Dummy format
+        stream=dummy_stream,
+        manifest_data=manifest_data  # This contains the actual manifest store
+    )
+    # Get the full manifest store as JSON
+    manifest_store_json = reader.json()
+    manifest_store = json.loads(manifest_store_json)
+    # Get the active manifest ID
+    active_manifest_id = manifest_store.get("active_manifest")
+    if not active_manifest_id:
         raise HTTPException(
             status_code=400,
             detail="Manifest store has no active_manifest label",
         )
-    return manifest_id
+    return active_manifest_id
 
 router = APIRouter(tags=["store"])
 
