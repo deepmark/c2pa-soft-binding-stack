@@ -38,6 +38,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from ingestion_api.core.config import settings
 from ingestion_api.core.logging import get_logger
 from ingestion_api.models.ingestion import (
+    IngestionListResponse,
     IngestionRecord,
     IngestResponse,
     ResolutionPushResult,
@@ -56,17 +57,19 @@ from ingestion_api.services.record_repository import (
     MongoIngestionRecordRepository,
 )
 from ingestion_api.services.signing import MissingSigningMaterialError
+from ingestion_api.utils.media import SUPPORTED_EXTENSIONS
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["ingest"])
 
-# Manifest download Content-Type — matches what the resolution-api push
-# uses on the wire and what c2pa-rs expects on inspection.
+# Manifest download Content-Type
+# matches what the resolution-api push uses on the wire and what c2pa-rs expects on inspection.
 _MANIFEST_MEDIA_TYPE = "application/c2pa"
+_OCTET_STREAM = "application/octet-stream"
 
 
 # ---------------------------------------------------------------------------
-# Dependency providers (deduped via _state).
+# Dependency providers.
 # ---------------------------------------------------------------------------
 
 
@@ -97,13 +100,13 @@ def get_record_repository(request: Request) -> MongoIngestionRecordRepository:
 # ---------------------------------------------------------------------------
 
 
-def _public_base(request: Request) -> str:
+def _response_base_url(request: Request) -> str:
     """Hybrid absolute-URL base.
 
-    ``settings.public_base_url`` wins when set (production: pin the
-    canonical host regardless of forwarded headers). Otherwise fall
-    back to ``request.base_url``, which has been rewritten by the
-    proxy-headers middleware to honor X-Forwarded-Proto/Host.
+    ``settings.public_base_url`` wins when set 
+    (production: pin the canonical host regardless of forwarded headers). 
+    Otherwise fallback to ``request.base_url``, which has been rewritten by the
+    ProxyHeadersMiddleware to honor X-Forwarded-Proto/Host.
     """
     if settings.public_base_url:
         return settings.public_base_url.rstrip("/")
@@ -115,10 +118,10 @@ def _build_response(
     request: Request,
     artifacts: ArtifactStore,
 ) -> IngestResponse:
-    base = _public_base(request)
+    base = _response_base_url(request)
     output_url = f"{base}/ingest/{record.ingestionId}/asset"
     # Derive manifestUrl from the artifact store rather than persisting
-    # path metadata on the record. Cheap (single stat() call).
+    # path metadata on the record.
     manifest_url = (
         f"{base}/ingest/{record.ingestionId}/manifest"
         if artifacts.load_manifest_bytes_path(record.ingestionId)
@@ -143,6 +146,11 @@ def _build_response(
         createdAt=record.createdAt,
         resolutionPush=push_result,
     )
+
+
+def _signed_asset_media_type(path) -> str:
+    """Infer served MIME from the deterministic signed artifact extension."""
+    return SUPPORTED_EXTENSIONS.get(path.suffix.lower(), _OCTET_STREAM)
 
 
 # ---------------------------------------------------------------------------
@@ -223,14 +231,11 @@ async def ingest_audio(
     try:
         result = await service.ingest(payload)
     except UnsupportedMediaError as exc:
-        # 415 is the right status for "MIME you sent isn't supported"
-        # (RFC 9110 §15.5.16).
         raise HTTPException(status_code=415, detail=str(exc)) from exc
     except InvalidAlgRequestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except MissingSigningMaterialError as exc:
-        # Cert/key vanished or became unreadable mid-flight. 503 — we
-        # can't sign without them, and there's no client-side fix.
+        # Cert/key vanished or became unreadable mid-flight.
         logger.exception("Missing signing material")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except IngestionError as exc:
@@ -245,6 +250,7 @@ async def ingest_audio(
 
 @router.get(
     "/ingestions",
+    response_model=IngestionListResponse,
     summary="List ingestions newest-first (cursor pagination)",
     responses={
         200: {"description": "Page of ingestions"},
@@ -263,20 +269,16 @@ async def list_ingestions(
         ),
     ),
     records: MongoIngestionRecordRepository = Depends(get_record_repository),
-) -> JSONResponse:
+) -> IngestionListResponse:
     try:
         page: IngestionListPage = await records.list(
             limit=limit, cursor=cursor, status=resolutionPushStatus,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    # Hand-marshal so we can name the cursor field idiomatically while
-    # still leaning on Pydantic for the items.
-    return JSONResponse(
-        {
-            "items": [r.model_dump(mode="json") for r in page.items],
-            "nextCursor": page.next_cursor,
-        },
+    return IngestionListResponse(
+        items=page.items,
+        nextCursor=page.next_cursor,
     )
 
 
@@ -296,6 +298,14 @@ async def get_ingestion(
     return record
 
 
+@router.head(
+    "/ingest/{ingestionId}/asset",
+    summary="Check the signed audio asset",
+    responses={
+        200: {"description": "Signed audio headers"},
+        404: {"description": "Ingestion or signed asset not found"},
+    },
+)
 @router.get(
     "/ingest/{ingestionId}/asset",
     summary="Download the signed audio asset",
@@ -307,16 +317,21 @@ async def get_ingestion(
 async def get_signed_asset(
     ingestionId: str,
     artifacts: ArtifactStore = Depends(get_artifact_store),
-    records: MongoIngestionRecordRepository = Depends(get_record_repository),
 ):
     path = artifacts.load_signed_asset(ingestionId)
     if path is None:
         raise HTTPException(status_code=404, detail="Signed asset not found")
-    record = await records.get(ingestionId)
-    media_type = record.mimeType if record else "application/octet-stream"
-    return FileResponse(path, media_type=media_type, filename=path.name)
+    return FileResponse(path, media_type=_signed_asset_media_type(path), filename=path.name)
 
 
+@router.head(
+    "/ingest/{ingestionId}/manifest",
+    summary="Check the raw signed C2PA manifest bytes",
+    responses={
+        200: {"description": "Raw manifest headers"},
+        404: {"description": "Ingestion or manifest bytes not found"},
+    },
+)
 @router.get(
     "/ingest/{ingestionId}/manifest",
     summary="Download the raw signed C2PA manifest bytes",
@@ -351,14 +366,10 @@ async def delete_ingestion(
 ):
     """Local takedown: removes artifacts on disk and the Mongo record.
 
-    Resolution-api is intentionally NOT touched here — leave the
-    upstream manifest registration in place so resolution still
-    works for already-distributed assets. Operators who need a remote
-    purge can call resolution-api directly.
+    Resolution-api is intentionally NOT touched here.
 
-    Idempotent: succeeds with 204 even when only one of the two
-    states exists. Returns 404 only when there is genuinely nothing
-    on either side to remove.
+    Idempotent: succeeds with 204 even when only one of the two states exists. 
+    Returns 404 only when there is genuinely nothing on either side to remove.
     """
     artifacts_existed = artifacts.delete(ingestionId)
     record_existed = await records.delete(ingestionId)

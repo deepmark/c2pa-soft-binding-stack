@@ -281,3 +281,15 @@ class IngestResponse(_IngestionCommon):
         ...,
         description="Outcome of the auto-push to the soft-binding resolution API",
     )
+
+
+class IngestionListResponse(BaseModel):
+    """Response body for ``GET /ingestions``."""
+    items: list[IngestionRecord] = Field(
+        default_factory=list,
+        description="Page of ingestion records, ordered newest-first",
+    )
+    nextCursor: str | None = Field(
+        None,
+        description="Opaque cursor to fetch the next page, or null when this is the last page",
+    )
