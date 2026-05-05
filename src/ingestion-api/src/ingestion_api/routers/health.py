@@ -5,25 +5,24 @@ Three endpoints, each scoped for a different consumer:
 
 - ``GET /health`` — liveness. Cheap, never reaches outside the process.
   Always 200 unless the process is itself crashed.
-- ``GET /ready`` — kubelet-style readiness. Process state + Mongo ping
-  only. Bounded sub-2s. Returns 503 when degraded so orchestrators can
-  actually route traffic away.
-- ``GET /health/deep`` — full fan-out: catalog plugins ``/health``, the
-  resolution-api ``/health`` (when push is enabled), and signing-cert
-  ``notAfter`` (informational, never gates readiness). Designed for
-  monitoring dashboards / human ops consumption, NOT for kubelets:
+
+- ``GET /ready`` — kubelet-style readiness. Process state + Mongo ping only. 
+  Bounded sub-2s. Returns 503 when degraded so orchestrators can actually route traffic away.
+
+- ``GET /health/deep`` — full fan-out: catalog plugins ``/health``, 
+  the resolution-api ``/health`` (when push is enabled), 
+  and the signing certificate's ``notAfter`` (informational, never gates readiness). 
+  Designed for monitoring dashboards / human ops consumption, NOT for kubelets:
   every call probes every plugin in parallel.
 
 Design notes:
 
-- All probes use ``httpx.AsyncClient`` so a slow plugin doesn't park
-  the worker; plugin probes are run concurrently via
-  ``asyncio.gather(return_exceptions=True)``.
-- ``/ready`` wraps the Mongo ``ping`` in ``asyncio.wait_for`` so a
+- All probes use ``httpx.AsyncClient`` so a slow plugin doesn't park the worker; 
+  plugin probes are run concurrently via ``asyncio.gather(return_exceptions=True)``.
+- ``/ready`` wraps the MongoDB ``ping`` in ``asyncio.wait_for`` so a
   hung primary can't extend the probe past the timeout budget.
-- Degraded ``/ready`` and ``/health/deep`` return HTTP 503 — body
-  shape unchanged so existing dashboards keep parsing fields, but the
-  status code now actually reflects the verdict.
+- Degraded ``/ready`` and ``/health/deep`` return HTTP 503
+  with a body detailing which subsystem(s) are degraded.
 """
 from __future__ import annotations
 
@@ -45,13 +44,19 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["health"])
 
-# Mongo ``ping`` is bounded by ``serverSelectionTimeoutMS=5_000`` from
-# core/database.py; tighten further for the readiness probe so a hung
-# primary can't extend us past the orchestrator's budget.
+# MongoDB ``ping`` is bounded by ``serverSelectionTimeoutMS=5_000`` from ``core/database.py``; 
 _READY_MONGO_TIMEOUT_S = 1.5
 # Per-probe HTTP timeout for the deep fan-out. Plugins respond to
 # ``/health`` in tens of milliseconds locally; 2s is a generous cap.
 _DEEP_HTTP_TIMEOUT_S = 2.0
+
+
+def _build_info() -> dict[str, str | None]:
+    """Build identity surfaced on health probes for ops/debugging."""
+    return {
+        "git_sha": settings.git_sha or None,
+        "image_tag": settings.image_tag or None,
+    }
 
 
 @router.get("/health", summary="Liveness probe")
@@ -60,15 +65,16 @@ async def health() -> dict:
         "status": "ok",
         "service": settings.api_title,
         "version": settings.api_version,
+        **_build_info(),
     }
 
 
 @router.get(
     "/ready",
-    summary="Readiness probe (process + Mongo only)",
+    summary="Readiness probe (process + MongoDB only)",
     responses={
         200: {"description": "Service is ready to accept traffic"},
-        503: {"description": "Service is degraded — body details which subsystem"},
+        503: {"description": "Service is degraded — body details which subsystems are degraded"},
     },
 )
 async def ready(request: Request) -> JSONResponse:
@@ -92,6 +98,7 @@ async def ready(request: Request) -> JSONResponse:
         "status": "ok" if overall_ok else "degraded",
         "service": settings.api_title,
         "version": settings.api_version,
+        **_build_info(),
         "mongodb": mongo,
         "credentials": {
             "ok": creds_ok,
@@ -121,13 +128,12 @@ async def ready(request: Request) -> JSONResponse:
 )
 async def health_deep(request: Request) -> JSONResponse:
     """
-    Heavy diagnostic probe. NOT for orchestrator readiness checks —
-    each call concurrently probes every catalog plugin's ``/health``
-    plus resolution-api's ``/health`` (when push is enabled). Use for
-    monitoring dashboards or on-demand troubleshooting.
-
-    Cert expiry (``notAfter``) is exposed on the response but never
-    gates the status; treat as informational and alert externally.
+    Heavy diagnostic probe. NOT for orchestrator readiness checks.
+    Each call concurrently probes every catalog plugin's ``/health``
+    plus resolution-api's ``/health`` (when push is enabled). 
+    
+    Cert expiry (``notAfter``) is exposed on the response but will not fail the status. 
+    Treat as informational and alert externally if nearing expiry.
     """
     mongo = await _check_mongo()
     creds_ok = (
@@ -155,6 +161,7 @@ async def health_deep(request: Request) -> JSONResponse:
         "status": "ok" if overall_ok else "degraded",
         "service": settings.api_title,
         "version": settings.api_version,
+        **_build_info(),
         "mongodb": mongo,
         "credentials": {
             "ok": creds_ok,
@@ -183,7 +190,7 @@ async def health_deep(request: Request) -> JSONResponse:
 
 
 async def _check_mongo() -> dict[str, Any]:
-    """Bounded Mongo ``ping``. Never raises."""
+    """Bounded MongoDB ``ping``. Never raises."""
     if MongoDB.client is None:
         return {
             "ok": False,
@@ -227,15 +234,25 @@ def _cert_info(request: Request) -> dict[str, Any]:
     """Best-effort leaf-cert metadata for /health/deep. Never raises."""
     svc: SigningService | None = getattr(request.app.state, "signing_service", None)
     if svc is None:
-        return {"not_after": None, "expires_in_days": None}
+        return {
+            "not_after": None,
+            "expired": None,
+            "expires_in_days": None,
+        }
     not_after = svc.credentials.leaf_not_after()
     if not_after is None:
-        return {"not_after": None, "expires_in_days": None}
+        return {
+            "not_after": None,
+            "expired": None,
+            "expires_in_days": None,
+        }
     now = datetime.now(timezone.utc)
     delta = not_after - now
+    expires_in_seconds = int(delta.total_seconds())
     return {
         "not_after": not_after.isoformat(),
-        "expires_in_days": int(delta.total_seconds() // 86400),
+        "expired": expires_in_seconds < 0,
+        "expires_in_days": max(0, expires_in_seconds // 86400),
     }
 
 

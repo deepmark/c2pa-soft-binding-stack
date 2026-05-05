@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     api_description: str = (
         "Watermark and build a signed C2PA manifests for digital assets."
     )
+    git_sha: str = Field(
+        "",
+        description="Git commit SHA for the running build (set by CI/deploy).",
+    )
+    image_tag: str = Field(
+        "",
+        description="Container image tag for the running build (set by CI/deploy).",
+    )
 
     # MongoDB (Ingestion-api's own DB cluster).
     mongodb_url: str = Field(
