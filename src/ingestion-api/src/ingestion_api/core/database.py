@@ -6,8 +6,8 @@ Two collections live here:
 - ``ingestions`` — one doc per successful ``IngestionRecord``.
 - ``failed_ingestions`` — one doc per ``FailedIngestion`` (pipeline failures captured for ops/forensics).
 
-No GridFS — the signed asset and manifest bytes stay on the local
-filesystem (see ``services.artifact_store``).
+No GridFS — the signed asset and manifest bytes stay on the local filesystem 
+(see ``services.artifact_store``).
 """
 from __future__ import annotations
 

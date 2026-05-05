@@ -22,7 +22,8 @@ from pydantic import BaseModel, Field, model_validator
 SoftBindingKind = Literal["watermark", "fingerprint"]
 
 # Stamped onto every persisted doc (IngestionRecord, FailedIngestion) via
-# ``schemaVersion``. Bump on any breaking change to either model so read-side
+# ``schemaVersion``. 
+# Bump on any breaking change to either model so read-side
 # code / migrations can branch on the version of the doc in hand.
 SCHEMA_VERSION = 1
 

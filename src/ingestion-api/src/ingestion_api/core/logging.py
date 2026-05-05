@@ -1,8 +1,8 @@
 """
 Logging configuration.
 
-Single entry point ``configure_logging`` is called once on app startup. Two
-modes:
+Single entry point ``configure_logging`` is called once on app startup. 
+Two modes:
 - plain (default): human-readable, single-line log records
 - json: one JSON document per line, suitable for log shippers
 
@@ -11,9 +11,13 @@ A per-request correlation id (``X-Request-ID``) is stored in a
 ``LogRecord`` via ``_RequestIDFilter`` so log shippers can collate
 request flows without each log site having to plumb the id manually.
 The contextvar is async-safe (each request has its own context) but
-does **not** auto-propagate into thread-pool executor calls — for that
-case capture the value in the async frame and pass it explicitly to
-the executor target.
+does **not** auto-propagate into thread-pool executor calls. Current
+executor-bound call sites handle that explicitly in
+``services/orchestrator.py``: ``IngestionService.ingest()`` captures
+``request_id = get_request_id()`` before entering the executor, then
+passes it into ``_run_plugin_passes(..., request_id=request_id)`` and
+``ResolutionPushClient.push(..., request_id=request_id)``. Future
+``run_in_executor`` call sites should copy that pattern.
 """
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ REQUEST_ID_HEADER = "X-Request-ID"
 # Populated per-request by ``RequestIDMiddleware``. 
 # Default is None so a log statement made outside of a request flow gets a placeholder.
 # Cap to 128 chars to defang clients sending unbounded ids that would end up in our logs verbatim.
-_request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None, max_len=128)
+_request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 
 def get_request_id() -> str | None:
