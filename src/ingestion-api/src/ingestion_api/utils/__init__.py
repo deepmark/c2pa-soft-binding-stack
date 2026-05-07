@@ -4,18 +4,22 @@ from ingestion_api.utils.ids import new_ingestion_id
 from ingestion_api.utils.media import (
     SUPPORTED_EXTENSIONS,
     SUPPORTED_MIME_TYPES,
+    AudioFormat,
     canonical_extension,
     guess_media_format,
     is_supported,
+    read_audio_format,
 )
 
 __all__ = [
     "SUPPORTED_EXTENSIONS",
     "SUPPORTED_MIME_TYPES",
+    "AudioFormat",
     "canonical_extension",
     "guess_media_format",
     "is_supported",
     "new_ingestion_id",
+    "read_audio_format",
     "sha256_hex",
     "sha256_truncated_b64",
 ]

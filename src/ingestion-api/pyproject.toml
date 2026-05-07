@@ -29,6 +29,9 @@ dependencies = [
     # Signer.from_info is broken for ES256 in c2pa-python 0.32.3 — we drive
     # signing through Signer.from_callback using cryptography directly.
     "cryptography>=42",
+    # Header-only audio metadata reader. Used to verify watermark plugins
+    # don't silently change sample rate / channels on the bytes we sign.
+    "mutagen>=1.47",
 ]
 
 [project.optional-dependencies]
