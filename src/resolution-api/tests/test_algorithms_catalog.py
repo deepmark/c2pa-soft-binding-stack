@@ -15,24 +15,39 @@ def test_load_catalog_parses_well_formed_entries(tmp_path: Path):
         algorithms:
           - alg: me.deepmark.audio.vigil.128
             type: watermark
-            valueBits: 128
+            bindingBits: 128
             mediaTypes: ["audio/wav"]
             url: http://watermark-vigil-128:8000
           - alg: org.example.fp.v1
             type: fingerprint
-            valueBits: 64
+            bindingBits: 64
             mediaTypes: ["audio/mpeg"]
     """))
     entries = load_catalog(p)
     assert len(entries) == 2
     wm = next(e for e in entries if e.type == "watermark")
     assert wm.alg == "me.deepmark.audio.vigil.128"
-    assert wm.value_bits == 128
+    assert wm.binding_bits == 128
     assert wm.url == "http://watermark-vigil-128:8000"
     assert "audio/wav" in wm.media_types
     fp = next(e for e in entries if e.type == "fingerprint")
     assert fp.alg == "org.example.fp.v1"
     assert fp.url is None
+
+
+def test_load_catalog_accepts_non_byte_aligned_binding_bits(tmp_path: Path):
+    """bindingBits doesn't have to be a multiple of 8."""
+    p = tmp_path / "algorithms.yaml"
+    p.write_text(dedent("""
+        algorithms:
+          - alg: weird.width
+            type: watermark
+            bindingBits: 100
+            mediaTypes: ["audio/wav"]
+    """))
+    entries = load_catalog(p)
+    assert len(entries) == 1
+    assert entries[0].binding_bits == 100
 
 
 def test_load_catalog_skips_malformed_entries(tmp_path: Path):
@@ -41,8 +56,15 @@ def test_load_catalog_skips_malformed_entries(tmp_path: Path):
         algorithms:
           - alg: ok.alg
             type: watermark
+            bindingBits: 128
           - {not_alg: nope}
+          - alg: zero.bits
+            type: watermark
+            bindingBits: 0
+          - alg: missing.bits
+            type: watermark
     """))
     entries = load_catalog(p)
     assert len(entries) == 1
     assert entries[0].alg == "ok.alg"
+    assert entries[0].binding_bits == 128

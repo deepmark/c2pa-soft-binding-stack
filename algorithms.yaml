@@ -6,30 +6,32 @@
 #    when handling `POST /ingest`.
 #
 # Schema:
-#   alg         -- canonical soft-binding algorithm identifier
-#   type        -- "watermark" or "fingerprint"
-#   valueBits   -- width of the binding value in bits
-#   mediaTypes  -- IANA media types this plugin can handle
-#   url         -- HTTP URL of the plugin container, used by ingestion-api
+#   alg          -- canonical soft-binding algorithm identifier
+#   type         -- "watermark" or "fingerprint"
+#   bindingBits  -- width of the binding value in bits (any positive int;
+#                   not required to be a multiple of 8)
+#   mediaTypes   -- IANA media types this plugin can handle
+#   url          -- HTTP URL of the plugin container, used by ingestion-api
 
 algorithms:
   - alg: me.deepmark.audio.vigil.128
     type: watermark
-    valueBits: 128
+    bindingBits: 128
     mediaTypes:
       - audio/wav
       - audio/wave
       - audio/x-wav
       - audio/mpeg
+      - audio/mp3
       - audio/flac
       - audio/x-flac
-      - audio/ogg
+      - audio/mp4
     url: http://watermark-vigil-128:8000
 
   # Fingerprint plugins go here, e.g.:
   #
   # - alg: org.example.audiofp.v1
   #   type: fingerprint
-  #   valueBits: 128
+  #   bindingBits: 128
   #   mediaTypes: ["audio/wav", "audio/mpeg"]
   #   url: http://fingerprint-example:8000

@@ -1,12 +1,11 @@
 """
 Algorithm catalog loader + plugin HTTP client.
 
-Catalog source of truth is the shared ``algorithms.yaml`` mounted at
-``settings.algorithms_catalog_path``. Each entry maps an algorithm
-identifier to:
+Catalog source of truth is the shared ``algorithms.yaml`` mounted at ``settings.algorithms_catalog_path``. 
+Each entry maps an algorithm identifier to:
 
 - its type (``watermark`` or ``fingerprint``),
-- its value width in bits,
+- its binding value width in bits,
 - supported media types,
 - a base URL for the plugin container (``url``).
 
@@ -15,9 +14,11 @@ The plugin HTTP contract (matching ``plugins/watermark/<name>/app.py``):
 Watermark plugin (``type: watermark``):
 - ``GET  /info``
 - ``POST /embed``  body = raw audio bytes (``application/octet-stream``);
-  optional ``X-Binding-Value`` request header to override the value.
-  Response body = watermarked bytes; ``X-Binding-Value`` response header
-  carries the resulting binding value.
+  required ``X-Binding-Value`` request header carries the API-generated value the plugin must embed; 
+  ``X-Media-Type`` carries the source MIME (e.g. ``audio/wav``).
+  Response body = watermarked bytes; 
+  ``X-Binding-Value`` response header echoes the embedded value 
+  (must equal the request header).
 - ``POST /detect`` body = raw audio bytes -> JSON ``{bindingValue|null}``
 - ``GET  /health``
 
@@ -26,11 +27,29 @@ Fingerprint plugin (``type: fingerprint``):
 - ``POST /compute`` body = raw audio bytes -> JSON ``{bindingValue}``
 - ``GET  /health``
 
+Header contract for binary endpoints (``/embed``, ``/detect``, ``/compute``):
+- ``Content-Type: application/octet-stream`` — describes the *wire encoding*
+  (opaque bytes). Tells frameworks/proxies/CDNs not to sniff or transcode.
+- ``X-Media-Type: <mime>`` — describes the *semantic format* of those bytes
+  (e.g. ``audio/wav``). The plugin uses this to pick its decoder. We split
+  the two because a real DSP plugin needs the MIME but we never want
+  intermediate hops to interpret ``audio/*`` and "helpfully" re-encode.
+
+Binding values are minted by ingestion-api (not by plugins) using
+``secrets.token_bytes`` sized to the plugin's declared ``bindingBits``.
+Bit widths that aren't byte-aligned are supported (the high bits of the
+first byte are zeroed). This keeps the value collision-free, unlinkable,
+and free of any DB roundtrip on the hot path. The plugin must echo the
+value it embedded so we can detect a misbehaving plugin that ignored the
+header.
+
 Bytes are exchanged in raw HTTP bodies, so plugin containers can run on
 hosts independent from ingestion-api (no shared filesystem required).
 """
 from __future__ import annotations
 
+import base64
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,6 +63,7 @@ from ingestion_api.models.ingestion import SoftBindingKind
 logger = get_logger(__name__)
 
 BINDING_VALUE_HEADER = "X-Binding-Value"
+MEDIA_TYPE_HEADER = "X-Media-Type"
 OCTET_STREAM = "application/octet-stream"
 
 # Process-local cache for ``/info`` results, keyed on the plugin URL.
@@ -69,14 +89,21 @@ class PluginUnavailableError(RuntimeError):
 class AlgorithmEntry:
     alg: str
     type: SoftBindingKind
-    value_bits: int | None
+    binding_bits: int
     media_types: tuple[str, ...]
     url: str | None
 
 
 def load_catalog(path: Path | None = None) -> list[AlgorithmEntry]:
     """Read + validate the YAML catalog. Returns an empty list if the file
-    is missing or malformed (each malformed row is skipped with a warning)."""
+    is missing or malformed (each malformed row is skipped with a warning).
+
+    ``bindingBits`` is required and must be positive. Non-byte-aligned
+    widths are allowed — the value generator zeroes the unused high
+    bits of the first byte. Entries with missing or non-positive
+    ``bindingBits`` are skipped at load time so the misconfig surfaces
+    at boot, not at first request.
+    """
     catalog_path = path or settings.algorithms_catalog_path
     if not catalog_path.is_file():
         logger.warning("Algorithm catalog not found at %s", catalog_path)
@@ -86,11 +113,16 @@ def load_catalog(path: Path | None = None) -> list[AlgorithmEntry]:
     out: list[AlgorithmEntry] = []
     for i, entry in enumerate(raw.get("algorithms") or []):
         try:
+            binding_bits = int(entry["bindingBits"])
+            if binding_bits <= 0:
+                raise ValueError(
+                    f"bindingBits must be positive, got {binding_bits}",
+                )
             out.append(
                 AlgorithmEntry(
                     alg=str(entry["alg"]),
                     type=entry["type"],
-                    value_bits=int(entry["valueBits"]) if entry.get("valueBits") else None,
+                    binding_bits=binding_bits,
                     media_types=tuple(entry.get("mediaTypes") or ()),
                     url=entry.get("url"),
                 )
@@ -196,16 +228,30 @@ class PluginClient:
         self,
         *,
         audio_bytes: bytes,
-        value: str | None = None,
+        mime_type: str,
     ) -> EmbedResult:
-        """Watermark plugin only. Returns the watermarked bytes + binding value."""
+        """Watermark plugin only. Returns the watermarked bytes + binding value.
+
+        The binding value is minted here (not by the plugin). The plugin
+        embeds whatever value we hand it via ``X-Binding-Value`` and must
+        echo the same value back in its response header — we verify the
+        echo to catch plugins that silently ignore the request header.
+        """
         if self._entry.type != "watermark":
             raise PluginUnavailableError(
                 f"alg={self.alg!r} is not a watermark plugin (type={self._entry.type})"
             )
-        headers = self._headers({"Content-Type": OCTET_STREAM})
-        if value is not None:
-            headers[BINDING_VALUE_HEADER] = value
+
+        binding_value = _new_binding_value(self._entry.binding_bits)
+
+        # Two-header pattern: Content-Type pins the wire encoding to opaque
+        # bytes (so no proxy/CDN tries to transcode audio/*); X-Media-Type
+        # tells the plugin what those bytes actually mean.
+        headers = self._headers({
+            "Content-Type": OCTET_STREAM,
+            MEDIA_TYPE_HEADER: mime_type,
+            BINDING_VALUE_HEADER: binding_value,
+        })
         url = self._url("/embed")
         try:
             r = self._client.post(url, content=audio_bytes, headers=headers)
@@ -213,30 +259,35 @@ class PluginClient:
         except httpx.HTTPError as exc:
             raise PluginUnavailableError(f"POST {url}: {exc}") from exc
 
-        binding_value = r.headers.get(BINDING_VALUE_HEADER)
-        if not binding_value:
+        echoed = r.headers.get(BINDING_VALUE_HEADER)
+        if not echoed:
             raise PluginUnavailableError(
                 f"Plugin {self.alg!r} did not return {BINDING_VALUE_HEADER} header"
             )
+        if echoed != binding_value:
+            raise PluginUnavailableError(
+                f"Plugin {self.alg!r} echoed a different binding value than "
+                f"requested (sent={binding_value!r}, got={echoed!r})"
+            )
         return EmbedResult(binding_value=binding_value, watermarked_bytes=r.content)
 
-    def detect(self, *, audio_bytes: bytes) -> str | None:
+    def detect(self, *, audio_bytes: bytes, mime_type: str) -> str | None:
         """Watermark plugin only."""
         if self._entry.type != "watermark":
             raise PluginUnavailableError(
                 f"alg={self.alg!r} is not a watermark plugin (type={self._entry.type})"
             )
-        data = self._post_json_with_body("/detect", audio_bytes)
+        data = self._post_json_with_body("/detect", audio_bytes, mime_type=mime_type)
         v = data.get("bindingValue")
         return v if isinstance(v, str) else None
 
-    def compute(self, *, audio_bytes: bytes) -> str:
+    def compute(self, *, audio_bytes: bytes, mime_type: str) -> str:
         """Fingerprint plugin only."""
         if self._entry.type != "fingerprint":
             raise PluginUnavailableError(
                 f"alg={self.alg!r} is not a fingerprint plugin (type={self._entry.type})"
             )
-        data = self._post_json_with_body("/compute", audio_bytes)
+        data = self._post_json_with_body("/compute", audio_bytes, mime_type=mime_type)
         return self._require_binding_value(data)
 
     def _url(self, path: str) -> str:
@@ -257,13 +308,18 @@ class PluginClient:
             raise PluginUnavailableError(f"GET {url}: {exc}") from exc
         return r.json()
 
-    def _post_json_with_body(self, path: str, body: bytes) -> dict:
+    def _post_json_with_body(
+        self, path: str, body: bytes, *, mime_type: str | None = None,
+    ) -> dict:
         url = self._url(path)
+        base_headers = {"Content-Type": OCTET_STREAM}
+        if mime_type:
+            base_headers[MEDIA_TYPE_HEADER] = mime_type
         try:
             r = self._client.post(
                 url,
                 content=body,
-                headers=self._headers({"Content-Type": OCTET_STREAM}),
+                headers=self._headers(base_headers),
             )
             r.raise_for_status()
         except httpx.HTTPError as exc:
@@ -278,3 +334,24 @@ class PluginClient:
                 f"Plugin returned no bindingValue: {data!r}"
             )
         return v
+
+
+def _new_binding_value(binding_bits: int) -> str:
+    """Cryptographically random binding value, ``binding_bits`` wide.
+
+    URL-safe base64, no padding. We generate ``ceil(bits/8)`` random bytes
+    and zero the unused high bits of the first byte, so the value contains
+    exactly ``binding_bits`` bits of entropy.
+
+    Wire convention: bytes are big-endian, MSB-first within each byte. For
+    widths not divisible by 8, the unused high bits of byte 0 are zero.
+    Any cross-language verifier (or future detector) must follow the same
+    packing — otherwise a value generated here won't compare equal to one
+    round-tripped through audio + a foreign decoder.
+    """
+    n_bytes = (binding_bits + 7) // 8
+    raw = bytearray(secrets.token_bytes(n_bytes))
+    extra = (8 * n_bytes) - binding_bits
+    if extra:
+        raw[0] &= 0xFF >> extra
+    return base64.urlsafe_b64encode(bytes(raw)).rstrip(b"=").decode("ascii")

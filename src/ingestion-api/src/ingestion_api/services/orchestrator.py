@@ -81,6 +81,7 @@ from ingestion_api.utils.media import (
     SUPPORTED_MIME_TYPES,
     canonical_extension,
     guess_media_format,
+    read_audio_format,
 )
 
 logger = get_logger(__name__)
@@ -287,7 +288,7 @@ class IngestionService:
             passes = await loop.run_in_executor(
                 None,
                 lambda: self._run_plugin_passes(
-                    entries, payload.data, request_id=request_id,
+                    entries, payload.data, mime_type, request_id=request_id,
                 ),
             )
         except PluginUnavailableError as exc:
@@ -491,6 +492,7 @@ class IngestionService:
         self,
         entries: Sequence[AlgorithmEntry],
         initial_bytes: bytes,
+        mime_type: str,
         *,
         request_id: str | None = None,
     ) -> list[_BindingPass]:
@@ -498,23 +500,32 @@ class IngestionService:
 
         Watermark plugins replace ``current_bytes`` with their /embed
         output; fingerprint plugins return only a binding value and
-        leave the bytes untouched.
+        leave the bytes untouched. ``mime_type`` is forwarded to every
+        plugin so it can pick the right decoder.
         """
         passes: list[_BindingPass] = []
         current_bytes = initial_bytes
         for entry in entries:
             with PluginClient(entry, request_id=request_id) as plugin:
                 if entry.type == "watermark":
-                    embed = plugin.embed(audio_bytes=current_bytes)
+                    in_format = read_audio_format(current_bytes)
+                    embed = plugin.embed(
+                        audio_bytes=current_bytes, mime_type=mime_type,
+                    )
                     if not embed.watermarked_bytes:
                         raise IngestionError(
                             f"Plugin {entry.alg!r} returned an empty watermarked payload",
                             stage=FailureStage.PLUGIN_PASS,
                         )
+                    self._verify_format_preserved(
+                        entry.alg, in_format, embed.watermarked_bytes,
+                    )
                     current_bytes = embed.watermarked_bytes
                     binding_value = embed.binding_value
                 elif entry.type == "fingerprint":
-                    binding_value = plugin.compute(audio_bytes=current_bytes)
+                    binding_value = plugin.compute(
+                        audio_bytes=current_bytes, mime_type=mime_type,
+                    )
                 else:
                     raise IngestionError(
                         f"Unsupported alg type {entry.type!r} for {entry.alg!r}",
@@ -528,6 +539,34 @@ class IngestionService:
                 ),
             )
         return passes
+
+    @staticmethod
+    def _verify_format_preserved(
+        alg: str, in_format, out_bytes: bytes,
+    ) -> None:
+        """Reject watermark plugins that change sample rate or channel count.
+
+        Skipped silently when either side is unparseable — we don't want
+        a header-parser quirk to nuke an otherwise-valid ingest. Real
+        format mismatches (a plugin that mono-mixed a stereo input,
+        re-sampled to a different rate, etc.) raise IngestionError.
+        """
+        if in_format is None:
+            return
+        out_format = read_audio_format(out_bytes)
+        if out_format is None:
+            logger.warning(
+                "Format-preservation check skipped for alg=%s "
+                "(could not parse plugin output bytes)", alg,
+            )
+            return
+        if in_format != out_format:
+            raise IngestionError(
+                f"Plugin {alg!r} changed audio format: "
+                f"in=(rate={in_format.sample_rate}, ch={in_format.channels}) "
+                f"out=(rate={out_format.sample_rate}, ch={out_format.channels})",
+                stage=FailureStage.PLUGIN_PASS,
+            )
 
     def _make_manifest_builder(self) -> ManifestBuilderService:
         return ManifestBuilderService(signer=self._signing_service.signer)

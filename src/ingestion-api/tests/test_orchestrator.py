@@ -2,9 +2,10 @@
 End-to-end orchestrator test (no Mongo, no live plugin, no live resolution API).
 
 Stubs:
-- ``PluginClient.embed`` -> returns an ``EmbedResult`` carrying the
-  passthrough watermarked bytes + the deterministic 128-bit binding
-  value, matching what the real vigil-128 plugin would produce.
+- ``PluginClient.embed`` -> passthrough watermarked bytes + a stable
+  test-derived binding value. In production the *real* PluginClient
+  mints the value via ``secrets`` and sends it to the plugin; the stub
+  bypasses both sides for deterministic assertions.
 - ``ResolutionPushClient.push`` -> records the request and returns a
   ``ResolutionPushResult.OK``.
 
@@ -59,9 +60,15 @@ def _binding_value(b: bytes) -> str:
 
 
 class _StubPluginClient:
-    """Drop-in replacement for the real PluginClient used by the orchestrator."""
+    """Drop-in replacement for the real PluginClient used by the orchestrator.
+
+    Returns a deterministic value derived from the input bytes so tests
+    can assert on it. The real client mints a random value; we stub past
+    that so assertions stay stable across runs.
+    """
     def __init__(self, entry: AlgorithmEntry, **_kwargs):
         self.entry = entry
+        self.last_mime_type: str | None = None
 
     def __enter__(self):
         return self
@@ -69,21 +76,22 @@ class _StubPluginClient:
     def __exit__(self, *exc):
         return None
 
-    def embed(self, *, audio_bytes: bytes, value: str | None = None) -> EmbedResult:
+    def embed(self, *, audio_bytes: bytes, mime_type: str) -> EmbedResult:
+        self.last_mime_type = mime_type
         return EmbedResult(
-            binding_value=value or _binding_value(audio_bytes),
+            binding_value=_binding_value(audio_bytes),
             watermarked_bytes=audio_bytes,
         )
 
-    def compute(self, *, audio_bytes: bytes) -> str:
-        # Stand-in for a fingerprint plugin: pure read, deterministic value.
+    def compute(self, *, audio_bytes: bytes, mime_type: str) -> str:
+        self.last_mime_type = mime_type
         return "fp:" + _binding_value(audio_bytes)
 
     def info_cached(self) -> dict:
         return {
             "alg": self.entry.alg,
             "type": self.entry.type,
-            "valueBits": self.entry.value_bits,
+            "bindingBits": self.entry.binding_bits,
             "version": "stub-0.0.1",
         }
 
@@ -151,7 +159,7 @@ def patched_plugin(monkeypatch):
     entry = AlgorithmEntry(
         alg=BINDING_ALG,
         type="watermark",
-        value_bits=128,
+        binding_bits=128,
         media_types=("audio/wav",),
         url="http://stubbed:8000",
     )
@@ -230,7 +238,7 @@ def test_ingest_produces_signed_asset_and_record(
         BINDING_ALG: {
             "alg": BINDING_ALG,
             "type": "watermark",
-            "valueBits": 128,
+            "bindingBits": 128,
             "version": "stub-0.0.1",
         },
     }
@@ -340,7 +348,7 @@ def test_pipeline_failure_persists_failed_ingestion(
     entry = AlgorithmEntry(
         alg=BINDING_ALG,
         type="watermark",
-        value_bits=128,
+        binding_bits=128,
         media_types=("audio/wav",),
         url="http://stubbed:8000",
     )
@@ -400,6 +408,89 @@ def test_pipeline_failure_persists_failed_ingestion(
 
     # No success record written.
     assert asyncio.run(records.get(failed.ingestionId)) is None
+
+
+def test_pipeline_rejects_plugin_that_changes_audio_format(
+    signing_service: SigningService,
+    artifacts: ArtifactStore,
+    records: InMemoryIngestionRecordRepository,
+    failed_records: InMemoryFailedIngestionRepository,
+    monkeypatch,
+    stub_resolution: _StubResolutionClient,
+    sample_wav_bytes: bytes,
+):
+    """Watermark plugin returns bytes with a different sample rate -> 5xx + persisted failure."""
+    import io
+    import wave
+
+    entry = AlgorithmEntry(
+        alg=BINDING_ALG,
+        type="watermark",
+        binding_bits=128,
+        media_types=("audio/wav",),
+        url="http://stubbed:8000",
+    )
+
+    def _resampled_wav() -> bytes:
+        """Same content shape but different sample rate -> format mismatch."""
+        buf = io.BytesIO()
+        with wave.open(buf, "w") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)  # input is 22050
+            w.writeframes(b"\x00\x00" * 100)
+        return buf.getvalue()
+
+    class _ResamplingPlugin:
+        def __init__(self, e, **_kw):
+            self.entry = e
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def embed(self, *, audio_bytes, mime_type):
+            return EmbedResult(
+                binding_value=_binding_value(audio_bytes),
+                watermarked_bytes=_resampled_wav(),
+            )
+
+        def info_cached(self):
+            return {"version": "resampler"}
+
+    from ingestion_api.services import orchestrator as orchestrator_module
+    monkeypatch.setattr(algorithms_module, "resolve", lambda alg, **_: entry)
+    monkeypatch.setattr(orchestrator_module, "PluginClient", _ResamplingPlugin)
+    monkeypatch.setattr(orchestrator_module, "resolve_algorithm", lambda a, **_: entry)
+
+    svc = IngestionService(
+        signing_service=signing_service,
+        artifacts=artifacts,
+        records=records,
+        failed_records=failed_records,
+        resolution_client=stub_resolution,
+    )
+
+    with pytest.raises(IngestionError, match="changed audio format") as exc_info:
+        asyncio.run(
+            svc.ingest(
+                IngestionInput(
+                    filename="sample.wav",
+                    content_type="audio/wav",
+                    data=sample_wav_bytes,
+                    algs=[BINDING_ALG],
+                )
+            )
+        )
+    assert exc_info.value.stage is FailureStage.PLUGIN_PASS
+
+    failures = list(failed_records._records.values())  # noqa: SLF001
+    assert len(failures) == 1
+    assert failures[0].failureStage is FailureStage.PLUGIN_PASS
+    # Pipeline didn't persist a success record.
+    assert records._records == {}  # noqa: SLF001
 
 
 def test_ingest_rejects_unsupported_media_format(
@@ -491,7 +582,7 @@ def test_ingest_rejects_alg_incompatible_with_mime(
     video_only_entry = AlgorithmEntry(
         alg="me.example.video.wm",
         type="watermark",
-        value_bits=128,
+        binding_bits=128,
         media_types=("video/mp4",),  # NOT audio/wav
         url="http://stubbed:9000",
     )
@@ -577,14 +668,14 @@ def test_ingest_with_watermark_plus_fingerprint(
         BINDING_ALG: AlgorithmEntry(
             alg=BINDING_ALG,
             type="watermark",
-            value_bits=128,
+            binding_bits=128,
             media_types=("audio/wav",),
             url="http://stubbed:8000",
         ),
         FP_ALG: AlgorithmEntry(
             alg=FP_ALG,
             type="fingerprint",
-            value_bits=128,
+            binding_bits=128,
             media_types=("audio/wav",),
             url="http://stubbed:8001",
         ),

@@ -12,7 +12,7 @@ app, mirroring the watermark plugin pattern.
    ### `GET /info`
    ```
    { "alg": "<reverse-DNS alg id>", "type": "fingerprint",
-     "valueBits": <int>, "mediaTypes": ["audio/wav", ...] }
+     "bindingBits": <int>, "mediaTypes": ["audio/wav", ...] }
    ```
 
    ### `GET /health`
@@ -42,7 +42,7 @@ app, mirroring the watermark plugin pattern.
    ```yaml
    - alg: org.example.audiofp.v1
      type: fingerprint
-     valueBits: 128
+     bindingBits: 128
      mediaTypes: ["audio/wav", "audio/mpeg"]
      url: http://fingerprint-example:8000
    ```

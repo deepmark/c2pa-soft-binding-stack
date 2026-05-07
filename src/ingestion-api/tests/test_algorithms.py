@@ -9,6 +9,7 @@ import pytest
 
 from ingestion_api.services.algorithms import (
     BINDING_VALUE_HEADER,
+    MEDIA_TYPE_HEADER,
     AlgorithmEntry,
     AlgorithmNotFoundError,
     PluginClient,
@@ -22,7 +23,7 @@ def _entry(**kw) -> AlgorithmEntry:
     return AlgorithmEntry(
         alg=kw.get("alg", "me.deepmark.audio.vigil.128"),
         type=kw.get("type", "watermark"),
-        value_bits=kw.get("value_bits", 128),
+        binding_bits=kw.get("binding_bits", 128),
         media_types=kw.get("media_types", ("audio/wav",)),
         url=kw.get("url", "http://plugin:8000"),
     )
@@ -43,19 +44,66 @@ def test_load_catalog_parses_well_formed_entries(tmp_path: Path):
         algorithms:
           - alg: me.deepmark.audio.vigil.128
             type: watermark
-            valueBits: 128
+            bindingBits: 128
             mediaTypes: ["audio/wav"]
             url: http://watermark-vigil-128:8000
     """))
     entries = load_catalog(p)
     assert len(entries) == 1
     assert entries[0].alg == "me.deepmark.audio.vigil.128"
+    assert entries[0].binding_bits == 128
     assert entries[0].url == "http://watermark-vigil-128:8000"
+
+
+def test_load_catalog_accepts_non_byte_aligned_binding_bits(tmp_path: Path):
+    """bindingBits doesn't have to be a multiple of 8."""
+    p = tmp_path / "algorithms.yaml"
+    p.write_text(dedent("""
+        algorithms:
+          - alg: weird.width
+            type: watermark
+            bindingBits: 100
+            mediaTypes: ["audio/wav"]
+            url: http://x:8000
+    """))
+    entries = load_catalog(p)
+    assert len(entries) == 1
+    assert entries[0].binding_bits == 100
 
 
 def test_resolve_raises_for_unknown_alg(tmp_path: Path):
     with pytest.raises(AlgorithmNotFoundError):
         resolve("nope", catalog=[])
+
+
+def test_load_catalog_skips_entries_with_bad_binding_bits(tmp_path: Path):
+    """bindingBits is required and must be positive."""
+    p = tmp_path / "algorithms.yaml"
+    p.write_text(dedent("""
+        algorithms:
+          - alg: ok.alg
+            type: watermark
+            bindingBits: 128
+            mediaTypes: ["audio/wav"]
+            url: http://ok:8000
+          - alg: missing.bits
+            type: watermark
+            mediaTypes: ["audio/wav"]
+            url: http://x:8000
+          - alg: zero.bits
+            type: watermark
+            bindingBits: 0
+            mediaTypes: ["audio/wav"]
+            url: http://x:8000
+          - alg: negative.bits
+            type: watermark
+            bindingBits: -8
+            mediaTypes: ["audio/wav"]
+            url: http://x:8000
+    """))
+    entries = load_catalog(p)
+    assert [e.alg for e in entries] == ["ok.alg"]
+    assert entries[0].binding_bits == 128
 
 
 # ---------------------------------------------------------------------------
@@ -68,59 +116,100 @@ def _mock_client(handler):
     return httpx.Client(transport=transport, base_url="http://plugin:8000")
 
 
-def test_plugin_client_embed_round_trip():
+def test_plugin_client_embed_generates_value_and_sends_headers():
+    """API mints the value and sends it via X-Binding-Value; plugin echoes."""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
         captured["body"] = request.content
         captured["content_type"] = request.headers.get("content-type")
+        captured["media_type"] = request.headers.get(MEDIA_TYPE_HEADER)
+        captured["sent_value"] = request.headers.get(BINDING_VALUE_HEADER)
         return httpx.Response(
             200,
             content=b"watermarked-bytes",
             headers={
-                BINDING_VALUE_HEADER: "ZmFrZQ==",
+                BINDING_VALUE_HEADER: captured["sent_value"],  # echo
                 "Content-Type": "application/octet-stream",
             },
         )
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
-        result = plugin.embed(audio_bytes=b"raw-audio")
+        result = plugin.embed(audio_bytes=b"raw-audio", mime_type="audio/wav")
 
-    assert result.binding_value == "ZmFrZQ=="
+    # Value is generated, non-empty, and matches what the plugin echoed.
+    assert result.binding_value == captured["sent_value"]
+    assert result.binding_value
+    # 128 bits = 16 bytes -> urlsafe-b64 unpadded len = 22.
+    assert len(result.binding_value) == 22
     assert result.watermarked_bytes == b"watermarked-bytes"
     assert captured["url"] == "http://plugin:8000/embed"
     assert captured["body"] == b"raw-audio"
     assert captured["content_type"] == "application/octet-stream"
+    assert captured["media_type"] == "audio/wav"
 
 
-def test_plugin_client_embed_forwards_caller_value():
+def test_plugin_client_embed_handles_non_byte_aligned_bits():
+    """Width of 100 bits: high 4 bits of the first decoded byte must be zero."""
+    import base64
+
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["override"] = request.headers.get(BINDING_VALUE_HEADER)
+        v = request.headers.get(BINDING_VALUE_HEADER)
+        captured["sent_value"] = v
+        return httpx.Response(200, content=b"x", headers={BINDING_VALUE_HEADER: v})
+
+    with _mock_client(handler) as c:
+        plugin = PluginClient(_entry(binding_bits=100), client=c)
+        result = plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
+
+    raw = base64.urlsafe_b64decode(result.binding_value + "==")
+    assert len(raw) == 13  # ceil(100 / 8)
+    # 4 unused high bits of the first byte must be masked.
+    assert raw[0] & 0xF0 == 0
+
+
+def test_plugin_client_embed_values_are_unique_across_calls():
+    """Cryptographic randomness — two calls must not produce the same value."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        v = request.headers.get(BINDING_VALUE_HEADER)
+        seen.append(v)
+        return httpx.Response(200, content=b"x", headers={BINDING_VALUE_HEADER: v})
+
+    with _mock_client(handler) as c:
+        plugin = PluginClient(_entry(), client=c)
+        for _ in range(5):
+            plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
+
+    assert len(set(seen)) == 5
+
+
+def test_plugin_client_embed_raises_on_echo_mismatch():
+    """Plugin that ignores the request header and returns a different value."""
+    def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200,
-            content=b"x",
-            headers={BINDING_VALUE_HEADER: "Y2FsbGVy"},
+            200, content=b"x", headers={BINDING_VALUE_HEADER: "tampered"},
         )
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
-        plugin.embed(audio_bytes=b"a", value="Y2FsbGVy")
+        with pytest.raises(PluginUnavailableError, match="echoed a different"):
+            plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
 
-    assert captured["override"] == "Y2FsbGVy"
 
-
-def test_plugin_client_embed_raises_when_header_missing():
+def test_plugin_client_embed_raises_when_echo_header_missing():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"bytes")
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
         with pytest.raises(PluginUnavailableError):
-            plugin.embed(audio_bytes=b"a")
+            plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
 
 
 def test_plugin_client_raises_on_5xx():
@@ -130,7 +219,7 @@ def test_plugin_client_raises_on_5xx():
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
         with pytest.raises(PluginUnavailableError):
-            plugin.embed(audio_bytes=b"a")
+            plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
 
 
 def test_plugin_client_rejects_wrong_type():
@@ -138,21 +227,23 @@ def test_plugin_client_rejects_wrong_type():
     with _mock_client(lambda r: httpx.Response(200, json={})) as c:
         plugin = PluginClient(fp_entry, client=c)
         with pytest.raises(PluginUnavailableError):
-            plugin.embed(audio_bytes=b"a")
+            plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
 
 
-def test_plugin_client_compute_for_fingerprint():
+def test_plugin_client_compute_for_fingerprint_sends_media_type():
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = request.content
+        captured["media_type"] = request.headers.get(MEDIA_TYPE_HEADER)
         return httpx.Response(200, json={"bindingValue": "abc"})
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(type="fingerprint"), client=c)
-        assert plugin.compute(audio_bytes=b"raw") == "abc"
+        assert plugin.compute(audio_bytes=b"raw", mime_type="audio/wav") == "abc"
 
     assert captured["body"] == b"raw"
+    assert captured["media_type"] == "audio/wav"
 
 
 def test_plugin_client_detect_returns_none_when_missing():
@@ -161,4 +252,4 @@ def test_plugin_client_detect_returns_none_when_missing():
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
-        assert plugin.detect(audio_bytes=b"raw") is None
+        assert plugin.detect(audio_bytes=b"raw", mime_type="audio/wav") is None

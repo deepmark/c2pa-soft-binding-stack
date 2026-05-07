@@ -12,7 +12,7 @@ Schema::
     algorithms:
       - alg: me.deepmark.audio.vigil.128
         type: watermark            # watermark | fingerprint
-        valueBits: 128
+        bindingBits: 128
         mediaTypes: ["audio/wav", "audio/mpeg"]
         url: http://watermark-vigil-128:8000   # ingestion-api uses this; resolution
                                                 # api ignores it but keeps it for
@@ -41,14 +41,20 @@ AlgorithmType = Literal["watermark", "fingerprint"]
 class AlgorithmEntry:
     alg: str
     type: AlgorithmType
-    value_bits: int | None = None
+    binding_bits: int
     media_types: tuple[str, ...] = ()
     url: str | None = None
 
 
 def load_catalog(path: Path | None = None) -> list[AlgorithmEntry]:
     """Read + validate the YAML catalog. Returns an empty list if the file
-    is missing — that's a degraded state the operator can fix at runtime."""
+    is missing — that's a degraded state the operator can fix at runtime.
+
+    ``bindingBits`` is required and must be positive. Non-byte-aligned
+    widths are allowed (ingestion-api masks the high bits when minting).
+    Entries with missing or non-positive ``bindingBits`` are skipped so
+    this service never advertises an alg that ingestion-api would reject.
+    """
     catalog_path = path or settings.algorithms_catalog_path
     if not catalog_path.is_file():
         logger.warning("Algorithm catalog not found at %s", catalog_path)
@@ -59,11 +65,16 @@ def load_catalog(path: Path | None = None) -> list[AlgorithmEntry]:
     out: list[AlgorithmEntry] = []
     for i, entry in enumerate(algorithms):
         try:
+            binding_bits = int(entry["bindingBits"])
+            if binding_bits <= 0:
+                raise ValueError(
+                    f"bindingBits must be positive, got {binding_bits}",
+                )
             out.append(
                 AlgorithmEntry(
                     alg=str(entry["alg"]),
                     type=entry["type"],
-                    value_bits=int(entry["valueBits"]) if entry.get("valueBits") else None,
+                    binding_bits=binding_bits,
                     media_types=tuple(entry.get("mediaTypes") or ()),
                     url=entry.get("url"),
                 )
