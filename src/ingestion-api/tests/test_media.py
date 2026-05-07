@@ -23,18 +23,19 @@ from ingestion_api.utils.media import (
 
 
 def test_supported_mimes_match_c2pa_audio_set():
-    """The C2PA SDK signs audio/wav, audio/mpeg, audio/flac, audio/mp4."""
+    """The C2PA SDK signs audio/wav, audio/mpeg, audio/flac, audio/mp4.
+
+    Each accepted MIME entry is ``(media_type, canonical_mime, ext)`` —
+    the canonical column collapses aliases to the four C2PA names.
+    """
     canonical = {
-        SUPPORTED_MIME_TYPES["audio/wav"],
-        SUPPORTED_MIME_TYPES["audio/mpeg"],
-        SUPPORTED_MIME_TYPES["audio/flac"],
-        SUPPORTED_MIME_TYPES["audio/mp4"],
+        (mt, cm) for mt, cm, _ in SUPPORTED_MIME_TYPES.values()
     }
     assert canonical == {
-        (MediaType.AUDIO, "wav"),
-        (MediaType.AUDIO, "mp3"),
-        (MediaType.AUDIO, "flac"),
-        (MediaType.AUDIO, "m4a"),
+        (MediaType.AUDIO, "audio/wav"),
+        (MediaType.AUDIO, "audio/mpeg"),
+        (MediaType.AUDIO, "audio/flac"),
+        (MediaType.AUDIO, "audio/mp4"),
     }
 
 
@@ -60,6 +61,30 @@ def test_guess_media_format_falls_back_to_extension():
 def test_guess_media_format_returns_none_for_unsupported():
     assert guess_media_format("doc.pdf", "application/pdf") is None
     assert guess_media_format("clip.ogg", "audio/ogg") is None
+
+
+@pytest.mark.parametrize(
+    "alias,canonical",
+    [
+        ("audio/wave", "audio/wav"),
+        ("audio/x-wav", "audio/wav"),
+        ("AUDIO/X-WAV; charset=binary", "audio/wav"),
+        ("audio/mp3", "audio/mpeg"),
+        ("audio/x-flac", "audio/flac"),
+    ],
+)
+def test_guess_media_format_canonicalizes_aliases(alias: str, canonical: str):
+    """Aliases collapse to their canonical MIME so downstream code only
+    ever sees one string per format."""
+    assert guess_media_format(None, alias) == (MediaType.AUDIO, canonical)
+
+
+def test_canonical_extension_accepts_aliases():
+    """Accepts either canonical or alias; both yield the canonical ext."""
+    assert canonical_extension("audio/wav") == ".wav"
+    assert canonical_extension("audio/x-wav") == ".wav"
+    assert canonical_extension("audio/mp3") == ".mp3"
+    assert canonical_extension("audio/mpeg") == ".mp3"
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +129,9 @@ def test_audio_format_equality_ignores_bit_depth():
 
 
 @pytest.mark.parametrize("alias", ["audio/wave", "audio/x-wav", "audio/mp3", "audio/x-flac"])
-def test_aliases_resolve_to_canonical_extension(alias: str):
+def test_aliases_are_supported(alias: str):
+    """All accepted aliases resolve as supported audio MIMEs.
+    (Canonicalization of the returned MIME is asserted separately.)"""
     assert is_supported(None, alias)
     fmt = guess_media_format(None, alias)
     assert fmt is not None

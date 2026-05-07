@@ -17,14 +17,13 @@ algorithms:
   - alg: me.deepmark.audio.vigil.128
     type: watermark
     bindingBits: 128
+    # Use canonical IANA MIMEs only — ingestion-api canonicalizes
+    # aliases (audio/wave, audio/x-wav, audio/mp3, audio/x-flac) before
+    # matching against this list, so listing them here is redundant.
     mediaTypes:
       - audio/wav
-      - audio/wave
-      - audio/x-wav
       - audio/mpeg
-      - audio/mp3
       - audio/flac
-      - audio/x-flac
       - audio/mp4
     url: http://watermark-vigil-128:8000
 

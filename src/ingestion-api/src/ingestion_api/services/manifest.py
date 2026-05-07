@@ -165,9 +165,9 @@ class ManifestBuilderService:
         )
 
         with Builder.from_json(manifest_def) as builder:
-            # EDIT intent: SDK adds c2pa.opened + parentOf ingredient + the
-            # right ingredientIds linkage from the source stream. See:
-            # https://opensource.contentauthenticity.org/docs/c2pa-python/docs/intents
+            # EDIT intent: SDK adds c2pa.opened + parentOf ingredient 
+            # + the right ingredientIds linkage from the source stream. 
+            # See: https://opensource.contentauthenticity.org/docs/c2pa-python/docs/intents
             builder.set_intent(C2paBuilderIntent.EDIT)
             with io.BytesIO(source_bytes) as src, open(dest_path, "w+b") as dst:
                 manifest_bytes = builder.sign(self._signer, mime_type, src, dst)

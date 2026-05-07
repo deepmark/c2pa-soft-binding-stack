@@ -87,6 +87,20 @@ from ingestion_api.utils.media import (
 logger = get_logger(__name__)
 
 
+def _snapshot_format(media_type: MediaType, data: bytes):
+    """Return a media-type-specific format snapshot used for the
+    watermark format-preservation check, or ``None`` when no inspector
+    is implemented for ``media_type`` (the verifier then logs + skips).
+
+    Add a new branch here when image / video plugins land — keep the
+    inspector dispatch table in one place rather than scattered in the
+    pipeline.
+    """
+    if media_type is MediaType.AUDIO:
+        return read_audio_format(data)
+    return None
+
+
 class IngestionError(RuntimeError):
     """Generic ingestion failure with a stable HTTP-friendly message.
 
@@ -288,7 +302,8 @@ class IngestionService:
             passes = await loop.run_in_executor(
                 None,
                 lambda: self._run_plugin_passes(
-                    entries, payload.data, mime_type, request_id=request_id,
+                    entries, payload.data, media_type, mime_type,
+                    request_id=request_id,
                 ),
             )
         except PluginUnavailableError as exc:
@@ -492,6 +507,7 @@ class IngestionService:
         self,
         entries: Sequence[AlgorithmEntry],
         initial_bytes: bytes,
+        media_type: MediaType,
         mime_type: str,
         *,
         request_id: str | None = None,
@@ -501,14 +517,15 @@ class IngestionService:
         Watermark plugins replace ``current_bytes`` with their /embed
         output; fingerprint plugins return only a binding value and
         leave the bytes untouched. ``mime_type`` is forwarded to every
-        plugin so it can pick the right decoder.
+        plugin so it can pick the right decoder. ``media_type`` selects
+        the watermark format-preservation check (audio-only today).
         """
         passes: list[_BindingPass] = []
         current_bytes = initial_bytes
         for entry in entries:
             with PluginClient(entry, request_id=request_id) as plugin:
                 if entry.type == "watermark":
-                    in_format = read_audio_format(current_bytes)
+                    in_format = _snapshot_format(media_type, current_bytes)
                     embed = plugin.embed(
                         audio_bytes=current_bytes, mime_type=mime_type,
                     )
@@ -518,7 +535,7 @@ class IngestionService:
                             stage=FailureStage.PLUGIN_PASS,
                         )
                     self._verify_format_preserved(
-                        entry.alg, in_format, embed.watermarked_bytes,
+                        entry.alg, media_type, in_format, embed.watermarked_bytes,
                     )
                     current_bytes = embed.watermarked_bytes
                     binding_value = embed.binding_value
@@ -542,15 +559,27 @@ class IngestionService:
 
     @staticmethod
     def _verify_format_preserved(
-        alg: str, in_format, out_bytes: bytes,
+        alg: str, media_type: MediaType, in_format, out_bytes: bytes,
     ) -> None:
-        """Reject watermark plugins that change sample rate or channel count.
+        """Reject watermark plugins that change a media-type-specific
+        format invariant (audio: sample rate + channel count).
+
+        Dispatches by ``media_type``. For media types without an
+        implemented inspector the check is skipped with a loud warning
+        so adding a new MIME doesn't silently turn the safeguard off.
 
         Skipped silently when either side is unparseable — we don't want
         a header-parser quirk to nuke an otherwise-valid ingest. Real
         format mismatches (a plugin that mono-mixed a stereo input,
         re-sampled to a different rate, etc.) raise IngestionError.
         """
+        if media_type is not MediaType.AUDIO:
+            logger.warning(
+                "No format-preservation inspector for media_type=%s; "
+                "watermark plugin %r ran without a preservation check.",
+                media_type.value, alg,
+            )
+            return
         if in_format is None:
             return
         out_format = read_audio_format(out_bytes)

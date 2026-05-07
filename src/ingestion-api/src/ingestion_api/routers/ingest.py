@@ -184,17 +184,16 @@ async def ingest_audio(
         description=(
             "Ordered list of soft-binding algorithm IDs to apply. Each must "
             "exist in algorithms.yaml and declare the upload's MIME in its "
-            "`mediaTypes`. Order matters: watermark passes mutate bytes for "
-            "subsequent passes (put watermarks first). Pass repeated form "
-            f"fields: `algs=a&algs=b`. Capped at {settings.max_algs_per_ingest} "
-            "entries per request."
+            "`mediaTypes`. Order matters: watermark passes mutate bytes for subsequent passes. "
+            "We advise putting watermarks first. Pass repeated form fields: `algs=a&algs=b`. "
+            f"Capped at {settings.max_algs_per_ingest} entries per request."
         ),
     ),
     title: str | None = Form(
         None,
         description=(
-            "Optional manifest title. Capped at "
-            f"{settings.max_title_length} characters."
+            "Optional manifest title. "
+            f"Capped at {settings.max_title_length} characters."
         ),
     ),
     service: IngestionService = Depends(get_ingestion_service),

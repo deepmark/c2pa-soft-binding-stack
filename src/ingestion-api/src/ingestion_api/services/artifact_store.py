@@ -1,17 +1,16 @@
 """
-Local filesystem store for ingest binary artifacts (the signed asset
-and the raw signed manifest bytes).
+Local filesystem store for ingest binary artifacts 
+(the signed asset and the raw signed manifest bytes).
 
-We never persist the raw upload or any plugin-side watermarked
-intermediate — plugin bytes flow over HTTP and stay in memory until
-the signing step. This module only manages the *durable* binary set:
+We never persist the raw upload or any plugin-side watermarked intermediate.
+Plugin bytes flow over HTTP and stay in memory until the signing step. 
+This module only manages the *durable* binary set:
 
     <storage_root>/ingestions/<ingestionId>/
       signed.<ext>            # signed asset emitted by Builder.sign
       manifest.c2pa           # raw manifest bytes returned by the SDK
 
-Structured ingestion records (alg list, manifestId, push status, etc.)
-live in MongoDB — see ``services.record_repository``.
+Structured ingestion records live in MongoDB — see ``services.record_repository``.
 """
 from __future__ import annotations
 
