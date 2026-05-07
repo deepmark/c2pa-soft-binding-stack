@@ -267,7 +267,7 @@ class IngestResponse(_IngestionCommon):
     """Response body for ``POST /ingest``."""
     outputAssetUrl: str = Field(
         ...,
-        description="URL to download the watermarked, signed audio asset",
+        description="URL to download the watermarked, signed media asset",
     )
     manifestUrl: str | None = Field(
         None,

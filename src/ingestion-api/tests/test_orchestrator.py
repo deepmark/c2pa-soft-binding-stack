@@ -76,16 +76,16 @@ class _StubPluginClient:
     def __exit__(self, *exc):
         return None
 
-    def embed(self, *, audio_bytes: bytes, mime_type: str) -> EmbedResult:
+    def embed(self, *, media_bytes: bytes, mime_type: str) -> EmbedResult:
         self.last_mime_type = mime_type
         return EmbedResult(
-            binding_value=_binding_value(audio_bytes),
-            watermarked_bytes=audio_bytes,
+            binding_value=_binding_value(media_bytes),
+            watermarked_bytes=media_bytes,
         )
 
-    def compute(self, *, audio_bytes: bytes, mime_type: str) -> str:
+    def compute(self, *, media_bytes: bytes, mime_type: str) -> str:
         self.last_mime_type = mime_type
-        return "fp:" + _binding_value(audio_bytes)
+        return "fp:" + _binding_value(media_bytes)
 
     def info_cached(self) -> dict:
         return {
@@ -451,9 +451,9 @@ def test_pipeline_rejects_plugin_that_changes_audio_format(
         def __exit__(self, *exc):
             return None
 
-        def embed(self, *, audio_bytes, mime_type):
+        def embed(self, *, media_bytes, mime_type):
             return EmbedResult(
-                binding_value=_binding_value(audio_bytes),
+                binding_value=_binding_value(media_bytes),
                 watermarked_bytes=_resampled_wav(),
             )
 

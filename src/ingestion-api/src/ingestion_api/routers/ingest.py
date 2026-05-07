@@ -170,7 +170,7 @@ def _signed_asset_media_type(path) -> str:
         503: {"description": "Service not ready (signing material missing or plugin unreachable)"},
     },
 )
-async def ingest_audio(
+async def ingest_media(
     request: Request,
     file: UploadFile = File(
         ...,
@@ -299,17 +299,17 @@ async def get_ingestion(
 
 @router.head(
     "/ingest/{ingestionId}/asset",
-    summary="Check the signed audio asset",
+    summary="Check the signed media asset",
     responses={
-        200: {"description": "Signed audio headers"},
+        200: {"description": "Signed media headers"},
         404: {"description": "Ingestion or signed asset not found"},
     },
 )
 @router.get(
     "/ingest/{ingestionId}/asset",
-    summary="Download the signed audio asset",
+    summary="Download the signed media asset",
     responses={
-        200: {"description": "Signed audio bytes"},
+        200: {"description": "Signed media bytes"},
         404: {"description": "Ingestion or signed asset not found"},
     },
 )

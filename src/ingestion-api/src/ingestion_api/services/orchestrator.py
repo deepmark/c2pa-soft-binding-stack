@@ -527,7 +527,7 @@ class IngestionService:
                 if entry.type == "watermark":
                     in_format = _snapshot_format(media_type, current_bytes)
                     embed = plugin.embed(
-                        audio_bytes=current_bytes, mime_type=mime_type,
+                        media_bytes=current_bytes, mime_type=mime_type,
                     )
                     if not embed.watermarked_bytes:
                         raise IngestionError(
@@ -541,7 +541,7 @@ class IngestionService:
                     binding_value = embed.binding_value
                 elif entry.type == "fingerprint":
                     binding_value = plugin.compute(
-                        audio_bytes=current_bytes, mime_type=mime_type,
+                        media_bytes=current_bytes, mime_type=mime_type,
                     )
                 else:
                     raise IngestionError(

@@ -137,15 +137,15 @@ class ManifestBuilderService:
         """
         Build the manifest definition, set EDIT intent, sign.
 
-        The source audio is fed through an in-memory stream — we never
+        The source bytes are fed through an in-memory stream — we never
         persist the raw upload or any (dummy) watermarked intermediate.
         Only the signed output is written, to ``dest_path``.
 
         Args:
-            source_bytes: Watermarked audio bytes that will become the
+            source_bytes: Watermarked media bytes that will become the
                 signed output's payload. The EDIT intent uses the same
                 stream to auto-create the ``parentOf`` ingredient.
-            dest_path: Where to write the signed audio.
+            dest_path: Where to write the signed asset.
             mime_type: e.g. ``audio/wav``.
             soft_bindings: One or more ``SoftBindingSpec`` to embed. One
                 ``c2pa.soft-binding`` assertion is emitted per entry.

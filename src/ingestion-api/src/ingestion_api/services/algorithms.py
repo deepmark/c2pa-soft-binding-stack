@@ -13,18 +13,18 @@ The plugin HTTP contract (matching ``plugins/watermark/<name>/app.py``):
 
 Watermark plugin (``type: watermark``):
 - ``GET  /info``
-- ``POST /embed``  body = raw audio bytes (``application/octet-stream``);
+- ``POST /embed``  body = raw media bytes (``application/octet-stream``);
   required ``X-Binding-Value`` request header carries the API-generated value the plugin must embed; 
   ``X-Media-Type`` carries the source MIME (e.g. ``audio/wav``).
   Response body = watermarked bytes; 
   ``X-Binding-Value`` response header echoes the embedded value 
   (must equal the request header).
-- ``POST /detect`` body = raw audio bytes -> JSON ``{bindingValue|null}``
+- ``POST /detect`` body = raw media bytes -> JSON ``{bindingValue|null}``
 - ``GET  /health``
 
 Fingerprint plugin (``type: fingerprint``):
 - ``GET  /info``
-- ``POST /compute`` body = raw audio bytes -> JSON ``{bindingValue}``
+- ``POST /compute`` body = raw media bytes -> JSON ``{bindingValue}``
 - ``GET  /health``
 
 Header contract for binary endpoints (``/embed``, ``/detect``, ``/compute``):
@@ -32,8 +32,8 @@ Header contract for binary endpoints (``/embed``, ``/detect``, ``/compute``):
   (opaque bytes). Tells frameworks/proxies/CDNs not to sniff or transcode.
 - ``X-Media-Type: <mime>`` — describes the *semantic format* of those bytes
   (e.g. ``audio/wav``). The plugin uses this to pick its decoder. We split
-  the two because a real DSP plugin needs the MIME but we never want
-  intermediate hops to interpret ``audio/*`` and "helpfully" re-encode.
+  the two because a real plugin needs the MIME but we never want
+  intermediate hops to interpret media types and "helpfully" re-encode.
 
 Binding values are minted by ingestion-api (not by plugins) using
 ``secrets.token_bytes`` sized to the plugin's declared ``bindingBits``.
@@ -227,7 +227,7 @@ class PluginClient:
     def embed(
         self,
         *,
-        audio_bytes: bytes,
+        media_bytes: bytes,
         mime_type: str,
     ) -> EmbedResult:
         """Watermark plugin only. Returns the watermarked bytes + binding value.
@@ -245,7 +245,7 @@ class PluginClient:
         binding_value = _new_binding_value(self._entry.binding_bits)
 
         # Two-header pattern: Content-Type pins the wire encoding to opaque
-        # bytes (so no proxy/CDN tries to transcode audio/*); X-Media-Type
+        # bytes (so no proxy/CDN tries to transcode the media); X-Media-Type
         # tells the plugin what those bytes actually mean.
         headers = self._headers({
             "Content-Type": OCTET_STREAM,
@@ -254,7 +254,7 @@ class PluginClient:
         })
         url = self._url("/embed")
         try:
-            r = self._client.post(url, content=audio_bytes, headers=headers)
+            r = self._client.post(url, content=media_bytes, headers=headers)
             r.raise_for_status()
         except httpx.HTTPError as exc:
             raise PluginUnavailableError(f"POST {url}: {exc}") from exc
@@ -271,23 +271,23 @@ class PluginClient:
             )
         return EmbedResult(binding_value=binding_value, watermarked_bytes=r.content)
 
-    def detect(self, *, audio_bytes: bytes, mime_type: str) -> str | None:
+    def detect(self, *, media_bytes: bytes, mime_type: str) -> str | None:
         """Watermark plugin only."""
         if self._entry.type != "watermark":
             raise PluginUnavailableError(
                 f"alg={self.alg!r} is not a watermark plugin (type={self._entry.type})"
             )
-        data = self._post_json_with_body("/detect", audio_bytes, mime_type=mime_type)
+        data = self._post_json_with_body("/detect", media_bytes, mime_type=mime_type)
         v = data.get("bindingValue")
         return v if isinstance(v, str) else None
 
-    def compute(self, *, audio_bytes: bytes, mime_type: str) -> str:
+    def compute(self, *, media_bytes: bytes, mime_type: str) -> str:
         """Fingerprint plugin only."""
         if self._entry.type != "fingerprint":
             raise PluginUnavailableError(
                 f"alg={self.alg!r} is not a fingerprint plugin (type={self._entry.type})"
             )
-        data = self._post_json_with_body("/compute", audio_bytes, mime_type=mime_type)
+        data = self._post_json_with_body("/compute", media_bytes, mime_type=mime_type)
         return self._require_binding_value(data)
 
     def _url(self, path: str) -> str:

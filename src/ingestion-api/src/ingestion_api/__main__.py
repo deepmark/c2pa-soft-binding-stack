@@ -126,8 +126,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Middleware order matters. ASGI middleware runs in reverse of add
-# order, so this stack is (outer -> inner):
+# Middleware order matters. 
+# ASGI middleware runs in reverse of add order, so this stack is (outer -> inner):
 #   RequestID -> ProxyHeaders -> app
 # Rationale:
 # - RequestID before ProxyHeaders so log lines emitted by Starlette /

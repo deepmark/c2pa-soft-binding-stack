@@ -137,7 +137,7 @@ def test_plugin_client_embed_generates_value_and_sends_headers():
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
-        result = plugin.embed(audio_bytes=b"raw-audio", mime_type="audio/wav")
+        result = plugin.embed(media_bytes=b"raw-audio", mime_type="audio/wav")
 
     # Value is generated, non-empty, and matches what the plugin echoed.
     assert result.binding_value == captured["sent_value"]
@@ -164,7 +164,7 @@ def test_plugin_client_embed_handles_non_byte_aligned_bits():
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(binding_bits=100), client=c)
-        result = plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
+        result = plugin.embed(media_bytes=b"a", mime_type="audio/wav")
 
     raw = base64.urlsafe_b64decode(result.binding_value + "==")
     assert len(raw) == 13  # ceil(100 / 8)
@@ -184,7 +184,7 @@ def test_plugin_client_embed_values_are_unique_across_calls():
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
         for _ in range(5):
-            plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
+            plugin.embed(media_bytes=b"a", mime_type="audio/wav")
 
     assert len(set(seen)) == 5
 
@@ -199,7 +199,7 @@ def test_plugin_client_embed_raises_on_echo_mismatch():
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
         with pytest.raises(PluginUnavailableError, match="echoed a different"):
-            plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
+            plugin.embed(media_bytes=b"a", mime_type="audio/wav")
 
 
 def test_plugin_client_embed_raises_when_echo_header_missing():
@@ -209,7 +209,7 @@ def test_plugin_client_embed_raises_when_echo_header_missing():
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
         with pytest.raises(PluginUnavailableError):
-            plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
+            plugin.embed(media_bytes=b"a", mime_type="audio/wav")
 
 
 def test_plugin_client_raises_on_5xx():
@@ -219,7 +219,7 @@ def test_plugin_client_raises_on_5xx():
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
         with pytest.raises(PluginUnavailableError):
-            plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
+            plugin.embed(media_bytes=b"a", mime_type="audio/wav")
 
 
 def test_plugin_client_rejects_wrong_type():
@@ -227,7 +227,7 @@ def test_plugin_client_rejects_wrong_type():
     with _mock_client(lambda r: httpx.Response(200, json={})) as c:
         plugin = PluginClient(fp_entry, client=c)
         with pytest.raises(PluginUnavailableError):
-            plugin.embed(audio_bytes=b"a", mime_type="audio/wav")
+            plugin.embed(media_bytes=b"a", mime_type="audio/wav")
 
 
 def test_plugin_client_compute_for_fingerprint_sends_media_type():
@@ -240,7 +240,7 @@ def test_plugin_client_compute_for_fingerprint_sends_media_type():
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(type="fingerprint"), client=c)
-        assert plugin.compute(audio_bytes=b"raw", mime_type="audio/wav") == "abc"
+        assert plugin.compute(media_bytes=b"raw", mime_type="audio/wav") == "abc"
 
     assert captured["body"] == b"raw"
     assert captured["media_type"] == "audio/wav"
@@ -252,4 +252,4 @@ def test_plugin_client_detect_returns_none_when_missing():
 
     with _mock_client(handler) as c:
         plugin = PluginClient(_entry(), client=c)
-        assert plugin.detect(audio_bytes=b"raw", mime_type="audio/wav") is None
+        assert plugin.detect(media_bytes=b"raw", mime_type="audio/wav") is None

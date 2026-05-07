@@ -22,8 +22,13 @@ from ingestion_api.core.config import settings
 
 @dataclass(slots=True)
 class IngestionArtifacts:
+    """Per-ingestion path bundle returned by ``ArtifactStore.allocate``.
+
+    ``ingestion_dir`` is the leaf directory ``<storage_root>/ingestions/<id>/``;
+    ``signed_path`` and ``manifest_bytes_path`` live inside it.
+    """
     ingestion_id: str
-    base_dir: Path
+    ingestion_dir: Path
     signed_path: Path
     manifest_bytes_path: Path
 
@@ -52,7 +57,7 @@ class ArtifactStore:
         base.mkdir(parents=True, exist_ok=False)
         return IngestionArtifacts(
             ingestion_id=ingestion_id,
-            base_dir=base,
+            ingestion_dir=base,
             signed_path=base / f"signed{ext}",
             manifest_bytes_path=base / "manifest.c2pa",
         )
@@ -75,9 +80,9 @@ class ArtifactStore:
 
     def cleanup(self, artifacts: IngestionArtifacts) -> None:
         try:
-            for child in artifacts.base_dir.glob("*"):
+            for child in artifacts.ingestion_dir.glob("*"):
                 child.unlink(missing_ok=True)
-            artifacts.base_dir.rmdir()
+            artifacts.ingestion_dir.rmdir()
         except OSError:
             pass
 

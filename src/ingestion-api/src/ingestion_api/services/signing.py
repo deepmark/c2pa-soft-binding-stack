@@ -42,8 +42,8 @@ class MissingSigningMaterialError(RuntimeError):
     """Cert/key files vanished or became unreadable at sign time.
 
     Distinct type so the ingest router can map it to a 503 cleanly,
-    rather than catching a bare ``FileNotFoundError`` (which would
-    swallow unrelated FS failures from anywhere in the call tree).
+    rather than catching a bare ``FileNotFoundError`` 
+    (which would swallow unrelated FS failures from anywhere in the call tree).
     """
 
 
