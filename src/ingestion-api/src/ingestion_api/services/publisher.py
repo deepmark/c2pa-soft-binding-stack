@@ -1,32 +1,26 @@
 """
 Auto-push to the soft-binding resolution API.
 
-After signing, ingestion-api can post the manifest store + every
-soft-binding to resolution-api so the just-ingested asset is
-immediately resolvable via ``GET /matches/byBinding``. Controlled by
-``RESOLUTION_PUSH_ENABLED`` (default ``true``); when enabled,
-``RESOLUTION_API_URL`` is required (config-time validator). Set
-``RESOLUTION_PUSH_ENABLED=false`` for genuine standalone deployments
-that don't have a resolution-api downstream.
+After signing, ingestion-api can post the manifest store + every soft-binding to resolution-api 
+so the just-ingested asset is immediately resolvable via ``GET /matches/byBinding``. 
+
+Controlled by ``RESOLUTION_PUSH_ENABLED`` (default ``true``). 
+When enabled ``RESOLUTION_API_URL`` is required (config-time validator). 
+Set ``RESOLUTION_PUSH_ENABLED=false`` for standalone deployments that don't have a resolution-api downstream.
 
 Wire shape:
-1. ``POST {RESOLUTION_API_URL}/manifests`` with the raw manifest bytes
-   as ``application/c2pa``. Resolution-api derives the manifestId
-   deterministically from the bytes (same as ingestion-api's
-   extraction), so the call is idempotent and the response payload is
-   informational — we use the locally-extracted ID for the binding
-   posts.
-2. ``POST {RESOLUTION_API_URL}/bindings`` with
-   ``{alg, bindingValue, manifestId}`` — one call per binding.
-   Resolution-api's ``/bindings`` is intentionally singular (one
-   binding per request); we loop over the list here.
+1. ``POST {RESOLUTION_API_URL}/manifests`` with the raw manifest bytes as ``application/c2pa``. 
+   Resolution-api derives the manifestId deterministically from the bytes 
+   (same as ingestion-api's extraction), so the call is idempotent and the response payload is informational.
 
-Failure mode: caller logs + records ``status=FAILED`` and an error
-message; the ingest request still succeeds, returning the artifacts so
-a retry/sync can reconcile later. A single ``/bindings`` failure
-aborts the rest of the loop — partial state is signalled via
-``status=FAILED`` so the operator can re-push with the persisted
-manifest bytes (re-pushes are idempotent server-side).
+2. ``POST {RESOLUTION_API_URL}/bindings`` with ``{alg, bindingValue, manifestId}`` - one call per binding.
+
+Failure mode: caller logs + records ``status=FAILED`` and an error message.
+The ingest request still succeeds, returning the artifacts so a retry/sync can reconcile later. 
+A single ``/bindings`` failure aborts the rest of the loop.
+Partial state is signalled via ``status=FAILED`` so the operator can re-push with the persisted manifest bytes.
+Re-pushes are idempotent server-side. 
+See resolution-api's ``/manifests`` and ``/bindings`` endpoints for more details.
 """
 from __future__ import annotations
 
@@ -70,10 +64,6 @@ class ResolutionPushClient:
         retry_backoff_s: float | None = None,
         client: httpx.Client | None = None,
     ) -> None:
-        # When ``base_url`` is passed explicitly we treat that as "the
-        # caller knows what they want" and enable iff the URL is truthy
-        # — settings.RESOLUTION_PUSH_ENABLED is only the operator-level
-        # kill switch for the bare-call path used by lifespan startup.
         explicit_url = base_url is not None
         self._base_url = (base_url if explicit_url else settings.resolution_api_url).rstrip("/")
         if enabled is not None:
@@ -82,14 +72,23 @@ class ResolutionPushClient:
             self._enabled_flag = bool(self._base_url)
         else:
             self._enabled_flag = settings.resolution_push_enabled
-        self._timeout = (
+        
+        raw_timeout = (
             timeout_s if timeout_s is not None else settings.resolution_request_timeout_s
         )
-        self._max_retries = (
-            max_retries if max_retries is not None else settings.resolution_max_retries
+        if raw_timeout <= 0:
+            raise ValueError(
+                f"timeout_s must be > 0 (got {raw_timeout!r})",
+            )
+        self._timeout = raw_timeout
+        self._max_retries = max(
+            0,
+            max_retries if max_retries is not None else settings.resolution_max_retries,
         )
-        self._retry_backoff_s = (
-            retry_backoff_s if retry_backoff_s is not None else settings.resolution_retry_backoff_s
+        self._retry_backoff_s = max(
+            0.0,
+            retry_backoff_s if retry_backoff_s is not None
+            else settings.resolution_retry_backoff_s,
         )
         self._owned_client = client is None
         self._client = client or httpx.Client(timeout=self._timeout)
@@ -112,15 +111,10 @@ class ResolutionPushClient:
         Push manifest + every binding to resolution-api.
 
         Never raises — failure modes are surfaced through
-        ``ResolutionPushResult.status=FAILED``. The caller-supplied
-        ``req.manifest_id`` is used directly for the binding posts;
-        resolution-api derives the same ID from ``req.manifest_bytes``,
-        so the manifest POST is idempotent.
+        ``ResolutionPushResult.status=FAILED``.
 
         ``request_id`` is forwarded as ``X-Request-ID`` on every call
-        so resolution-api logs collate with ours. Falls back to the
-        active contextvar if not passed (won't be set inside an
-        executor thread, hence the explicit kwarg from the orchestrator).
+        so resolution-api logs collate with ingestion-api's.
         """
         if not self.enabled:
             return ResolutionPushResult(status=ResolutionPushStatus.SKIPPED)
@@ -173,10 +167,10 @@ class ResolutionPushClient:
 
     def _send_with_retry(self, method: str, url: str, **httpx_kwargs) -> httpx.Response:
         """
-        Issue a single HTTP request with bounded retries on transient
-        failures. Transient = network/timeout errors and 5xx responses;
-        4xx surfaces immediately (deterministic, won't recover by
-        retrying). Sleeps with exponential backoff between attempts.
+        Issue a single HTTP request with bounded retries on transient failures. 
+        Transient = network/timeout errors and 5xx responses;
+        4xx surfaces immediately (won't recover by retrying). 
+        Sleeps with exponential backoff between attempts.
         """
         last_exc: Exception | None = None
         attempts = self._max_retries + 1

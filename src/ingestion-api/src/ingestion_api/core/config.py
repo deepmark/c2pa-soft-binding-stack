@@ -67,11 +67,11 @@ class Settings(BaseSettings):
 
 
     # Plugin HTTP timeouts.
-    plugin_request_timeout_s: float = 60.0
+    plugin_request_timeout_s: float = Field(default=60.0, gt=0)
 
-    # Request shape limits enforced at the route layer.
-    max_algs_per_ingest: int = 8
-    max_title_length: int = 128
+    # ``max_algs_per_ingest`` must be at least 1 (zero would 400 every ingest); 
+    max_algs_per_ingest: int = Field(default=8, ge=1)
+    max_title_length: int = Field(default=128, ge=0)
 
     # Public base URL used when building absolute URLs in IngestResponse
     # (outputAssetUrl, manifestUrl). When unset, the app falls back to
@@ -91,14 +91,14 @@ class Settings(BaseSettings):
     # Set ``RESOLUTION_PUSH_ENABLED=false`` for standalone use.
     resolution_push_enabled: bool = True
     resolution_api_url: str = ""
-    resolution_request_timeout_s: float = 10.0
-    # Per-call retry policy. 
-    # Each HTTP request (POST /manifests and each POST /bindings) 
-    # gets up to N additional attempts on transient failures (timeouts, connection errors, 5xx). 
-    # 4xx is treated as permanent and surfaces immediately. 
+    resolution_request_timeout_s: float = Field(default=10.0, gt=0)
+    # Per-call retry policy.
+    # Each HTTP request (POST /manifests and each POST /bindings)
+    # gets up to N additional attempts on transient failures (timeouts, connection errors, 5xx).
+    # 4xx is treated as permanent and surfaces immediately.
     # Backoff doubles each retry, starting at ``resolution_retry_backoff_s``.
-    resolution_max_retries: int = 1
-    resolution_retry_backoff_s: float = 0.5
+    resolution_max_retries: int = Field(default=1, ge=0)
+    resolution_retry_backoff_s: float = Field(default=0.5, ge=0)
 
     # Claim generator metadata embedded in the manifest.
     claim_generator_name: str = "Deepmark Inc."
