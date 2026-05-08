@@ -13,9 +13,9 @@ request flows without each log site having to plumb the id manually.
 The contextvar is async-safe (each request has its own context) but
 does **not** auto-propagate into thread-pool executor calls. Current
 executor-bound call sites handle that explicitly in
-``services/orchestrator.py``: ``IngestionService.ingest()`` captures
+``services/ingestion.py``: ``IngestionService.ingest()`` captures
 ``request_id = get_request_id()`` before entering the executor, then
-passes it into ``_run_plugin_passes(..., request_id=request_id)`` and
+passes it into ``run_plugin_passes(..., request_id=request_id)`` and
 ``ResolutionPushClient.push(..., request_id=request_id)``. Future
 ``run_in_executor`` call sites should copy that pattern.
 """
@@ -27,7 +27,7 @@ import sys
 from contextvars import ContextVar, Token
 from typing import Any
 
-from ingestion_api.core.config import settings
+from ingestion_api.config import settings
 
 REQUEST_ID_HEADER = "X-Request-ID"
 

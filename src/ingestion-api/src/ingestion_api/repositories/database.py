@@ -7,11 +7,9 @@ Two collections live here:
 - ``failed_ingestions`` — one doc per ``FailedIngestion`` (pipeline failures captured for ops/forensics).
 
 No GridFS — the signed asset and manifest bytes stay on the local filesystem 
-(see ``services.artifact_store``).
+(see ``repositories.artifacts``).
 """
 from __future__ import annotations
-
-from typing import Optional
 
 from motor.motor_asyncio import (
     AsyncIOMotorClient,
@@ -20,15 +18,15 @@ from motor.motor_asyncio import (
 )
 from pymongo import ASCENDING, DESCENDING
 
-from ingestion_api.core.config import settings
+from ingestion_api.config import settings
 
 INGESTIONS_COLLECTION = "ingestions"
 FAILED_INGESTIONS_COLLECTION = "failed_ingestions"
 
 
 class MongoDB:
-    client: Optional[AsyncIOMotorClient] = None
-    db: Optional[AsyncIOMotorDatabase] = None
+    client: AsyncIOMotorClient | None = None
+    db: AsyncIOMotorDatabase | None = None
 
     @classmethod
     async def connect(cls) -> None:

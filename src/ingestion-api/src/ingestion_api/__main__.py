@@ -17,7 +17,7 @@ Middleware stack (outermost first; ASGI middleware runs in reverse-add order):
 Body-size enforcement is delegated to the reverse proxy (nginx
 ``client_max_body_size`` / k8s ingress ``proxy-body-size``); the
 application doesn't try to cap uploads itself. See
-``core/middleware.py`` for the rationale.
+``middleware/request_id.py`` for the rationale.
 
 Signing material is validated at startup (cert + key parse-loaded into a
 ``Signer``); a missing or malformed cert fails the lifespan startup
@@ -32,26 +32,24 @@ import uvicorn
 from fastapi import FastAPI
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-from ingestion_api.core.config import settings
-from ingestion_api.core.database import (
+from ingestion_api.adapters.publisher import ResolutionPushClient
+from ingestion_api.config import settings
+from ingestion_api.repositories.database import (
     MongoDB,
     get_failed_ingestions_collection,
     get_ingestions_collection,
 )
-from ingestion_api.core.logging import configure_logging, get_logger
-from ingestion_api.core.middleware import RequestIDMiddleware
-from ingestion_api.routers import health, ingest
-from ingestion_api.services.artifact_store import ArtifactStore
-from ingestion_api.services.orchestrator import IngestionService
-from ingestion_api.services.publisher import ResolutionPushClient
-from ingestion_api.services.record_repository import (
+from ingestion_api.logging import configure_logging, get_logger
+from ingestion_api.middleware.request_id import RequestIDMiddleware
+from ingestion_api.credentials.signing import MissingSigningMaterialError
+from ingestion_api.repositories.artifacts import ArtifactStore
+from ingestion_api.repositories.ingestions import (
     MongoFailedIngestionRepository,
     MongoIngestionRecordRepository,
 )
-from ingestion_api.services.signing import (
-    MissingSigningMaterialError,
-    SigningService,
-)
+from ingestion_api.routers import health, ingest
+from ingestion_api.services.ingestion import IngestionService
+from ingestion_api.services.signing import SigningService
 
 logger = get_logger(__name__)
 

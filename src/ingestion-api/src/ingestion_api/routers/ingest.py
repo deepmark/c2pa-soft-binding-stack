@@ -35,28 +35,33 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from ingestion_api.core.config import settings
-from ingestion_api.core.logging import get_logger
-from ingestion_api.models.ingestion import (
-    IngestionListResponse,
-    IngestionRecord,
-    IngestResponse,
-    ResolutionPushResult,
-    ResolutionPushStatus,
-)
-from ingestion_api.services.artifact_store import ArtifactStore
-from ingestion_api.services.orchestrator import (
+from ingestion_api.contracts.ingestion import IngestionInput
+from ingestion_api.config import settings
+from ingestion_api.logging import get_logger
+from ingestion_api.credentials.signing import MissingSigningMaterialError
+from ingestion_api.errors import (
     IngestionError,
-    IngestionInput,
-    IngestionService,
     InvalidAlgRequestError,
     UnsupportedMediaError,
 )
-from ingestion_api.services.record_repository import (
-    IngestionListPage,
-    MongoIngestionRecordRepository,
+from ingestion_api.models.enums import ResolutionPushStatus
+from ingestion_api.models.ingestion import IngestionRecord
+from ingestion_api.models.responses import (
+    IngestionListResponse,
+    IngestResponse,
+    ResolutionPushResult,
 )
-from ingestion_api.services.signing import MissingSigningMaterialError
+from ingestion_api.repositories.artifacts import ArtifactStore
+from ingestion_api.repositories.ingestions import (
+    IngestionListPage,
+    IngestionRecordRepository,
+)
+from ingestion_api.routers.dependencies import (
+    get_artifact_store,
+    get_ingestion_service,
+    get_record_repository,
+)
+from ingestion_api.services.ingestion import IngestionService
 from ingestion_api.utils.media import SUPPORTED_EXTENSIONS
 
 logger = get_logger(__name__)
@@ -66,33 +71,6 @@ router = APIRouter(tags=["ingest"])
 # matches what the resolution-api push uses on the wire and what c2pa-rs expects on inspection.
 _MANIFEST_MEDIA_TYPE = "application/c2pa"
 _OCTET_STREAM = "application/octet-stream"
-
-
-# ---------------------------------------------------------------------------
-# Dependency providers.
-# ---------------------------------------------------------------------------
-
-
-def _state(request: Request, name: str, label: str) -> object:
-    obj = getattr(request.app.state, name, None)
-    if obj is None:
-        raise HTTPException(
-            status_code=503,
-            detail=f"{label} not initialised (check /ready)",
-        )
-    return obj
-
-
-def get_ingestion_service(request: Request) -> IngestionService:
-    return _state(request, "ingestion_service", "Ingestion service")  # type: ignore[return-value]
-
-
-def get_artifact_store(request: Request) -> ArtifactStore:
-    return _state(request, "artifacts", "Artifact store")  # type: ignore[return-value]
-
-
-def get_record_repository(request: Request) -> MongoIngestionRecordRepository:
-    return _state(request, "records", "Record repository")  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +245,7 @@ async def list_ingestions(
             "Filter to ingestions with this push status (ok / failed / skipped)"
         ),
     ),
-    records: MongoIngestionRecordRepository = Depends(get_record_repository),
+    records: IngestionRecordRepository = Depends(get_record_repository),
 ) -> IngestionListResponse:
     try:
         page: IngestionListPage = await records.list(
@@ -289,7 +267,7 @@ async def list_ingestions(
 )
 async def get_ingestion(
     ingestionId: str,
-    records: MongoIngestionRecordRepository = Depends(get_record_repository),
+    records: IngestionRecordRepository = Depends(get_record_repository),
 ) -> IngestionRecord:
     record = await records.get(ingestionId)
     if record is None:
@@ -361,7 +339,7 @@ async def get_manifest_bytes(
 async def delete_ingestion(
     ingestionId: str,
     artifacts: ArtifactStore = Depends(get_artifact_store),
-    records: MongoIngestionRecordRepository = Depends(get_record_repository),
+    records: IngestionRecordRepository = Depends(get_record_repository),
 ):
     """Local takedown: removes artifacts on disk and the Mongo record.
 

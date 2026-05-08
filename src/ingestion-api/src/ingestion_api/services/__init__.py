@@ -1,1 +1,1 @@
-"""Internal services for the ingest pipeline."""
+"""Application services: ingestion, manifest, signing."""

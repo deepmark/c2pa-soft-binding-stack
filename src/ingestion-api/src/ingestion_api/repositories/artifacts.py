@@ -10,14 +10,14 @@ This module only manages the *durable* binary set:
       signed.<ext>            # signed asset emitted by Builder.sign
       manifest.c2pa           # raw manifest bytes returned by the SDK
 
-Structured ingestion records live in MongoDB — see ``services.record_repository``.
+Structured ingestion records live in MongoDB — see ``repositories.ingestions``.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
-from ingestion_api.core.config import settings
+from ingestion_api.config import settings
 
 
 @dataclass(slots=True)

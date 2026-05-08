@@ -14,15 +14,9 @@ Both surfaces expose ``write`` / ``get`` / ``delete`` and are duck-typed
 across mem/Mongo so the orchestrator and routes don't care which they
 got.
 
-The split between this module (``record_repository``) and
-``artifact_store`` is intentional: "repository" = typed records in a
-database, "store" = opaque binary files on disk.
-
 A future failed-push reconciliation worker will live alongside this
-module and query Mongo directly via ``get_ingestions_collection()``;
-the ``push_retry_idx`` index in ``core.database`` is sized for that
-workload (sorts by ``lastPushAttemptAt`` so retries naturally drift to
-the back of the queue).
+module and query Mongo directly via ``get_ingestions_collection()``.
+The ``push_retry_idx`` index in ``core.database`` is sized for that.
 """
 from __future__ import annotations
 
@@ -30,43 +24,78 @@ import base64
 import json
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol, TypeVar
 
 from motor.motor_asyncio import AsyncIOMotorCollection
 from pymongo import DESCENDING
 
-from ingestion_api.models.ingestion import (
-    FailedIngestion,
-    IngestionRecord,
-    ResolutionPushStatus,
-)
+from ingestion_api.models.enums import ResolutionPushStatus
+from ingestion_api.models.ingestion import FailedIngestion, IngestionRecord
+
+_RecordT = TypeVar("_RecordT", IngestionRecord, FailedIngestion)
 
 
-def _to_doc_ingestion(record: IngestionRecord) -> dict:
-    # _id mirrors ingestionId so lookups are O(log n) on the primary key
-    # without an additional index. Pydantic handles enum/datetime
-    # serialisation; mode="python" keeps datetimes as datetime so Mongo
-    # stores them natively (queryable as dates).
+# ---------------------------------------------------------------------------
+# Repository protocols.
+#
+# Defined so consumers (IngestionService, routers) can declare the
+# narrowest surface they need without coupling to a concrete backend
+# (Mongo in production, InMemory in tests). Both Mongo* and InMemory*
+# implementations below structurally satisfy these Protocols — there's
+# no explicit ``class X(Protocol)`` inheritance, just shape compliance,
+# which is the whole point of Protocols.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class IngestionListPage:
+    """Page of ingestions returned by ``list()``."""
+    items: list[IngestionRecord]
+    next_cursor: str | None
+
+
+class IngestionRecordRepository(Protocol):
+    """Repository surface for the ``ingestions`` collection."""
+
+    async def write(self, record: IngestionRecord) -> None: ...
+
+    async def get(self, ingestion_id: str) -> IngestionRecord | None: ...
+
+    async def delete(self, ingestion_id: str) -> bool: ...
+
+    async def list(
+        self,
+        *,
+        limit: int = 50,
+        cursor: str | None = None,
+        status: ResolutionPushStatus | None = None,
+    ) -> IngestionListPage: ...
+
+
+class FailedIngestionRepository(Protocol):
+    """Repository surface for the ``failed_ingestions`` collection."""
+
+    async def write(self, record: FailedIngestion) -> None: ...
+
+    async def get(self, ingestion_id: str) -> FailedIngestion | None: ...
+
+    async def delete(self, ingestion_id: str) -> None: ...
+
+
+def _to_doc(record: IngestionRecord | FailedIngestion) -> dict:
+    # _id := ingestionId so the primary-key index doubles as the
+    # ingestionId index (no extra index/storage). 
+    # mode="python" keeps datetimes as datetime 
+    # mode="json" would store ISO strings and break range queries / push_retry_idx ordering.
     doc = record.model_dump(mode="python")
     doc["_id"] = record.ingestionId
     return doc
 
 
-def _from_doc_ingestion(doc: dict) -> IngestionRecord:
+def _from_doc(model: type[_RecordT], doc: dict) -> _RecordT:
     doc = dict(doc)
     doc.pop("_id", None)
-    return IngestionRecord.model_validate(doc)
-
-
-def _to_doc_failed(record: FailedIngestion) -> dict:
-    doc = record.model_dump(mode="python")
-    doc["_id"] = record.ingestionId
-    return doc
-
-
-def _from_doc_failed(doc: dict) -> FailedIngestion:
-    doc = dict(doc)
-    doc.pop("_id", None)
-    return FailedIngestion.model_validate(doc)
+    return model.model_validate(doc)
 
 
 # ---------------------------------------------------------------------------
@@ -91,13 +120,6 @@ def _decode_cursor(token: str) -> tuple[datetime, str]:
     return created_at, str(parsed[1])
 
 
-@dataclass(slots=True)
-class IngestionListPage:
-    """Page of ingestions returned by ``list()``."""
-    items: list[IngestionRecord]
-    next_cursor: str | None
-
-
 # ---------------------------------------------------------------------------
 # IngestionRecord repositories (the success collection).
 # ---------------------------------------------------------------------------
@@ -110,12 +132,12 @@ class MongoIngestionRecordRepository:
         self._col = collection
 
     async def write(self, record: IngestionRecord) -> None:
-        doc = _to_doc_ingestion(record)
+        doc = _to_doc(record)
         await self._col.replace_one({"_id": record.ingestionId}, doc, upsert=True)
 
     async def get(self, ingestion_id: str) -> IngestionRecord | None:
         doc = await self._col.find_one({"_id": ingestion_id})
-        return _from_doc_ingestion(doc) if doc else None
+        return _from_doc(IngestionRecord, doc) if doc else None
 
     async def delete(self, ingestion_id: str) -> bool:
         """Remove the record. Returns True if a doc was actually deleted."""
@@ -159,7 +181,7 @@ class MongoIngestionRecordRepository:
         )
         has_more = len(docs) > limit
         docs = docs[:limit]
-        items = [_from_doc_ingestion(d) for d in docs]
+        items = [_from_doc(IngestionRecord, d) for d in docs]
         next_cursor: str | None = None
         if has_more and docs:
             tail = docs[-1]
@@ -227,12 +249,12 @@ class MongoFailedIngestionRepository:
         self._col = collection
 
     async def write(self, record: FailedIngestion) -> None:
-        doc = _to_doc_failed(record)
+        doc = _to_doc(record)
         await self._col.replace_one({"_id": record.ingestionId}, doc, upsert=True)
 
     async def get(self, ingestion_id: str) -> FailedIngestion | None:
         doc = await self._col.find_one({"_id": ingestion_id})
-        return _from_doc_failed(doc) if doc else None
+        return _from_doc(FailedIngestion, doc) if doc else None
 
     async def delete(self, ingestion_id: str) -> None:
         await self._col.delete_one({"_id": ingestion_id})

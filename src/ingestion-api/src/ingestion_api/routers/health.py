@@ -34,10 +34,10 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from ingestion_api.core.config import settings
-from ingestion_api.core.database import MongoDB
-from ingestion_api.core.logging import get_logger
-from ingestion_api.services.algorithms import AlgorithmEntry, load_catalog
+from ingestion_api.catalog.algorithms import AlgorithmEntry, load_catalog
+from ingestion_api.config import settings
+from ingestion_api.repositories.database import MongoDB
+from ingestion_api.logging import get_logger
 from ingestion_api.services.signing import SigningService
 
 logger = get_logger(__name__)
@@ -88,8 +88,8 @@ async def ready(request: Request) -> JSONResponse:
     """
     mongo = await _check_mongo()
     creds_ok = (
-        settings.resolved_cert_chain_path().is_file()
-        and settings.resolved_private_key_path().is_file()
+        settings.cert_chain_path.is_file()
+        and settings.private_key_path.is_file()
     )
     signing_loaded = _signing_loaded(request)
 
@@ -102,8 +102,8 @@ async def ready(request: Request) -> JSONResponse:
         "mongodb": mongo,
         "credentials": {
             "ok": creds_ok,
-            "cert_chain_path": str(settings.resolved_cert_chain_path()),
-            "private_key_path": str(settings.resolved_private_key_path()),
+            "cert_chain_path": str(settings.cert_chain_path),
+            "private_key_path": str(settings.private_key_path),
         },
         "signing": {
             "loaded": signing_loaded,
@@ -137,8 +137,8 @@ async def health_deep(request: Request) -> JSONResponse:
     """
     mongo = await _check_mongo()
     creds_ok = (
-        settings.resolved_cert_chain_path().is_file()
-        and settings.resolved_private_key_path().is_file()
+        settings.cert_chain_path.is_file()
+        and settings.private_key_path.is_file()
     )
     signing_loaded = _signing_loaded(request)
     cert_info = _cert_info(request)
@@ -165,8 +165,8 @@ async def health_deep(request: Request) -> JSONResponse:
         "mongodb": mongo,
         "credentials": {
             "ok": creds_ok,
-            "cert_chain_path": str(settings.resolved_cert_chain_path()),
-            "private_key_path": str(settings.resolved_private_key_path()),
+            "cert_chain_path": str(settings.cert_chain_path),
+            "private_key_path": str(settings.private_key_path),
             **cert_info,
         },
         "signing": {

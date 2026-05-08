@@ -1,19 +1,20 @@
 """
-Custom ASGI middleware for ingestion-api.
+Request-id propagation middleware.
 
 Implemented as raw ASGI (not BaseHTTPMiddleware) so it sits cleanly
 above FastAPI without the body-buffering / exception-swallowing quirks
 of Starlette's base middleware.
 
-- ``RequestIDMiddleware`` — generates an ``X-Request-ID`` (or echoes the caller's),
-  binds it to a ContextVar (so logs are stamped via ``_RequestIDFilter``),
-  exposes it on ``request.state.request_id`` for routes/deps, and adds it
-  to the response headers. Downstream HTTP callouts (plugin containers,
-  resolution-api) read the contextvar via
-  ``core.logging.get_request_id()`` and propagate it as their own
-  ``X-Request-ID`` header so a single ingest can be traced end-to-end.
-* Without it, correlating a failure in the plugin or resolution-api back
-  to the originating ingest is next to impossible.
+``RequestIDMiddleware`` generates an ``X-Request-ID`` (or echoes the
+caller's), binds it to a ContextVar (so logs are stamped via
+``_RequestIDFilter`` in ``ingestion_api.logging``), exposes it on
+``request.state.request_id`` for routes/deps, and adds it to the
+response headers. Downstream HTTP callouts (plugin containers,
+resolution-api) read the contextvar via
+``ingestion_api.logging.get_request_id()`` and propagate it as their
+own ``X-Request-ID`` header so a single ingest can be traced
+end-to-end. Without it, correlating a failure in the plugin or
+resolution-api back to the originating ingest is next to impossible.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ingestion_api.core.logging import (
+from ingestion_api.logging import (
     REQUEST_ID_HEADER,
     reset_request_id,
     set_request_id,

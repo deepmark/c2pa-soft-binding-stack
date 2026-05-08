@@ -6,7 +6,7 @@ import wave
 
 import pytest
 
-from ingestion_api.models.ingestion import MediaType
+from ingestion_api.models.enums import MediaType
 from ingestion_api.utils.media import (
     SUPPORTED_MIME_TYPES,
     AudioFormat,

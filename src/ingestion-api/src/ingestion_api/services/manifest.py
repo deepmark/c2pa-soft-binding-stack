@@ -36,16 +36,17 @@ content's provenance, not a referenced input.
 from __future__ import annotations
 
 import io
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from c2pa import Builder, C2paBuilderIntent, Signer
+from c2pa import Builder, C2paBuilderIntent, Reader, Signer
 
-from ingestion_api.core.config import settings
-from ingestion_api.core.logging import get_logger
-from ingestion_api.models.ingestion import SoftBindingKind
+from ingestion_api.contracts.manifest import SoftBindingSpec
+from ingestion_api.config import settings
+from ingestion_api.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -57,33 +58,32 @@ SOFT_BINDING_LABEL = "c2pa.soft-binding"
 _ASSERTION_JUMBF_PREFIX = "self#jumbf=c2pa.assertions/"
 
 
-@dataclass(slots=True, frozen=True)
-class SoftBindingSpec:
-    """
-    One soft-binding to embed in the manifest.
-
-    One spec -> exactly one ``c2pa.soft-binding`` assertion. Multiple
-    specs -> labels are suffixed (``__1``, ``__2``, ...).
-
-    ``related_to_watermark_action`` is a layering hook: when True, this
-    spec's assertion label is listed in the ``c2pa.watermarked.bound``
-    action's ``relatedAssertions``. Fingerprints leave it False — they
-    don't get a watermark action.
-    """
-    alg: str
-    kind: SoftBindingKind
-    value: str
-    related_to_watermark_action: bool = False
-    # TODO: temporal scoping — replace whole-asset scope with
-    # {"start": <samples>, "end": <samples>} when the plugin layer
-    # starts emitting per-block bindings.
-
-
 @dataclass(slots=True)
 class BuiltManifest:
     """Result of a manifest build+sign operation."""
     output_path: Path
     manifest_bytes: bytes
+
+
+def read_active_manifest_label(signed_path: Path) -> str | None:
+    """Extract the ``active_manifest`` URN from a freshly-signed asset.
+
+    Drives ``IngestionRecord.manifestId`` and the foreign-key handed to
+    resolution-api. Returns None on any reader failure (logged at debug)
+    so the orchestrator can decide whether the missing label is fatal —
+    ingestion-api treats it as a hard pipeline failure today, but a
+    background reconciler that re-reads existing files would want to
+    distinguish "missing" from "raise."
+    """
+    try:
+        with Reader(str(signed_path)) as reader:
+            data = json.loads(reader.json())
+            return data.get("active_manifest")
+    except Exception:
+        logger.debug(
+            "Could not read active manifest label from %s", signed_path, exc_info=True,
+        )
+        return None
 
 
 def soft_binding_label(index: int) -> str:

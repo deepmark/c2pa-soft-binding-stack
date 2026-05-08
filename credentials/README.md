@@ -1,21 +1,24 @@
 # Test signing credentials
 
 The ingest pipeline needs a cert chain + matching private key for local
-C2PA signing. By default it expects ES256 material at:
+C2PA signing. The directory is configurable via `CREDENTIALS_DIR`; the
+file names inside it are derived from `SIGNING_ALG` so multiple
+algorithms' fixtures can coexist in one directory:
 
 ```
-credentials/
-  es256_certs.pem       # full chain (leaf + intermediates), PEM
-  es256_private.key     # private key, PKCS#8 PEM
+${CREDENTIALS_DIR}/
+  ${signing_alg_lower}_certs.pem      # full chain (leaf + intermediates), PEM
+  ${signing_alg_lower}_private.key    # private key, PKCS#8 PEM
 ```
 
-Switch via env var:
+For the default ES256 setup that's `es256_certs.pem` + `es256_private.key`.
+
+Configure via env var:
 
 ```
-CERT_CHAIN_PATH=/abs/path/to/certs.pem
-PRIVATE_KEY_PATH=/abs/path/to/private.key
-SIGNING_ALG=ES256                     # see table above
-TA_URL=https://your-rfc3161-tsa.example/timestamp   # optional, RFC 3161 TSA
+CREDENTIALS_DIR=/abs/path/to/credentials
+SIGNING_ALG=ES256                                    # see table above
+TA_URL=https://your-rfc3161-tsa.example/timestamp    # optional, RFC 3161 TSA
 ```
 
 ## Where to get test certs
@@ -36,9 +39,10 @@ curl -fsSLo es256_private.key \
 ```
 
 ES384 / ES512 / PS256 / PS384 / PS512 / ED25519: the same upstream repo
-has equivalent fixtures (`es384_*`, `ps256_*`, `ed25519_*`, …). Drop them
-in here and set `CERT_CHAIN_PATH` / `PRIVATE_KEY_PATH` / `SIGNING_ALG`
-accordingly.
+has equivalent fixtures (`es384_*`, `ps256_*`, `ed25519_*`, …). Drop
+them in here and set `SIGNING_ALG` to match — ingestion-api looks for
+`<signing_alg_lower>_certs.pem` and `<signing_alg_lower>_private.key`
+automatically.
 
 ## Generating your own (optional)
 

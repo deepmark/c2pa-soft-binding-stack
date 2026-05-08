@@ -1,34 +1,12 @@
-"""Pydantic models for the ingest pipeline."""
-from ingestion_api.models.ingestion import (
-    SCHEMA_VERSION,
-    FailedIngestion,
-    FailureStage,
-    FingerprintSoftBindingRecord,
-    IngestionListResponse,
-    IngestionRecord,
-    IngestResponse,
-    MediaType,
-    ResolutionPushResult,
-    ResolutionPushStatus,
-    SoftBindingKind,
-    SoftBindingRecord,
-    WatermarkSoftBindingRecord,
-    make_soft_binding,
-)
+"""
+Pydantic models for the ingest pipeline.
 
-__all__ = [
-    "SCHEMA_VERSION",
-    "FailedIngestion",
-    "FailureStage",
-    "FingerprintSoftBindingRecord",
-    "IngestResponse",
-    "IngestionListResponse",
-    "IngestionRecord",
-    "MediaType",
-    "ResolutionPushResult",
-    "ResolutionPushStatus",
-    "SoftBindingKind",
-    "SoftBindingRecord",
-    "WatermarkSoftBindingRecord",
-    "make_soft_binding",
-]
+Submodules:
+- ``enums``        — MediaType, FailureStage, ResolutionPushStatus, SoftBindingKind, SCHEMA_VERSION
+- ``soft_binding`` — Watermark/Fingerprint records + ``make_soft_binding``
+- ``ingestion``    — IngestionRecord, FailedIngestion (Mongo-persisted shapes)
+- ``responses``    — IngestResponse, IngestionListResponse, ResolutionPushResult (HTTP wire shapes)
+
+Import from the specific submodule rather than this package — e.g.
+``from ingestion_api.models.ingestion import IngestionRecord``.
+"""

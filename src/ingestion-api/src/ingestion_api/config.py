@@ -104,13 +104,19 @@ class Settings(BaseSettings):
     claim_generator_name: str = "Deepmark Inc."
     claim_generator_version: str = "0.1.0"
 
-    # Signing credentials. ``credentials_dir`` is required; 
+    # Signing credentials. Only ``credentials_dir`` + ``signing_alg``
+    # are configurable; cert + key file names are derived from the alg
+    # (``<alg>_certs.pem`` / ``<alg>_private.key``, lowercase) so deploys
+    # can't accidentally point at one file but not the other, and so
+    # alg-specific fixtures (es256_*, es384_*, ed25519_*, ...) can sit
+    # alongside each other in one credentials directory.
     credentials_dir: Path = Field(
         ...,
-        description="Directory containing the ES256 cert chain + private key.",
+        description=(
+            "Directory containing <alg>_certs.pem + <alg>_private.key "
+            "(file names are derived from signing_alg)."
+        ),
     )
-    cert_chain_path: Path | None = None
-    private_key_path: Path | None = None
     signing_alg: str = "ES256"
     ta_url: str | None = None
 
@@ -125,11 +131,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    def resolved_cert_chain_path(self) -> Path:
-        return self.cert_chain_path or (self.credentials_dir / "es256_certs.pem")
+    @property
+    def cert_chain_path(self) -> Path:
+        return self.credentials_dir / f"{self.signing_alg.lower()}_certs.pem"
 
-    def resolved_private_key_path(self) -> Path:
-        return self.private_key_path or (self.credentials_dir / "es256_private.key")
+    @property
+    def private_key_path(self) -> Path:
+        return self.credentials_dir / f"{self.signing_alg.lower()}_private.key"
 
     @model_validator(mode="after")
     def _require_url_when_push_enabled(self) -> Settings:

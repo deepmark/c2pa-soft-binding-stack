@@ -1,116 +1,31 @@
 """
-Models for the audio ingest pipeline.
+Persisted ingestion models.
 
-Two persisted shapes, one wire shape:
+Two persisted shapes, each backed by its own Mongo collection:
 
-- ``IngestionRecord`` — successful ingestions 
-    (``ingestions`` Mongo collection, ``_id == ingestionId``). 
+- ``IngestionRecord`` — successful ingestions (``ingestions``
+  collection, ``_id == ingestionId``).
 - ``FailedIngestion`` — pipeline failures captured for ops/forensics
-    (``failed_ingestions`` Mongo collection). 
-  Carries whatever metadata was knowable at the failure point plus the failure stage and error.
-- ``IngestResponse`` — body of ``POST /ingest`` 
-    (success path only — failures surface as HTTP 5xx).
+  (``failed_ingestions`` collection). Carries whatever metadata was
+  knowable at the failure point plus the failure stage and error.
+
+Wire response shapes live in ``models.responses``; soft-binding records
+live in ``models.soft_binding``; enums + constants live in
+``models.enums``.
 """
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
-from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field, model_validator
 
-SoftBindingKind = Literal["watermark", "fingerprint"]
-
-# Stamped onto every persisted doc (IngestionRecord, FailedIngestion) via
-# ``schemaVersion``. 
-# Bump on any breaking change to either model so read-side
-# code / migrations can branch on the version of the doc in hand.
-SCHEMA_VERSION = 1
-
-
-class MediaType(str, Enum):
-    """Top-level media category an ingest belongs to.
-
-    Derived from the upload's MIME at ingest time and persisted on the
-    record so ops queries can filter by media without parsing MIME
-    strings. 
-    
-    Add a new value when adding support for a new media family.
-    """
-    AUDIO = "audio"
-    VIDEO = "video"
-    IMAGE = "image"
-
-
-class FailureStage(str, Enum):
-    """Where in the pipeline a failure landed. Set by ``_run_pipeline``."""
-    PLUGIN_PASS = "plugin_pass"                  # /embed or /compute failed
-    MANIFEST_SIGN = "manifest_sign"              # Builder.sign blew up
-    MANIFEST_ID_EXTRACT = "manifest_id_extract"  # Reader returned no active_manifest
-    UNKNOWN = "unknown"                          # caught everything else
-
-
-class ResolutionPushStatus(str, Enum):
-    OK = "ok"
-    FAILED = "failed"
-    SKIPPED = "skipped"  # when RESOLUTION_PUSH_ENABLED=false (standalone deploy)
-
-
-class ResolutionPushResult(BaseModel):
-    """Outcome of the auto-push to resolution-api."""
-    status: ResolutionPushStatus
-    error: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# Soft-binding records — discriminated union on ``kind``.
-# Today both kinds carry identical fields; the split exists so future
-# divergence (e.g. fingerprint confidence, watermark embedding strength)
-# is a one-class change rather than a breaking schema migration.
-# ---------------------------------------------------------------------------
-
-
-class _SoftBindingBase(BaseModel):
-    alg: str = Field(..., description="Soft-binding algorithm identifier")
-    bindingValue: str = Field(
-        ...,
-        description=(
-            "Encoded binding value (string; encoding is plugin-specific — "
-            "e.g. base64 for vigil-128)"
-        ),
-    )
-
-
-class WatermarkSoftBindingRecord(_SoftBindingBase):
-    """Watermark binding: bytes were modified during /embed."""
-    kind: Literal["watermark"] = "watermark"
-
-
-class FingerprintSoftBindingRecord(_SoftBindingBase):
-    """Fingerprint binding: pure read on the asset, no mutation."""
-    kind: Literal["fingerprint"] = "fingerprint"
-
-
-SoftBindingRecord = Annotated[
-    Union[WatermarkSoftBindingRecord, FingerprintSoftBindingRecord],
-    Field(discriminator="kind"),
-]
-
-
-def make_soft_binding(
-    *, alg: str, kind: SoftBindingKind, bindingValue: str,
-) -> _SoftBindingBase:
-    """Construct the right soft-binding subclass for a runtime ``kind``.
-
-    Construction sites can't use the ``SoftBindingRecord`` alias directly
-    (it's a typing union, not a class), so this factory keeps callers
-    from having to repeat the if/else.
-    """
-    if kind == "watermark":
-        return WatermarkSoftBindingRecord(alg=alg, bindingValue=bindingValue)
-    if kind == "fingerprint":
-        return FingerprintSoftBindingRecord(alg=alg, bindingValue=bindingValue)
-    raise ValueError(f"Unknown soft-binding kind: {kind!r}")
+from ingestion_api.models.enums import (
+    SCHEMA_VERSION,
+    FailureStage,
+    MediaType,
+    ResolutionPushStatus,
+)
+from ingestion_api.models.soft_binding import SoftBindingRecord
 
 
 class _IngestionCommon(BaseModel):
@@ -139,10 +54,12 @@ class _IngestionCommon(BaseModel):
     createdAt: datetime = Field(..., description="When the record was created")
 
 
-# ---------------------------------------------------------------------------
-# IngestionRecord — persisted in the ``ingestions`` collection.
-# Success-only. Pipeline failures live in ``failed_ingestions``.
-# ---------------------------------------------------------------------------
+# Status / error / attempts must agree. Each tuple is
+# (status, requires_error_empty, requires_attempts_zero).
+_PUSH_INVARIANTS: tuple[tuple[ResolutionPushStatus, bool, bool], ...] = (
+    (ResolutionPushStatus.OK,      True,  False),
+    (ResolutionPushStatus.SKIPPED, True,  True),
+)
 
 
 class IngestionRecord(_IngestionCommon):
@@ -158,10 +75,11 @@ class IngestionRecord(_IngestionCommon):
         description="Schema version of this record; migrations branch on this",
     )
 
-    # Content identity for the signed asset + the raw upload. 
-    # The signed hash is the canonical fingerprint of what we serve back; 
-    # the upload hash lets you detect duplicate uploads even when each gets a fresh signature/timestamp 
-    # (signatures are non-deterministic for ECDSA).
+    # Content identity for the signed asset + the raw upload.
+    # The signed hash is the canonical fingerprint of what we serve back;
+    # the upload hash lets you detect duplicate uploads even when each
+    # gets a fresh signature/timestamp (signatures are non-deterministic
+    # for ECDSA).
     assetSha256: str = Field(
         ..., description="SHA-256 hex digest of the signed asset bytes (64 chars)",
     )
@@ -170,15 +88,15 @@ class IngestionRecord(_IngestionCommon):
         ..., description="SHA-256 hex digest of the raw uploaded bytes (64 chars)",
     )
 
-    # Signing material identity — survives cert rotation. 
-    # SHA-1 of the DER-encoded leaf cert is the standard X.509 fingerprint format.
+    # Signing material identity — survives cert rotation. SHA-1 of the
+    # DER-encoded leaf cert is the standard X.509 fingerprint format.
     signingCertSha1: str | None = Field(
         None,
         description="SHA-1 fingerprint of the leaf signing cert (DER), 40-char hex",
     )
 
-    # Snapshot of plugin /info per alg at ingest time. 
-    # Forensic value: months later you can tell which plugin version produced a binding.
+    # Snapshot of plugin /info per alg at ingest time. Forensic value:
+    # months later you can tell which plugin version produced a binding.
     # Captured via a process-local cache to avoid an /info call per ingest.
     pluginVersions: dict[str, dict] | None = Field(
         None,
@@ -205,27 +123,19 @@ class IngestionRecord(_IngestionCommon):
     )
 
     @model_validator(mode="after")
-    def _check_consistency(self) -> "IngestionRecord":
-        if self.resolutionPushStatus is ResolutionPushStatus.OK and self.resolutionPushError:
-            raise ValueError("resolutionPushError must be empty when status=OK")
-        if (
-            self.resolutionPushStatus is ResolutionPushStatus.SKIPPED
-            and self.resolutionPushError
-        ):
-            raise ValueError("resolutionPushError must be empty when status=SKIPPED")
-        if (
-            self.resolutionPushStatus is ResolutionPushStatus.SKIPPED
-            and self.resolutionPushAttempts > 0
-        ):
-            raise ValueError("resolutionPushAttempts must be 0 when status=SKIPPED")
+    def _check_consistency(self) -> IngestionRecord:
+        for status, error_must_be_empty, attempts_must_be_zero in _PUSH_INVARIANTS:
+            if self.resolutionPushStatus is not status:
+                continue
+            if error_must_be_empty and self.resolutionPushError:
+                raise ValueError(
+                    f"resolutionPushError must be empty when status={status.value}"
+                )
+            if attempts_must_be_zero and self.resolutionPushAttempts > 0:
+                raise ValueError(
+                    f"resolutionPushAttempts must be 0 when status={status.value}"
+                )
         return self
-
-
-# ---------------------------------------------------------------------------
-# FailedIngestion — persisted in the ``failed_ingestions`` collection.
-# Separate model + collection so IngestionRecord stays strict for the
-# success path, and ops can query failures independently.
-# ---------------------------------------------------------------------------
 
 
 class FailedIngestion(BaseModel):
@@ -256,40 +166,3 @@ class FailedIngestion(BaseModel):
     )
     signingCertSha1: str | None = Field(None)
     createdAt: datetime = Field(...)
-
-
-# ---------------------------------------------------------------------------
-# IngestResponse — wire shape for POST /ingest (success path only).
-# ---------------------------------------------------------------------------
-
-
-class IngestResponse(_IngestionCommon):
-    """Response body for ``POST /ingest``."""
-    outputAssetUrl: str = Field(
-        ...,
-        description="URL to download the watermarked, signed media asset",
-    )
-    manifestUrl: str | None = Field(
-        None,
-        description="URL to download the raw signed manifest bytes",
-    )
-    assetSha256: str = Field(
-        ...,
-        description="SHA-256 hex digest of the signed asset (64 chars)",
-    )
-    resolutionPush: ResolutionPushResult = Field(
-        ...,
-        description="Outcome of the auto-push to the soft-binding resolution API",
-    )
-
-
-class IngestionListResponse(BaseModel):
-    """Response body for ``GET /ingestions``."""
-    items: list[IngestionRecord] = Field(
-        default_factory=list,
-        description="Page of ingestion records, ordered newest-first",
-    )
-    nextCursor: str | None = Field(
-        None,
-        description="Opaque cursor to fetch the next page, or null when this is the last page",
-    )

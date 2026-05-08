@@ -5,12 +5,9 @@ import json
 
 import httpx
 
-from ingestion_api.models.ingestion import ResolutionPushStatus
-from ingestion_api.services.publisher import (
-    BindingPair,
-    ResolutionPushClient,
-    ResolutionPushRequest,
-)
+from ingestion_api.adapters.publisher import ResolutionPushClient
+from ingestion_api.contracts.publisher import BindingPair, ResolutionPushRequest
+from ingestion_api.models.enums import ResolutionPushStatus
 
 MID = "urn:c2pa:test-id"
 

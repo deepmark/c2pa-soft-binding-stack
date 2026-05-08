@@ -25,30 +25,16 @@ See resolution-api's ``/manifests`` and ``/bindings`` endpoints for more details
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
-from dataclasses import dataclass
 
 import httpx
 
-from ingestion_api.core.config import settings
-from ingestion_api.core.logging import REQUEST_ID_HEADER, get_logger, get_request_id
-from ingestion_api.models.ingestion import ResolutionPushResult, ResolutionPushStatus
+from ingestion_api.contracts.publisher import ResolutionPushRequest
+from ingestion_api.config import settings
+from ingestion_api.logging import REQUEST_ID_HEADER, get_logger, get_request_id
+from ingestion_api.models.enums import ResolutionPushStatus
+from ingestion_api.models.responses import ResolutionPushResult
 
 logger = get_logger(__name__)
-
-
-@dataclass(slots=True, frozen=True)
-class BindingPair:
-    """One (alg, bindingValue) tuple to register against the manifest."""
-    alg: str
-    binding_value: str
-
-
-@dataclass(slots=True)
-class ResolutionPushRequest:
-    manifest_bytes: bytes
-    manifest_id: str
-    bindings: Sequence[BindingPair]
 
 
 class ResolutionPushClient:
@@ -72,7 +58,7 @@ class ResolutionPushClient:
             self._enabled_flag = bool(self._base_url)
         else:
             self._enabled_flag = settings.resolution_push_enabled
-        
+
         raw_timeout = (
             timeout_s if timeout_s is not None else settings.resolution_request_timeout_s
         )
@@ -195,5 +181,4 @@ class ResolutionPushClient:
                 )
                 time.sleep(backoff)
 
-        assert last_exc is not None  # loop above either returns or sets last_exc
         raise last_exc

@@ -1,23 +1,16 @@
 """
-Algorithm catalog loader + plugin HTTP client.
+Plugin HTTP dispatcher.
 
-Catalog source of truth is the shared ``algorithms.yaml`` mounted at ``settings.algorithms_catalog_path``. 
-Each entry maps an algorithm identifier to:
-
-- its type (``watermark`` or ``fingerprint``),
-- its binding value width in bits,
-- supported media types,
-- a base URL for the plugin container (``url``).
-
-The plugin HTTP contract (matching ``plugins/watermark/<name>/app.py``):
+Thin wrapper around a single plugin container's HTTP contract
+(matching ``plugins/watermark/<name>/app.py``):
 
 Watermark plugin (``type: watermark``):
 - ``GET  /info``
 - ``POST /embed``  body = raw media bytes (``application/octet-stream``);
-  required ``X-Binding-Value`` request header carries the API-generated value the plugin must embed; 
-  ``X-Media-Type`` carries the source MIME (e.g. ``audio/wav``).
-  Response body = watermarked bytes; 
-  ``X-Binding-Value`` response header echoes the embedded value 
+  required ``X-Binding-Value`` request header carries the API-generated
+  value the plugin must embed; ``X-Media-Type`` carries the source MIME
+  (e.g. ``audio/wav``). Response body = watermarked bytes;
+  ``X-Binding-Value`` response header echoes the embedded value
   (must equal the request header).
 - ``POST /detect`` body = raw media bytes -> JSON ``{bindingValue|null}``
 - ``GET  /health``
@@ -51,14 +44,13 @@ from __future__ import annotations
 import base64
 import secrets
 from dataclasses import dataclass
-from pathlib import Path
 
 import httpx
-import yaml
 
-from ingestion_api.core.config import settings
-from ingestion_api.core.logging import REQUEST_ID_HEADER, get_logger, get_request_id
-from ingestion_api.models.ingestion import SoftBindingKind
+from ingestion_api.catalog.algorithms import AlgorithmEntry
+from ingestion_api.config import settings
+from ingestion_api.logging import REQUEST_ID_HEADER, get_logger, get_request_id
+from ingestion_api.models.enums import SoftBindingKind
 
 logger = get_logger(__name__)
 
@@ -77,73 +69,8 @@ def reset_plugin_info_cache() -> None:
     _PLUGIN_INFO_CACHE.clear()
 
 
-class AlgorithmNotFoundError(LookupError):
-    """The catalog has no entry for the requested ``alg`` identifier."""
-
-
 class PluginUnavailableError(RuntimeError):
     """The plugin container couldn't be reached, or returned a non-2xx."""
-
-
-@dataclass(slots=True, frozen=True)
-class AlgorithmEntry:
-    alg: str
-    type: SoftBindingKind
-    binding_bits: int
-    media_types: tuple[str, ...]
-    url: str | None
-
-
-def load_catalog(path: Path | None = None) -> list[AlgorithmEntry]:
-    """Read + validate the YAML catalog. Returns an empty list if the file
-    is missing or malformed (each malformed row is skipped with a warning).
-
-    ``bindingBits`` is required and must be positive. Non-byte-aligned
-    widths are allowed — the value generator zeroes the unused high
-    bits of the first byte. Entries with missing or non-positive
-    ``bindingBits`` are skipped at load time so the misconfig surfaces
-    at boot, not at first request.
-    """
-    catalog_path = path or settings.algorithms_catalog_path
-    if not catalog_path.is_file():
-        logger.warning("Algorithm catalog not found at %s", catalog_path)
-        return []
-
-    raw = yaml.safe_load(catalog_path.read_text("utf-8")) or {}
-    out: list[AlgorithmEntry] = []
-    for i, entry in enumerate(raw.get("algorithms") or []):
-        try:
-            binding_bits = int(entry["bindingBits"])
-            if binding_bits <= 0:
-                raise ValueError(
-                    f"bindingBits must be positive, got {binding_bits}",
-                )
-            out.append(
-                AlgorithmEntry(
-                    alg=str(entry["alg"]),
-                    type=entry["type"],
-                    binding_bits=binding_bits,
-                    media_types=tuple(entry.get("mediaTypes") or ()),
-                    url=entry.get("url"),
-                )
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            logger.warning(
-                "Skipping malformed algorithm entry #%d in %s: %s", i, catalog_path, exc,
-            )
-    return out
-
-
-def resolve(alg: str, *, catalog: list[AlgorithmEntry] | None = None) -> AlgorithmEntry:
-    """Find an algorithm by id; raises ``AlgorithmNotFoundError`` if missing."""
-    entries = catalog if catalog is not None else load_catalog()
-    for entry in entries:
-        if entry.alg == alg:
-            return entry
-    raise AlgorithmNotFoundError(
-        f"alg={alg!r} not found in catalog {settings.algorithms_catalog_path}. "
-        f"Known algorithms: {[e.alg for e in entries]}"
-    )
 
 
 @dataclass(slots=True, frozen=True)
@@ -153,7 +80,7 @@ class EmbedResult:
     watermarked_bytes: bytes
 
 
-class PluginClient:
+class PluginDispatcher:
     """Thin HTTP wrapper around a single plugin container.
 
     ``request_id`` is forwarded as ``X-Request-ID`` on every outbound
@@ -195,7 +122,7 @@ class PluginClient:
         if self._owned_client:
             self._client.close()
 
-    def __enter__(self) -> "PluginClient":
+    def __enter__(self) -> PluginDispatcher:
         return self
 
     def __exit__(self, *exc) -> None:

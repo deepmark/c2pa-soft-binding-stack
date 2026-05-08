@@ -1,9 +1,9 @@
 """
-End-to-end orchestrator test (no Mongo, no live plugin, no live resolution API).
+End-to-end IngestionService test (no Mongo, no live plugin, no live resolution API).
 
 Stubs:
-- ``PluginClient.embed`` -> passthrough watermarked bytes + a stable
-  test-derived binding value. In production the *real* PluginClient
+- ``PluginDispatcher.embed`` -> passthrough watermarked bytes + a stable
+  test-derived binding value. In production the *real* PluginDispatcher
   mints the value via ``secrets`` and sends it to the plugin; the stub
   bypasses both sides for deterministic assertions.
 - ``ResolutionPushClient.push`` -> records the request and returns a
@@ -19,31 +19,31 @@ from pathlib import Path
 
 import pytest
 
-from ingestion_api.models.ingestion import (
-    FailureStage,
-    MediaType,
-    ResolutionPushResult,
-    ResolutionPushStatus,
-)
-from ingestion_api.services import algorithms as algorithms_module
-from ingestion_api.services.algorithms import (
-    AlgorithmEntry,
+from ingestion_api.adapters.dispatcher import (
     EmbedResult,
     PluginUnavailableError,
     reset_plugin_info_cache,
 )
-from ingestion_api.services.artifact_store import ArtifactStore
-from ingestion_api.services.orchestrator import (
+from ingestion_api.catalog import algorithms as algorithms_module
+from ingestion_api.catalog.algorithms import AlgorithmEntry
+from ingestion_api.contracts.ingestion import IngestionInput
+from ingestion_api.errors import (
     IngestionError,
-    IngestionInput,
-    IngestionService,
     InvalidAlgRequestError,
     UnsupportedMediaError,
 )
-from ingestion_api.services.record_repository import (
+from ingestion_api.models.enums import (
+    FailureStage,
+    MediaType,
+    ResolutionPushStatus,
+)
+from ingestion_api.models.responses import ResolutionPushResult
+from ingestion_api.repositories.artifacts import ArtifactStore
+from ingestion_api.repositories.ingestions import (
     InMemoryFailedIngestionRepository,
     InMemoryIngestionRecordRepository,
 )
+from ingestion_api.services.ingestion import IngestionService
 from ingestion_api.services.signing import SigningService
 from ingestion_api.utils.hashing import sha256_hex, sha256_truncated_b64
 
@@ -59,12 +59,12 @@ def _binding_value(b: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 
-class _StubPluginClient:
-    """Drop-in replacement for the real PluginClient used by the orchestrator.
+class _StubPluginDispatcher:
+    """Drop-in replacement for the real PluginDispatcher used by the pipeline.
 
     Returns a deterministic value derived from the input bytes so tests
-    can assert on it. The real client mints a random value; we stub past
-    that so assertions stay stable across runs.
+    can assert on it. The real dispatcher mints a random value; we stub
+    past that so assertions stay stable across runs.
     """
     def __init__(self, entry: AlgorithmEntry, **_kwargs):
         self.entry = entry
@@ -154,8 +154,9 @@ def stub_resolution() -> _StubResolutionClient:
 
 @pytest.fixture
 def patched_plugin(monkeypatch):
-    """Force ``algorithms.resolve`` to return our local entry, and replace
-    ``PluginClient`` (the symbol the orchestrator imports) with the stub."""
+    """Force ``catalog.algorithms.resolve`` to return our local entry, and
+    replace ``PluginDispatcher`` (the symbol the pipeline orchestrator
+    imported) with the stub."""
     entry = AlgorithmEntry(
         alg=BINDING_ALG,
         type="watermark",
@@ -164,13 +165,17 @@ def patched_plugin(monkeypatch):
         url="http://stubbed:8000",
     )
     monkeypatch.setattr(algorithms_module, "resolve", lambda alg, **_: entry)
-    # Patch the symbol the orchestrator pulled into its module namespace
-    # (`from .algorithms import PluginClient` makes the orchestrator's
-    # PluginClient binding the one to override).
-    from ingestion_api.services import orchestrator as orchestrator_module
-    monkeypatch.setattr(orchestrator_module, "PluginClient", _StubPluginClient)
+    # Patch the symbol the *pipeline orchestrator* pulled into its
+    # module namespace — that's the consumer of PluginDispatcher now
+    # (the IngestionService delegates plugin execution to the
+    # pipeline). The IngestionService still owns ``resolve_algorithm``
+    # for the alg validation pre-pass, so that one stays on the
+    # service module's namespace.
+    from ingestion_api.pipeline import orchestrator as pipeline_module
+    from ingestion_api.services import ingestion as ingestion_module
+    monkeypatch.setattr(pipeline_module, "PluginDispatcher", _StubPluginDispatcher)
     monkeypatch.setattr(
-        orchestrator_module,
+        ingestion_module,
         "resolve_algorithm",
         lambda alg, **_: entry,
     )
@@ -352,9 +357,10 @@ def test_pipeline_failure_persists_failed_ingestion(
         media_types=("audio/wav",),
         url="http://stubbed:8000",
     )
-    from ingestion_api.services import orchestrator as orchestrator_module
+    from ingestion_api.pipeline import orchestrator as pipeline_module
+    from ingestion_api.services import ingestion as ingestion_module
 
-    class _BrokenPluginClient:
+    class _BrokenPluginDispatcher:
         def __init__(self, e, **_kw):
             self.entry = e
 
@@ -371,8 +377,8 @@ def test_pipeline_failure_persists_failed_ingestion(
             return {"version": "broken"}
 
     monkeypatch.setattr(algorithms_module, "resolve", lambda alg, **_: entry)
-    monkeypatch.setattr(orchestrator_module, "PluginClient", _BrokenPluginClient)
-    monkeypatch.setattr(orchestrator_module, "resolve_algorithm", lambda a, **_: entry)
+    monkeypatch.setattr(pipeline_module, "PluginDispatcher", _BrokenPluginDispatcher)
+    monkeypatch.setattr(ingestion_module, "resolve_algorithm", lambda a, **_: entry)
 
     svc = IngestionService(
         signing_service=signing_service,
@@ -460,10 +466,11 @@ def test_pipeline_rejects_plugin_that_changes_audio_format(
         def info_cached(self):
             return {"version": "resampler"}
 
-    from ingestion_api.services import orchestrator as orchestrator_module
+    from ingestion_api.pipeline import orchestrator as pipeline_module
+    from ingestion_api.services import ingestion as ingestion_module
     monkeypatch.setattr(algorithms_module, "resolve", lambda alg, **_: entry)
-    monkeypatch.setattr(orchestrator_module, "PluginClient", _ResamplingPlugin)
-    monkeypatch.setattr(orchestrator_module, "resolve_algorithm", lambda a, **_: entry)
+    monkeypatch.setattr(pipeline_module, "PluginDispatcher", _ResamplingPlugin)
+    monkeypatch.setattr(ingestion_module, "resolve_algorithm", lambda a, **_: entry)
 
     svc = IngestionService(
         signing_service=signing_service,
@@ -536,13 +543,13 @@ def test_ingest_rejects_unknown_alg(
     sample_wav_bytes: bytes,
 ):
     """Caller asks for an alg not in the catalog -> 400 (no record persisted)."""
-    from ingestion_api.services import orchestrator as orchestrator_module
-    from ingestion_api.services.algorithms import AlgorithmNotFoundError
+    from ingestion_api.catalog.algorithms import AlgorithmNotFoundError
+    from ingestion_api.services import ingestion as ingestion_module
 
     def _resolve(alg, **_):
         raise AlgorithmNotFoundError(f"unknown alg: {alg}")
 
-    monkeypatch.setattr(orchestrator_module, "resolve_algorithm", _resolve)
+    monkeypatch.setattr(ingestion_module, "resolve_algorithm", _resolve)
 
     svc = IngestionService(
         signing_service=signing_service,
@@ -586,9 +593,9 @@ def test_ingest_rejects_alg_incompatible_with_mime(
         media_types=("video/mp4",),  # NOT audio/wav
         url="http://stubbed:9000",
     )
-    from ingestion_api.services import orchestrator as orchestrator_module
+    from ingestion_api.services import ingestion as ingestion_module
     monkeypatch.setattr(
-        orchestrator_module, "resolve_algorithm",
+        ingestion_module, "resolve_algorithm",
         lambda alg, **_: video_only_entry,
     )
 
@@ -681,10 +688,11 @@ def test_ingest_with_watermark_plus_fingerprint(
         ),
     }
     monkeypatch.setattr(algorithms_module, "resolve", lambda alg, **_: catalog[alg])
-    from ingestion_api.services import orchestrator as orchestrator_module
-    monkeypatch.setattr(orchestrator_module, "PluginClient", _StubPluginClient)
+    from ingestion_api.pipeline import orchestrator as pipeline_module
+    from ingestion_api.services import ingestion as ingestion_module
+    monkeypatch.setattr(pipeline_module, "PluginDispatcher", _StubPluginDispatcher)
     monkeypatch.setattr(
-        orchestrator_module, "resolve_algorithm", lambda alg, **_: catalog[alg],
+        ingestion_module, "resolve_algorithm", lambda alg, **_: catalog[alg],
     )
 
     svc = IngestionService(

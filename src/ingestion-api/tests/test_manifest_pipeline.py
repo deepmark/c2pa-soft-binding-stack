@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from ingestion_api.services.manifest import ManifestBuilderService, SoftBindingSpec
+from ingestion_api.contracts.manifest import SoftBindingSpec
+from ingestion_api.services.manifest import ManifestBuilderService
 from ingestion_api.services.signing import SigningService
 from ingestion_api.utils.hashing import sha256_truncated_b64
 

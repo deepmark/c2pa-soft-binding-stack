@@ -24,8 +24,8 @@ import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
 
-from ingestion_api.core.logging import get_logger
-from ingestion_api.models.ingestion import MediaType
+from ingestion_api.logging import get_logger
+from ingestion_api.models.enums import MediaType
 
 logger = get_logger(__name__)
 

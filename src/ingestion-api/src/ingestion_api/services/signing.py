@@ -1,5 +1,9 @@
 """
-C2PA signer factory.
+C2PA signer service.
+
+Owns the long-lived ``c2pa.Signer`` instance for the app's lifetime.
+Construction is eager-validated at startup (so a missing-cert deploy
+fails fast instead of throwing 503s on first ingest).
 
 Implementation note: the C2PA Python SDK's ``Signer.from_info`` is broken
 for ES256 in 0.32.3 (returns ``Signature: empty string``). The official
@@ -17,100 +21,29 @@ Supported signing algorithms (mirrors ``c2pa.C2paSigningAlg``):
 - PS256 / PS384 / PS512 (RSA-PSS)
 - ED25519
 
+Credentials (cert/key paths, fingerprint helpers, expiry) live in
+``ingestion_api.credentials.signing`` so consumers that only need
+forensic data (``/health/deep``, the ``IngestionRecord`` builder)
+don't have to import this module and drag the c2pa SDK with them.
+
 If you want to use a remote KMS / HSM later, swap ``_make_callback`` for a
 function that calls out to your service instead of using ``cryptography``.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
 
 from c2pa import C2paSigningAlg, Signer
-from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 
-from ingestion_api.core.config import settings
-from ingestion_api.core.logging import get_logger
+from ingestion_api.logging import get_logger
+from ingestion_api.credentials.signing import (
+    MissingSigningMaterialError,
+    SignerCredentials,
+)
 
 logger = get_logger(__name__)
-
-
-class MissingSigningMaterialError(RuntimeError):
-    """Cert/key files vanished or became unreadable at sign time.
-
-    Distinct type so the ingest router can map it to a 503 cleanly,
-    rather than catching a bare ``FileNotFoundError`` 
-    (which would swallow unrelated FS failures from anywhere in the call tree).
-    """
-
-
-@dataclass(slots=True)
-class SignerCredentials:
-    cert_chain_path: Path
-    private_key_path: Path
-    signing_alg: str = "ES256"
-    ta_url: str | None = None
-
-    @classmethod
-    def from_settings(cls) -> SignerCredentials:
-        return cls(
-            cert_chain_path=settings.resolved_cert_chain_path(),
-            private_key_path=settings.resolved_private_key_path(),
-            signing_alg=settings.signing_alg,
-            ta_url=settings.ta_url,
-        )
-
-    def cert_sha1(self) -> str | None:
-        """SHA-1 fingerprint of the leaf cert (DER) — standard X.509 fingerprint.
-
-        The leaf is the FIRST certificate in the chain PEM. Returns None
-        if the chain file is missing or unparseable; signing itself
-        validates presence, so a None here is forensic-only.
-        """
-        try:
-            pem_bytes = self.cert_chain_path.read_bytes()
-            certs = x509.load_pem_x509_certificates(pem_bytes)
-            if not certs:
-                return None
-            der = certs[0].public_bytes(serialization.Encoding.DER)
-            import hashlib
-            return hashlib.sha1(der).hexdigest()  # noqa: S324 - X.509 fingerprint format
-        except (OSError, ValueError):
-            return None
-
-    def validate(self) -> None:
-        if not self.cert_chain_path.is_file():
-            raise MissingSigningMaterialError(
-                f"Certificate chain not found at {self.cert_chain_path}. "
-                "Place ES256 test certs under ./credentials/es256_certs.pem "
-                "or override CERT_CHAIN_PATH."
-            )
-        if not self.private_key_path.is_file():
-            raise MissingSigningMaterialError(
-                f"Private key not found at {self.private_key_path}. "
-                "Place ES256 test private key under "
-                "./credentials/es256_private.key or override PRIVATE_KEY_PATH."
-            )
-
-    def leaf_not_after(self) -> datetime | None:
-        """Parse the leaf cert and return its ``notAfter`` (UTC), or None
-        if the chain is missing / unparseable.
-
-        Used by ``/health/deep`` to surface impending cert expiry to
-        ops dashboards. Never raises — this is forensic data, not a
-        readiness gate.
-        """
-        try:
-            pem_bytes = self.cert_chain_path.read_bytes()
-            certs = x509.load_pem_x509_certificates(pem_bytes)
-            if not certs:
-                return None
-            return certs[0].not_valid_after_utc
-        except (OSError, ValueError, AttributeError):
-            return None
 
 
 def _signing_alg(name: str) -> C2paSigningAlg:
@@ -175,7 +108,7 @@ def _make_callback(alg: C2paSigningAlg, key_pem: bytes) -> Callable[[bytes], byt
     raise ValueError(f"Unsupported signing algorithm: {alg!r}")
 
 
-def build_signer(creds: SignerCredentials) -> Signer:
+def _build_signer(creds: SignerCredentials) -> Signer:
     """Load PEMs from disk and instantiate a ``c2pa.Signer`` (callback-backed)."""
     creds.validate()
     try:
@@ -243,7 +176,7 @@ class SigningService:
 
     def ensure_loaded(self) -> Signer:
         if self._signer is None:
-            self._signer = build_signer(self._creds)
+            self._signer = _build_signer(self._creds)
         return self._signer
 
     @property
