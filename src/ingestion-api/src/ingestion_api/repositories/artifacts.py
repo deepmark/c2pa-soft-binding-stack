@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ingestion_api.config import settings
+from ingestion_api.core.config import settings
 
 
 @dataclass(slots=True)

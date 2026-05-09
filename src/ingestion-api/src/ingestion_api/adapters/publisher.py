@@ -29,8 +29,8 @@ import time
 import httpx
 
 from ingestion_api.contracts.publisher import ResolutionPushRequest
-from ingestion_api.config import settings
-from ingestion_api.logging import REQUEST_ID_HEADER, get_logger, get_request_id
+from ingestion_api.core.config import settings
+from ingestion_api.core.logging import REQUEST_ID_HEADER, get_logger, get_request_id
 from ingestion_api.models.enums import ResolutionPushStatus
 from ingestion_api.models.responses import ResolutionPushResult
 

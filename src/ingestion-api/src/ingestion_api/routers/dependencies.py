@@ -1,10 +1,5 @@
 """
 FastAPI dependency providers for ingestion-api routes.
-
-Centralised here so individual router modules don't each re-implement
-``getattr(request.app.state, ...)`` plumbing. The generic ``_state``
-helper preserves the declared return type, eliminating the
-``# type: ignore[return-value]`` we used to scatter across providers.
 """
 from __future__ import annotations
 

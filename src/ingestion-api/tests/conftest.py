@@ -19,7 +19,7 @@ import pytest
 # but the unit tests use InMemoryIngestionRecordRepository — no live
 # Mongo connection is ever opened from the test process.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-os.environ.setdefault("ALGORITHMS_CATALOG_PATH", str(_REPO_ROOT / "algorithms.yaml"))
+os.environ.setdefault("PLUGINS_CATALOG_PATH", str(_REPO_ROOT / "plugins.yaml"))
 os.environ.setdefault("CREDENTIALS_DIR", str(_REPO_ROOT / "credentials"))
 os.environ.setdefault(
     "STORAGE_ROOT", str(Path(tempfile.gettempdir()) / "ingestion-api-tests-storage")

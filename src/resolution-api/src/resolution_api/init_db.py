@@ -6,7 +6,7 @@ Seeds:
 - a couple of soft-binding rows pointing at them.
 
 The supported-algorithms list is no longer seeded here — it's read from
-``algorithms.yaml`` at request time. Add new algorithms to that file.
+``plugins.yaml`` at request time. Add new plugin entries to that file.
 """
 import asyncio
 import base64
@@ -84,7 +84,7 @@ async def init_database() -> None:
     print("\nDatabase initialized successfully.")
     print(f"  - {len(SAMPLE_MANIFESTS)} manifests")
     print(f"  - {len(sample_bindings)} soft bindings")
-    print("(Supported algorithms come from algorithms.yaml — not Mongo.)")
+    print("(Supported algorithms come from plugins.yaml — not Mongo.)")
 
     client.close()
 

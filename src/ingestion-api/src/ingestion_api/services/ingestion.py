@@ -5,8 +5,9 @@ End-to-end pipeline:
 
     upload bytes + caller-supplied alg list
         -> guess MediaType + MIME from upload
-        -> resolve every requested alg from the catalog and verify
-           it declares the upload's MIME in its ``mediaTypes``
+        -> resolve every requested alg against the in-memory plugin
+           catalog (loaded once at startup) and verify it declares
+           the upload's MIME in its ``mediaTypes``
         -> for each alg in order, POST to its plugin container:
            - watermark plugins: /embed -> watermarked bytes + bindingValue
              (later passes see the mutated bytes)
@@ -55,21 +56,18 @@ from pathlib import Path
 
 from ingestion_api.adapters.dispatcher import PluginUnavailableError
 from ingestion_api.adapters.publisher import ResolutionPushClient
-from ingestion_api.catalog.algorithms import (
-    AlgorithmEntry,
-    AlgorithmNotFoundError,
-)
-from ingestion_api.catalog.algorithms import resolve as resolve_algorithm
 from ingestion_api.contracts.ingestion import IngestionInput, IngestionResult
 from ingestion_api.contracts.manifest import SoftBindingSpec
-from ingestion_api.contracts.plugin import PluginPass
+from ingestion_api.contracts.plugin import PluginEntry, PluginPass
 from ingestion_api.contracts.publisher import BindingPair, ResolutionPushRequest
-from ingestion_api.errors import (
+from ingestion_api.core.plugins import resolve_plugin
+from ingestion_api.core.errors import (
     IngestionError,
     InvalidAlgRequestError,
+    PluginNotFoundError,
     UnsupportedMediaError,
 )
-from ingestion_api.logging import get_logger, get_request_id
+from ingestion_api.core.logging import get_logger, get_request_id
 from ingestion_api.models.enums import FailureStage, MediaType
 from ingestion_api.models.ingestion import FailedIngestion, IngestionRecord
 from ingestion_api.models.responses import ResolutionPushResult
@@ -113,17 +111,26 @@ class _PushOutcome:
 
 
 class IngestionService:
-    """Holds the long-lived collaborators. Construct once, reuse per request."""
+    """Holds the long-lived collaborators. Construct once, reuse per request.
+
+    ``plugin_catalog`` is the parsed ``plugins.yaml`` snapshot loaded at
+    startup. Threading it through DI (rather than re-reading the file
+    inside ``resolve_plugin``) keeps every ingest off the disk and makes
+    plugin-set changes a deliberate process restart instead of a silent
+    file-system race.
+    """
 
     def __init__(
         self,
         *,
+        plugin_catalog: Sequence[PluginEntry],
         signing_service: SigningService,
         artifacts: ArtifactStore,
         records: IngestionRecordRepository,
         failed_records: FailedIngestionRepository | None = None,
         resolution_client: ResolutionPushClient | None = None,
     ) -> None:
+        self._plugin_catalog = list(plugin_catalog)
         self._signing_service = signing_service
         self._artifacts = artifacts
         self._records = records
@@ -150,7 +157,7 @@ class IngestionService:
         # Resolve and MIME-check the requested algs up front so a bad
         # request doesn't allocate disk / a record / an ingestion id.
         try:
-            entries = self._resolve_algs(payload.algs, mime_type)
+            entries = self._resolve_plugins(payload.algs, mime_type)
         except InvalidAlgRequestError:
             raise
         except IngestionError as exc:
@@ -194,23 +201,23 @@ class IngestionService:
             self._artifacts.cleanup(artifacts)
             raise
 
-    def _resolve_algs(
+    def _resolve_plugins(
         self, algs: Sequence[str], mime_type: str,
-    ) -> list[AlgorithmEntry]:
+    ) -> list[PluginEntry]:
         """Resolve every requested alg from a single catalog snapshot
         and validate it supports the upload's MIME.
 
         Raises ``InvalidAlgRequestError`` listing every offending alg
         in one message — better UX than raising on the first bad one.
         """
-        resolved: list[AlgorithmEntry] = []
+        resolved: list[PluginEntry] = []
         unknown: list[str] = []
         incompatible: list[tuple[str, tuple[str, ...]]] = []
 
         for alg in algs:
             try:
-                entry = resolve_algorithm(alg)
-            except AlgorithmNotFoundError:
+                entry = resolve_plugin(alg, catalog=self._plugin_catalog)
+            except PluginNotFoundError:
                 unknown.append(alg)
                 continue
             if mime_type not in entry.media_types:
@@ -239,7 +246,7 @@ class IngestionService:
         payload: IngestionInput,
         media_type: MediaType,
         mime_type: str,
-        entries: list[AlgorithmEntry],
+        entries: list[PluginEntry],
         ingestion_id: str,
         upload_sha256: str,
         artifacts: IngestionArtifacts,
@@ -297,7 +304,7 @@ class IngestionService:
 
     async def _run_plugins(
         self,
-        entries: list[AlgorithmEntry],
+        entries: list[PluginEntry],
         initial_bytes: bytes,
         media_type: MediaType,
         mime_type: str,
@@ -437,7 +444,7 @@ class IngestionService:
         mime_type: str,
         media_type: MediaType,
         passes: Sequence[PluginPass],
-        entries: Sequence[AlgorithmEntry],
+        entries: Sequence[PluginEntry],
         manifest_id: str,
         signed_path: Path,
         upload_sha256: str,

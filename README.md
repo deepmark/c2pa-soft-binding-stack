@@ -11,7 +11,7 @@ plugin-per-container architecture.
 
 ```
 soft-binding-resolution-api/
-├── algorithms.yaml                     ← shared catalog (mounted into both APIs)
+├── plugins.yaml                        ← shared catalog (mounted into both APIs)
 ├── docker-compose.yml
 ├── .env.example
 ├── credentials/                        ← cert + key, mounted only into ingestion-api
@@ -30,7 +30,7 @@ Four containers wired together via `docker-compose`:
 
 - **`resolution-api`** (port 8000) — read/write of the C2PA Manifest
   Store and the soft-binding lookup table. Reads supported algorithms
-  from `algorithms.yaml`.
+  from `plugins.yaml`.
 - **`ingestion-api`** (port 8001) — accepts audio uploads, calls the
   watermark plugin, builds + signs the C2PA manifest, persists artifacts,
   auto-pushes the resulting manifest store + binding to
@@ -108,7 +108,7 @@ curl http://localhost:8000/services/supportedAlgorithms | jq .
 ```
 
 Ingest a media asset end-to-end (caller picks the algs, which must
-exist in `algorithms.yaml` and declare the upload's MIME):
+exist in `plugins.yaml` and declare the upload's MIME):
 
 ```bash
 curl -X POST http://localhost:8001/ingest \
@@ -160,14 +160,14 @@ README + `.env.example` at the repo root. Default settings assume a
 Docker network, so for bare-metal dev you'll likely want:
 
 ```bash
-export ALGORITHMS_CATALOG_PATH=$PWD/algorithms.yaml
+export PLUGINS_CATALOG_PATH=$PWD/plugins.yaml
 export STORAGE_ROOT=$PWD/.storage
 export CREDENTIALS_DIR=$PWD/credentials
 export MONGODB_URL=mongodb://127.0.0.1:27017
 export DATABASE_NAME=c2pa_ingestions
 export RESOLUTION_API_URL=http://127.0.0.1:8000   # or RESOLUTION_PUSH_ENABLED=false
 # point ingestion-api at the local plugin instead of the docker hostname
-sed -i 's|http://watermark-vigil-128:8000|http://127.0.0.1:8101|' algorithms.yaml
+sed -i 's|http://watermark-vigil-128:8000|http://127.0.0.1:8101|' plugins.yaml
 ```
 
 ## Tests
@@ -199,7 +199,7 @@ once `credentials/` is populated.
    plugins expose `/info`, `/compute`, `/health`. All endpoints take
    raw audio bytes in the request body and return either bytes (with
    `X-Binding-Value` header) or JSON.
-2. Register the plugin in `algorithms.yaml`.
+2. Register the plugin in `plugins.yaml`.
 3. Add a service block to `docker-compose.yml` with a hostname matching
    the YAML `url`.
 4. Restart with `docker compose up -d --build`.
@@ -223,7 +223,7 @@ Common knobs:
 | --- | --- | --- | --- |
 | `MONGODB_URL` | both (independent) | resolution: `mongodb://localhost:27017` / ingestion: **required** | Each service has its own Mongo cluster |
 | `DATABASE_NAME` | both (independent) | resolution: `c2pa_soft_bindings` / ingestion: **required** | Each service has its own DB |
-| `ALGORITHMS_CATALOG_PATH` | both | **required** | Shared YAML catalog path |
+| `PLUGINS_CATALOG_PATH` | both | **required** | Shared YAML catalog path |
 | `STORAGE_ROOT` | ingestion-api | **required** | Where signed assets + manifest bytes land (records live in Mongo) |
 | `CREDENTIALS_DIR` | ingestion-api | **required** | Cert + key root |
 | `SIGNING_ALG` | ingestion-api | `ES256` | C2PA signing algorithm |

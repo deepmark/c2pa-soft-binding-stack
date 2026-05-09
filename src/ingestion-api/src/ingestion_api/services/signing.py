@@ -22,7 +22,7 @@ Supported signing algorithms (mirrors ``c2pa.C2paSigningAlg``):
 - ED25519
 
 Credentials (cert/key paths, fingerprint helpers, expiry) live in
-``ingestion_api.credentials.signing`` so consumers that only need
+``ingestion_api.core.credentials`` so consumers that only need
 forensic data (``/health/deep``, the ``IngestionRecord`` builder)
 don't have to import this module and drag the c2pa SDK with them.
 
@@ -37,8 +37,8 @@ from c2pa import C2paSigningAlg, Signer
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 
-from ingestion_api.logging import get_logger
-from ingestion_api.credentials.signing import (
+from ingestion_api.core.logging import get_logger
+from ingestion_api.core.credentials import (
     MissingSigningMaterialError,
     SignerCredentials,
 )

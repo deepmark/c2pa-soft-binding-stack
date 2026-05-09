@@ -34,10 +34,11 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from ingestion_api.catalog.algorithms import AlgorithmEntry, load_catalog
-from ingestion_api.config import settings
+from ingestion_api.contracts.plugin import PluginEntry
+from ingestion_api.core.plugins import load_plugin_catalog
+from ingestion_api.core.config import settings
 from ingestion_api.repositories.database import MongoDB
-from ingestion_api.logging import get_logger
+from ingestion_api.core.logging import get_logger
 from ingestion_api.services.signing import SigningService
 
 logger = get_logger(__name__)
@@ -142,7 +143,11 @@ async def health_deep(request: Request) -> JSONResponse:
     )
     signing_loaded = _signing_loaded(request)
     cert_info = _cert_info(request)
-    catalog = load_catalog()
+    catalog = getattr(request.app.state, "plugin_catalog", None)
+    if catalog is None:
+        # Fallback for tests / standalone router mounts that don't run
+        # the full lifespan; production always has it on app.state.
+        catalog = load_plugin_catalog()
 
     async with httpx.AsyncClient(timeout=_DEEP_HTTP_TIMEOUT_S) as client:
         plugin_task = asyncio.create_task(_probe_plugins(client, catalog))
@@ -175,7 +180,7 @@ async def health_deep(request: Request) -> JSONResponse:
             "ta_url": settings.ta_url,
         },
         "catalog": {
-            "path": str(settings.algorithms_catalog_path),
+            "path": str(settings.plugins_catalog_path),
             "entries": len(catalog),
         },
         "plugins": plugins_report,
@@ -257,17 +262,17 @@ def _cert_info(request: Request) -> dict[str, Any]:
 
 
 async def _probe_plugins(
-    client: httpx.AsyncClient, catalog: list[AlgorithmEntry],
+    client: httpx.AsyncClient, catalog: list[PluginEntry],
 ) -> tuple[list[dict[str, Any]], bool]:
     """Concurrently GET ``/health`` against every cataloged plugin."""
 
-    async def _one(entry: AlgorithmEntry) -> dict[str, Any]:
+    async def _one(entry: PluginEntry) -> dict[str, Any]:
         if not entry.url:
             return {
                 "alg": entry.alg,
                 "ok": False,
                 "url": None,
-                "error": f"alg {entry.alg!r} has no URL in algorithms.yaml",
+                "error": f"alg {entry.alg!r} has no URL in plugins.yaml",
             }
         url = entry.url.rstrip("/") + "/health"
         try:

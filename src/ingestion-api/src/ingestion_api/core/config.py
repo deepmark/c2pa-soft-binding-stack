@@ -13,7 +13,7 @@ This service:
   out for standalone deployments).
 
 Required env vars: ``MONGODB_URL``, ``DATABASE_NAME``,
-``STORAGE_ROOT``, ``ALGORITHMS_CATALOG_PATH``, ``CREDENTIALS_DIR``.
+``STORAGE_ROOT``, ``PLUGINS_CATALOG_PATH``, ``CREDENTIALS_DIR``.
 
 Note: the per-ingest alg list is supplied by the caller in the
 ``POST /ingest`` form field ``algs``; there is no service-wide default.
@@ -58,11 +58,11 @@ class Settings(BaseSettings):
         description="Absolute path to the artifact store directory.",
     )
 
-    # Algorithm catalog.
+    # Plugin catalog.
     # The same file must be mounted into resolution-api.
-    algorithms_catalog_path: Path = Field(
+    plugins_catalog_path: Path = Field(
         ...,
-        description="Absolute path to the shared algorithms.yaml catalog.",
+        description="Absolute path to the shared plugins.yaml catalog.",
     )
 
 

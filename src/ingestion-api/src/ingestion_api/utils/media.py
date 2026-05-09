@@ -8,7 +8,7 @@ ingest and which top-level ``MediaType`` they map to.
 Supported MIMEs are constrained to what the C2PA Python SDK can sign
 (see https://opensource.contentauthenticity.org/docs/c2pa-python/docs/supported-formats).
 Adding a MIME the SDK doesn't support could cause a manifest-sign failure later in the pipeline.
-The catalog (``algorithms.yaml``) declares per-alg MIME compatibility separately,
+The catalog (``plugins.yaml``) declares per-alg MIME compatibility separately,
 and the orchestrator validates the requested algs against the upload's MIME at ingest time.
 
 Format-preservation inspection is currently audio-only: ``read_audio_format``
@@ -24,7 +24,7 @@ import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
 
-from ingestion_api.logging import get_logger
+from ingestion_api.core.logging import get_logger
 from ingestion_api.models.enums import MediaType
 
 logger = get_logger(__name__)

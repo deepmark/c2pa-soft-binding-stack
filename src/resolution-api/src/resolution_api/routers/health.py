@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from resolution_api.core.config import settings
-from resolution_api.services.algorithms_catalog import load_catalog
+from resolution_api.services.plugins_catalog import load_plugin_catalog
 
 router = APIRouter(tags=["health"])
 
@@ -20,7 +20,7 @@ async def health() -> dict:
 
 @router.get("/ready", summary="Readiness probe")
 async def ready() -> dict:
-    """Pings Mongo and verifies the algorithm catalog is loadable."""
+    """Pings Mongo and verifies the plugin catalog is loadable."""
     from resolution_api.core.database import MongoDB
 
     mongo_ok = True
@@ -35,13 +35,13 @@ async def ready() -> dict:
         mongo_ok = False
         mongo_err = str(exc)
 
-    catalog = load_catalog()
+    catalog = load_plugin_catalog()
 
     return {
         "status": "ok" if (mongo_ok and catalog) else "degraded",
         "mongo": {"ok": mongo_ok, "error": mongo_err},
         "catalog": {
-            "path": str(settings.algorithms_catalog_path),
+            "path": str(settings.plugins_catalog_path),
             "entries": len(catalog),
         },
     }

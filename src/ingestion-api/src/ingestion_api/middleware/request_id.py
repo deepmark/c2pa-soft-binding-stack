@@ -22,7 +22,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ingestion_api.logging import (
+from ingestion_api.core.logging import (
     REQUEST_ID_HEADER,
     reset_request_id,
     set_request_id,

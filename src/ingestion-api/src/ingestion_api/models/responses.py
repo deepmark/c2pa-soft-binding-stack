@@ -1,9 +1,5 @@
 """
 Wire-shape models for HTTP responses.
-
-Kept separate from ``models.ingestion`` (the persisted shapes) so that
-field changes for serialization concerns (URL builders, pagination
-cursors) don't touch the Mongo schema.
 """
 from __future__ import annotations
 

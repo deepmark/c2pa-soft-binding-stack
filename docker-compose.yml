@@ -20,11 +20,11 @@ services:
     environment:
       MONGODB_URL: mongodb://mongo:27017
       DATABASE_NAME: c2pa_soft_bindings
-      ALGORITHMS_CATALOG_PATH: /catalog/algorithms.yaml
+      PLUGINS_CATALOG_PATH: /catalog/plugins.yaml
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON: ${LOG_JSON:-false}
     volumes:
-      - ./algorithms.yaml:/catalog/algorithms.yaml:ro
+      - ./plugins.yaml:/catalog/plugins.yaml:ro
 
   ingestion-api:
     build:
@@ -43,7 +43,7 @@ services:
       # from resolution-api's; here we share a container in dev.
       MONGODB_URL: mongodb://mongo:27017
       DATABASE_NAME: c2pa_ingestions
-      ALGORITHMS_CATALOG_PATH: /catalog/algorithms.yaml
+      PLUGINS_CATALOG_PATH: /catalog/plugins.yaml
       STORAGE_ROOT: /var/lib/ingestion-api/storage
       CREDENTIALS_DIR: /credentials
       SIGNING_ALG: ${SIGNING_ALG:-ES256}
@@ -56,7 +56,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON: ${LOG_JSON:-false}
     volumes:
-      - ./algorithms.yaml:/catalog/algorithms.yaml:ro
+      - ./plugins.yaml:/catalog/plugins.yaml:ro
       - ./credentials:/credentials:ro
       - ingestion-storage:/var/lib/ingestion-api/storage
 

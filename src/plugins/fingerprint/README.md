@@ -38,7 +38,7 @@ app, mirroring the watermark plugin pattern.
 3. Add `requirements.txt` and a `Dockerfile` (copy from
    `plugins/watermark/vigil-128/` and adapt).
 
-4. Register the plugin in the root `algorithms.yaml`:
+4. Register the plugin in the root `plugins.yaml`:
    ```yaml
    - alg: org.example.audiofp.v1
      type: fingerprint

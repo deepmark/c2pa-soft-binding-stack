@@ -27,7 +27,7 @@ import sys
 from contextvars import ContextVar, Token
 from typing import Any
 
-from ingestion_api.config import settings
+from ingestion_api.core.config import settings
 
 REQUEST_ID_HEADER = "X-Request-ID"
 

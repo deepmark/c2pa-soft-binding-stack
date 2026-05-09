@@ -26,10 +26,10 @@ class Settings(BaseSettings):
         "Web service API endpoint for matching soft bindings to C2PA Manifests."
     )
 
-    # Algorithm catalog (shared YAML mounted into the container).
-    algorithms_catalog_path: Path = Field(
+    # Plugin catalog (shared YAML mounted into the container).
+    plugins_catalog_path: Path = Field(
         ...,
-        description="Absolute path to the shared algorithms.yaml catalog.",
+        description="Absolute path to the shared plugins.yaml catalog.",
     )
 
     # Logging

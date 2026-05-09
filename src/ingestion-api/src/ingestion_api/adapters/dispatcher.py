@@ -47,9 +47,10 @@ from dataclasses import dataclass
 
 import httpx
 
-from ingestion_api.catalog.algorithms import AlgorithmEntry
-from ingestion_api.config import settings
-from ingestion_api.logging import REQUEST_ID_HEADER, get_logger, get_request_id
+from ingestion_api.contracts.plugin import PluginEntry
+from ingestion_api.core.config import settings
+from ingestion_api.core.errors import PluginUnavailableError
+from ingestion_api.core.logging import REQUEST_ID_HEADER, get_logger, get_request_id
 from ingestion_api.models.enums import SoftBindingKind
 
 logger = get_logger(__name__)
@@ -67,10 +68,6 @@ _PLUGIN_INFO_CACHE: dict[str | None, dict] = {}
 def reset_plugin_info_cache() -> None:
     """Test/admin helper. Production code shouldn't need this."""
     _PLUGIN_INFO_CACHE.clear()
-
-
-class PluginUnavailableError(RuntimeError):
-    """The plugin container couldn't be reached, or returned a non-2xx."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -91,7 +88,7 @@ class PluginDispatcher:
 
     def __init__(
         self,
-        entry: AlgorithmEntry,
+        entry: PluginEntry,
         *,
         timeout_s: float | None = None,
         client: httpx.Client | None = None,
@@ -99,7 +96,7 @@ class PluginDispatcher:
     ) -> None:
         if not entry.url:
             raise PluginUnavailableError(
-                f"alg={entry.alg!r} has no URL configured in algorithms.yaml"
+                f"alg={entry.alg!r} has no URL configured in plugins.yaml"
             )
         self._entry = entry
         self._timeout = timeout_s if timeout_s is not None else settings.plugin_request_timeout_s

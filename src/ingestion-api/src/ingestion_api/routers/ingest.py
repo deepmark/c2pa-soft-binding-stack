@@ -36,10 +36,10 @@ from fastapi import (
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ingestion_api.contracts.ingestion import IngestionInput
-from ingestion_api.config import settings
-from ingestion_api.logging import get_logger
-from ingestion_api.credentials.signing import MissingSigningMaterialError
-from ingestion_api.errors import (
+from ingestion_api.core.config import settings
+from ingestion_api.core.logging import get_logger
+from ingestion_api.core.credentials import MissingSigningMaterialError
+from ingestion_api.core.errors import (
     IngestionError,
     InvalidAlgRequestError,
     UnsupportedMediaError,
@@ -161,7 +161,7 @@ async def ingest_media(
         ...,
         description=(
             "Ordered list of soft-binding algorithm IDs to apply. Each must "
-            "exist in algorithms.yaml and declare the upload's MIME in its "
+            "exist in plugins.yaml and declare the upload's MIME in its "
             "`mediaTypes`. Order matters: watermark passes mutate bytes for subsequent passes. "
             "We advise putting watermarks first. Pass repeated form fields: `algs=a&algs=b`. "
             f"Capped at {settings.max_algs_per_ingest} entries per request."

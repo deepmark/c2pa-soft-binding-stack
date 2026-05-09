@@ -13,16 +13,13 @@ from ingestion_api.adapters.dispatcher import (
     PluginDispatcher,
     PluginUnavailableError,
 )
-from ingestion_api.catalog.algorithms import (
-    AlgorithmEntry,
-    AlgorithmNotFoundError,
-    load_catalog,
-    resolve,
-)
+from ingestion_api.contracts.plugin import PluginEntry
+from ingestion_api.core.errors import PluginNotFoundError
+from ingestion_api.core.plugins import load_plugin_catalog, resolve_plugin
 
 
-def _entry(**kw) -> AlgorithmEntry:
-    return AlgorithmEntry(
+def _entry(**kw) -> PluginEntry:
+    return PluginEntry(
         alg=kw.get("alg", "me.deepmark.audio.vigil.128"),
         type=kw.get("type", "watermark"),
         binding_bits=kw.get("binding_bits", 128),
@@ -36,53 +33,53 @@ def _entry(**kw) -> AlgorithmEntry:
 # ---------------------------------------------------------------------------
 
 
-def test_load_catalog_returns_empty_for_missing_file(tmp_path: Path):
-    assert load_catalog(tmp_path / "missing.yaml") == []
+def test_load_plugin_catalog_returns_empty_for_missing_file(tmp_path: Path):
+    assert load_plugin_catalog(tmp_path / "missing.yaml") == []
 
 
-def test_load_catalog_parses_well_formed_entries(tmp_path: Path):
-    p = tmp_path / "algorithms.yaml"
+def test_load_plugin_catalog_parses_well_formed_entries(tmp_path: Path):
+    p = tmp_path / "plugins.yaml"
     p.write_text(dedent("""
-        algorithms:
+        plugins:
           - alg: me.deepmark.audio.vigil.128
             type: watermark
             bindingBits: 128
             mediaTypes: ["audio/wav"]
             url: http://watermark-vigil-128:8000
     """))
-    entries = load_catalog(p)
+    entries = load_plugin_catalog(p)
     assert len(entries) == 1
     assert entries[0].alg == "me.deepmark.audio.vigil.128"
     assert entries[0].binding_bits == 128
     assert entries[0].url == "http://watermark-vigil-128:8000"
 
 
-def test_load_catalog_accepts_non_byte_aligned_binding_bits(tmp_path: Path):
+def test_load_plugin_catalog_accepts_non_byte_aligned_binding_bits(tmp_path: Path):
     """bindingBits doesn't have to be a multiple of 8."""
-    p = tmp_path / "algorithms.yaml"
+    p = tmp_path / "plugins.yaml"
     p.write_text(dedent("""
-        algorithms:
+        plugins:
           - alg: weird.width
             type: watermark
             bindingBits: 100
             mediaTypes: ["audio/wav"]
             url: http://x:8000
     """))
-    entries = load_catalog(p)
+    entries = load_plugin_catalog(p)
     assert len(entries) == 1
     assert entries[0].binding_bits == 100
 
 
-def test_resolve_raises_for_unknown_alg(tmp_path: Path):
-    with pytest.raises(AlgorithmNotFoundError):
-        resolve("nope", catalog=[])
+def test_resolve_plugin_raises_for_unknown_alg(tmp_path: Path):
+    with pytest.raises(PluginNotFoundError):
+        resolve_plugin("nope", catalog=[])
 
 
-def test_load_catalog_skips_entries_with_bad_binding_bits(tmp_path: Path):
+def test_load_plugin_catalog_skips_entries_with_bad_binding_bits(tmp_path: Path):
     """bindingBits is required and must be positive."""
-    p = tmp_path / "algorithms.yaml"
+    p = tmp_path / "plugins.yaml"
     p.write_text(dedent("""
-        algorithms:
+        plugins:
           - alg: ok.alg
             type: watermark
             bindingBits: 128
@@ -103,7 +100,7 @@ def test_load_catalog_skips_entries_with_bad_binding_bits(tmp_path: Path):
             mediaTypes: ["audio/wav"]
             url: http://x:8000
     """))
-    entries = load_catalog(p)
+    entries = load_plugin_catalog(p)
     assert [e.alg for e in entries] == ["ok.alg"]
     assert entries[0].binding_bits == 128
 

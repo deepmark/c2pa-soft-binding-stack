@@ -12,7 +12,7 @@ class IngestionInput:
     """Inputs to a single ingest call.
 
     ``algs`` is the caller-supplied, ordered list of algorithm IDs to
-    apply. Each must exist in ``algorithms.yaml`` and declare the
+    apply. Each must exist in ``plugins.yaml`` and declare the
     upload's MIME in its ``mediaTypes``. Order matters — watermark
     passes mutate bytes for subsequent passes (put watermarks first).
     """

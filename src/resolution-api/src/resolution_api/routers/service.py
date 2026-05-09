@@ -4,14 +4,14 @@ Service route group.
 Exposes repository capabilities, primarily the list of supported soft
 binding algorithms.
 
-Source of truth is the shared ``algorithms.yaml`` catalog mounted into
+Source of truth is the shared ``plugins.yaml`` catalog mounted into
 the container — same file that ingestion-api uses for plugin routing,
 so what's listed here is exactly what's wired up end-to-end.
 """
 from fastapi import APIRouter, HTTPException
 
 from resolution_api.models import SoftBindingAlgList, SoftBindingAlgorithm
-from resolution_api.services.algorithms_catalog import load_catalog
+from resolution_api.services.plugins_catalog import load_plugin_catalog
 
 router = APIRouter(tags=["service"])
 
@@ -32,7 +32,7 @@ async def get_supported_algorithms():
     for the cross-org canonical registry.
     """
     try:
-        entries = load_catalog()
+        entries = load_plugin_catalog()
         watermarks = [
             SoftBindingAlgorithm(alg=e.alg) for e in entries if e.type == "watermark"
         ]

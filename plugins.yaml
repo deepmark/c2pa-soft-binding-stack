@@ -1,4 +1,4 @@
-# Shared catalog of soft-binding algorithms supported by this deployment.
+# Shared catalog of soft-binding plugins supported by this deployment.
 #
 # Mounted into both `resolution-api` and `ingestion-api`:
 #  - resolution-api reads it for `GET /services/supportedAlgorithms`.
@@ -13,7 +13,7 @@
 #   mediaTypes   -- IANA media types this plugin can handle
 #   url          -- HTTP URL of the plugin container, used by ingestion-api
 
-algorithms:
+plugins:
   - alg: me.deepmark.audio.vigil.128
     type: watermark
     bindingBits: 128

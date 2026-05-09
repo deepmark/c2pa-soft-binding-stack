@@ -18,10 +18,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ingestion_api.adapters.dispatcher import PluginDispatcher
-from ingestion_api.catalog.algorithms import AlgorithmEntry
+from ingestion_api.contracts.plugin import PluginEntry
 from ingestion_api.contracts.plugin import PluginPass
-from ingestion_api.logging import get_logger
-from ingestion_api.errors import IngestionError
+from ingestion_api.core.logging import get_logger
+from ingestion_api.core.errors import IngestionError
 from ingestion_api.models.enums import FailureStage, MediaType
 from ingestion_api.utils.media import read_audio_format
 
@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 
 
 def run_plugin_passes(
-    entries: Sequence[AlgorithmEntry],
+    entries: Sequence[PluginEntry],
     initial_bytes: bytes,
     media_type: MediaType,
     mime_type: str,
@@ -88,7 +88,7 @@ def run_plugin_passes(
 
 
 def capture_plugin_versions(
-    entries: Sequence[AlgorithmEntry],
+    entries: Sequence[PluginEntry],
 ) -> dict[str, dict] | None:
     """Snapshot ``/info`` per alg via the cached PluginDispatcher.info_cached().
 

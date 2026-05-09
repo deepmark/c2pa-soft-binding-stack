@@ -25,7 +25,7 @@ vars (or `.env`):
 | --- | --- | --- |
 | `MONGODB_URL` | `mongodb://localhost:27017` | Mongo URL |
 | `DATABASE_NAME` | `c2pa_soft_bindings` | Mongo DB |
-| `ALGORITHMS_CATALOG_PATH` | `<repo>/algorithms.yaml` | Shared catalog |
+| `PLUGINS_CATALOG_PATH` | `<repo>/plugins.yaml` | Shared catalog |
 | `LOG_LEVEL` / `LOG_JSON` | `INFO` / `false` | Logging |
 
 ## Tests

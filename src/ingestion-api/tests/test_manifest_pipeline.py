@@ -163,3 +163,75 @@ def test_manifest_id_can_be_read_back(
         full = json.loads(r.json())
     label = full["active_manifest"]
     assert label.startswith("urn:c2pa:"), label
+
+
+def test_claim_generator_info_surfaces_with_constructor_overrides(
+    sample_wav_bytes: bytes,
+    tmp_path: Path,
+    signing_service: SigningService,
+):
+    """Regression guard: ``claim_generator_info`` is currently embedded in the
+    per-manifest JSON (NOT on the Builder Context) because c2pa-python 0.32.3
+    doesn't propagate the Context-set value into the signed manifest. If the
+    SDK is bumped and Context starts honoring it, ``ManifestBuilderService``
+    can move the field; this test must keep passing across that move.
+    Verifies our app appears in the signed manifest's ``claim_generator_info``
+    chain with the name + version handed to the constructor."""
+    dest = tmp_path / "signed.wav"
+    binding = compute_binding_value(sample_wav_bytes)
+    builder = ManifestBuilderService(
+        signer=signing_service.signer,
+        claim_generator_name="Regression Test App",
+        claim_generator_version="9.9.9",
+    )
+    builder.build_and_sign(
+        source_bytes=sample_wav_bytes,
+        dest_path=dest,
+        mime_type="audio/wav",
+        soft_bindings=[watermark_spec(binding)],
+    )
+
+    active = _read_active_manifest(dest)
+
+    # ``claim_generator_info`` is a list of contributors in C2PA — ours
+    # should be present; the SDK is allowed to also append its own
+    # library marker (``c2pa-rs``).
+    cgi = active.get("claim_generator_info")
+    assert cgi, f"claim_generator_info missing from signed manifest: {active}"
+    assert isinstance(cgi, list)
+    ours = next(
+        (c for c in cgi if c.get("name") == "Regression Test App"),
+        None,
+    )
+    assert ours is not None, f"our claim_generator entry not found in {cgi}"
+    assert ours["version"] == "9.9.9"
+
+
+def test_thumbnail_disabled_via_context(
+    sample_wav_bytes: bytes,
+    tmp_path: Path,
+    signing_service: SigningService,
+):
+    """The Builder Context disables thumbnail generation (audio = no thumbnail).
+    Confirm no c2pa.thumbnail.* assertion is emitted."""
+    dest = tmp_path / "signed.wav"
+    binding = compute_binding_value(sample_wav_bytes)
+    builder = ManifestBuilderService(signer=signing_service.signer)
+    builder.build_and_sign(
+        source_bytes=sample_wav_bytes,
+        dest_path=dest,
+        mime_type="audio/wav",
+        soft_bindings=[watermark_spec(binding)],
+    )
+
+    active = _read_active_manifest(dest)
+    thumbnail_assertions = [
+        a for a in active.get("assertions", [])
+        if a.get("label", "").startswith("c2pa.thumbnail")
+    ]
+    assert thumbnail_assertions == [], (
+        f"expected no thumbnail assertions, got: {thumbnail_assertions}"
+    )
+    assert active.get("thumbnail") is None, (
+        f"expected no top-level thumbnail, got: {active.get('thumbnail')!r}"
+    )

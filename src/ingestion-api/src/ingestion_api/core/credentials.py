@@ -20,16 +20,8 @@ from pathlib import Path
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
-from ingestion_api.config import settings
-
-
-class MissingSigningMaterialError(RuntimeError):
-    """Cert/key files vanished or became unreadable at sign time.
-
-    Distinct type so the ingest router can map it to a 503 cleanly,
-    rather than catching a bare ``FileNotFoundError`` 
-    (which would swallow unrelated FS failures from anywhere in the call tree).
-    """
+from ingestion_api.core.config import settings
+from ingestion_api.core.errors import MissingSigningMaterialError
 
 
 @dataclass(slots=True)
@@ -51,9 +43,10 @@ class SignerCredentials:
     def cert_sha1(self) -> str | None:
         """SHA-1 fingerprint of the leaf cert (DER) — standard X.509 fingerprint.
 
-        The leaf is the FIRST certificate in the chain PEM. Returns None
-        if the chain file is missing or unparseable; signing itself
-        validates presence, so a None here is forensic-only.
+        The leaf is the FIRST certificate in the chain PEM. 
+        Returns None if the chain file is missing or unparseable. 
+        validate() raises if the cert chain is missing or unparseable, 
+        so a None here is forensic-only.
         """
         try:
             pem_bytes = self.cert_chain_path.read_bytes()
@@ -85,8 +78,8 @@ class SignerCredentials:
         if the chain is missing / unparseable.
 
         Used by ``/health/deep`` to surface impending cert expiry to
-        ops dashboards. Never raises — this is forensic data, not a
-        readiness gate.
+        ops dashboards. 
+        Never raises — this is forensic data, not a readiness gate.
         """
         try:
             pem_bytes = self.cert_chain_path.read_bytes()

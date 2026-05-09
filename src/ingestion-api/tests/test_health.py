@@ -9,8 +9,8 @@ Strategy:
 - Patch ``httpx.AsyncClient`` (in the health router's namespace) to
   return a client backed by ``MockTransport`` so plugin + resolution
   probes don't go anywhere real.
-- Fake ``algorithms.yaml`` via ``settings.algorithms_catalog_path`` so
-  ``load_catalog()`` returns a deterministic plugin list.
+- Fake ``plugins.yaml`` via ``settings.plugins_catalog_path`` so
+  ``load_plugin_catalog()`` returns a deterministic plugin list.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from ingestion_api.config import settings
+from ingestion_api.core.config import settings
 from ingestion_api.repositories.database import MongoDB
 from ingestion_api.routers import health as health_module
 from ingestion_api.routers.health import router as health_router
@@ -92,8 +92,8 @@ def _patch_credentials_present(
 
 
 def _patch_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path, urls: list[str]) -> None:
-    """Write a deterministic algorithms.yaml and re-point the catalog path."""
-    p = tmp_path / "algorithms.yaml"
+    """Write a deterministic plugins.yaml and re-point the catalog path."""
+    p = tmp_path / "plugins.yaml"
     entries = "\n".join(
         dedent(f"""\
             - alg: alg.{i}
@@ -104,8 +104,8 @@ def _patch_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path, urls: list[str]) -
         """)
         for i, url in enumerate(urls)
     )
-    p.write_text(f"algorithms:\n{entries}")
-    monkeypatch.setattr(settings, "algorithms_catalog_path", p)
+    p.write_text(f"plugins:\n{entries}")
+    monkeypatch.setattr(settings, "plugins_catalog_path", p)
 
 
 def _patch_async_client(

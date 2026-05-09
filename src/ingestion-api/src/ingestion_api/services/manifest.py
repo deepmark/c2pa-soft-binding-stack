@@ -1,13 +1,23 @@
 """
 C2PA manifest builder.
 
-Wraps ``c2pa.Builder`` for the soft-binding ingest case:
+Wraps ``c2pa.Builder`` for the soft-binding ingest case. Configuration
+flows through the SDK's ``Context`` API (the supported replacement for
+the deprecated ``load_settings`` global) so that builder + reader
+defaults are declared in one place per service rather than scattered
+across imperative calls and inline manifest JSON.
 
-1. Open the original audio file as a stream, set ``C2paBuilderIntent.EDIT``.
-   The SDK then auto-creates the ``parentOf`` ingredient from the source
-   stream and wires up a ``c2pa.opened`` action that references it via
-   ``ingredientIds`` — no manual JUMBF URL gymnastics required (see
-   https://opensource.contentauthenticity.org/docs/c2pa-python/docs/intents).
+Pipeline:
+
+1. ``Context`` carries our builder defaults: EDIT intent, claim
+   generator info, thumbnail disabled (we sign audio — no thumbnail to
+   generate). With EDIT intent the SDK auto-creates the ``parentOf``
+   ingredient from the source stream and wires up a ``c2pa.opened``
+   action that references it via ``ingredientIds`` — no manual JUMBF
+   URL gymnastics required (see
+   https://opensource.contentauthenticity.org/docs/c2pa-python/docs/intents
+   and
+   https://opensource.contentauthenticity.org/docs/c2pa-python/docs/context-settings/).
 
 2. We add a ``c2pa.watermarked.bound`` action and one
    ``c2pa.soft-binding`` assertion per ``SoftBindingSpec``. Multiple
@@ -26,7 +36,16 @@ Wraps ``c2pa.Builder`` for the soft-binding ingest case:
 
 3. ``Builder.sign(...)`` writes the signed asset to the output path and
    returns the raw manifest bytes, which we surface so the storage layer
-   can persist them alongside the asset.
+   can persist them alongside the asset. The signer is passed
+   explicitly to ``sign()`` (not via Context) so the long-lived
+   ``SigningService`` keeps ownership — explicit signers take
+   precedence over context signers per the SDK's precedence rules.
+
+4. ``Reader`` (used by ``read_active_manifest_label``) is pinned to
+   ``_READER_CTX``: no remote manifest fetch, no OCSP fetch, no
+   verification on read. We just signed the file ourselves and only
+   want the active_manifest URN — any network roundtrip here is wasted
+   at best, a latency hazard at worst.
 
 The watermark itself is *not* an ingredient — it's an action + an
 assertion on the new asset. That's the whole point of
@@ -42,11 +61,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from c2pa import Builder, C2paBuilderIntent, Reader, Signer
+from c2pa import Builder, Context, Reader, Signer
 
+from ingestion_api.core.config import settings
 from ingestion_api.contracts.manifest import SoftBindingSpec
-from ingestion_api.config import settings
-from ingestion_api.logging import get_logger
+from ingestion_api.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -56,6 +75,20 @@ SOFT_BINDING_LABEL = "c2pa.soft-binding"
 # URIs (``self#jumbf=c2pa.assertions/<label>``); the builder fills in
 # the hash at sign time.
 _ASSERTION_JUMBF_PREFIX = "self#jumbf=c2pa.assertions/"
+
+# Reader context for ``read_active_manifest_label``. We just signed the
+# file ourselves — there is nothing remote to validate against and
+# nothing to OCSP-check. Disable network-touching defaults so a slow
+# OCSP responder can't extend ingest latency by seconds. Also skip
+# verify-after-reading: we only need the active_manifest URN string,
+# not a re-validation of bytes we just produced.
+_READER_CTX = Context.from_dict({
+    "verify": {
+        "verify_after_reading": False,
+        "remote_manifest_fetch": False,
+        "ocsp_fetch": False,
+    },
+})
 
 
 @dataclass(slots=True)
@@ -76,7 +109,7 @@ def read_active_manifest_label(signed_path: Path) -> str | None:
     distinguish "missing" from "raise."
     """
     try:
-        with Reader(str(signed_path)) as reader:
+        with Reader(str(signed_path), context=_READER_CTX) as reader:
             data = json.loads(reader.json())
             return data.get("active_manifest")
     except Exception:
@@ -107,9 +140,15 @@ class ManifestBuilderService:
     """
     Build and sign a C2PA manifest for an audio file.
 
-    Stateless — instantiate once at startup (or per-request, both fine) and
-    reuse. The ``Signer`` is injected so this class doesn't reach into
-    config directly; the orchestrator owns wiring.
+    Stateless aside from the Builder ``Context`` (which is just config).
+    Instantiate once at startup (or per-request, both fine) and reuse.
+    The ``Signer`` is injected so this class doesn't reach into config
+    directly; the orchestrator owns wiring.
+
+    Builder defaults (intent, claim generator info, thumbnail) live in
+    the per-instance ``Context`` so they're declared in one place
+    instead of split between an imperative ``set_intent`` call and an
+    inline ``claim_generator_info`` field on the manifest JSON.
     """
 
     def __init__(
@@ -124,6 +163,25 @@ class ManifestBuilderService:
         self._claim_generator_version = (
             claim_generator_version or settings.claim_generator_version
         )
+        # NOTE: ``claim_generator_info`` deliberately stays in the
+        # per-manifest JSON (see ``_manifest_definition``), NOT on the
+        # Context. In c2pa-python 0.32.3 the Context-set value isn't
+        # propagated into the signed manifest — only the SDK's own
+        # ``c2pa-rs`` library marker shows up. Re-evaluate when bumping
+        # the SDK; if Context starts honoring it, move the field here
+        # so all builder defaults live in one place.
+        self._builder_ctx = Context.from_dict({
+            "builder": {
+                # EDIT intent: SDK adds c2pa.opened + parentOf ingredient
+                # + the right ingredientIds linkage from the source stream.
+                # See: https://opensource.contentauthenticity.org/docs/c2pa-python/docs/intents
+                "intent": {"Edit": None},
+                # Audio ingest — no thumbnail to generate. Disabling
+                # also avoids the SDK trying and silently swallowing the
+                # error (default ``ignore_errors=true``).
+                "thumbnail": {"enabled": False},
+            },
+        })
 
     def build_and_sign(
         self,
@@ -135,7 +193,7 @@ class ManifestBuilderService:
         title: str | None = None,
     ) -> BuiltManifest:
         """
-        Build the manifest definition, set EDIT intent, sign.
+        Build the manifest definition and sign.
 
         The source bytes are fed through an in-memory stream — we never
         persist the raw upload or any (dummy) watermarked intermediate.
@@ -164,12 +222,11 @@ class ManifestBuilderService:
             dest_path, mime_type, algs, len(source_bytes),
         )
 
-        with Builder.from_json(manifest_def) as builder:
-            # EDIT intent: SDK adds c2pa.opened + parentOf ingredient 
-            # + the right ingredientIds linkage from the source stream. 
-            # See: https://opensource.contentauthenticity.org/docs/c2pa-python/docs/intents
-            builder.set_intent(C2paBuilderIntent.EDIT)
+        with Builder.from_json(manifest_def, context=self._builder_ctx) as builder:
             with io.BytesIO(source_bytes) as src, open(dest_path, "w+b") as dst:
+                # Explicit signer takes precedence over any context
+                # signer (per SDK precedence rules); we keep ownership
+                # of the long-lived Signer in SigningService.
                 manifest_bytes = builder.sign(self._signer, mime_type, src, dst)
 
         logger.info(
@@ -187,10 +244,16 @@ class ManifestBuilderService:
         """
         Manifest JSON passed to ``Builder.from_json``.
 
-        We deliberately do **not** include ``c2pa.opened`` or the parent
-        ingredient here — the EDIT intent injects both. We contribute the
-        watermark action (if any) and one ``c2pa.soft-binding`` assertion
-        per spec.
+        Carries:
+        - per-ingest content (the watermark action + soft-binding
+          assertions);
+        - ``claim_generator_info`` — kept here rather than on the
+          Context because the Context-set value isn't propagated into
+          the signed manifest in c2pa-python 0.32.3 (see __init__ note).
+
+        We deliberately do **not** include ``c2pa.opened`` or the
+        parent ingredient: the EDIT intent (declared on the Context)
+        injects both.
         """
         watermark_labels = [
             soft_binding_label(i)

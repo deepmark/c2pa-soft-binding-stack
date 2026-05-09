@@ -28,3 +28,20 @@ class InvalidAlgRequestError(IngestionError):
     Raised before allocating an ingestion id (where possible) so the
     failure isn't persisted as a pipeline error.
     """
+
+
+class MissingSigningMaterialError(IngestionError):
+    """Cert/key files vanished or became unreadable at sign time.
+
+    Distinct type so the ingest router can map it to a 503 cleanly,
+    rather than catching a bare ``FileNotFoundError``
+    (which would swallow unrelated FS failures from anywhere in the call tree).
+    """
+
+
+class PluginUnavailableError(IngestionError):
+    """The plugin container couldn't be reached, or returned a non-2xx."""
+
+
+class PluginNotFoundError(IngestionError):
+    """The catalog has no plugin entry for the requested ``alg`` identifier."""

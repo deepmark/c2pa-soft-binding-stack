@@ -18,7 +18,7 @@ from motor.motor_asyncio import (
 )
 from pymongo import ASCENDING, DESCENDING
 
-from ingestion_api.config import settings
+from ingestion_api.core.config import settings
 
 INGESTIONS_COLLECTION = "ingestions"
 FAILED_INGESTIONS_COLLECTION = "failed_ingestions"

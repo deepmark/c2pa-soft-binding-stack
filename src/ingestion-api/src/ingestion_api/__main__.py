@@ -2,6 +2,8 @@
 FastAPI application entry point for ingestion-api.
 
 App startup wires the long-lived collaborators onto ``app.state``:
+- ``app.state.plugin_catalog``     — parsed plugins.yaml (loaded once;
+                                     re-read requires process restart)
 - ``app.state.signing_service``    — single C2PA Signer for the process
 - ``app.state.artifacts``          — filesystem-backed binary artifact store
 - ``app.state.records``            — MongoDB-backed IngestionRecord repository
@@ -33,15 +35,16 @@ from fastapi import FastAPI
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from ingestion_api.adapters.publisher import ResolutionPushClient
-from ingestion_api.config import settings
+from ingestion_api.core.plugins import load_plugin_catalog
+from ingestion_api.core.config import settings
 from ingestion_api.repositories.database import (
     MongoDB,
     get_failed_ingestions_collection,
     get_ingestions_collection,
 )
-from ingestion_api.logging import configure_logging, get_logger
+from ingestion_api.core.logging import configure_logging, get_logger
 from ingestion_api.middleware.request_id import RequestIDMiddleware
-from ingestion_api.credentials.signing import MissingSigningMaterialError
+from ingestion_api.core.credentials import MissingSigningMaterialError
 from ingestion_api.repositories.artifacts import ArtifactStore
 from ingestion_api.repositories.ingestions import (
     MongoFailedIngestionRepository,
@@ -70,6 +73,22 @@ async def lifespan(app: FastAPI):
             "ingested records will not be queryable via /matches/byBinding."
         )
 
+    app.state.plugin_catalog = load_plugin_catalog()
+    if not app.state.plugin_catalog:
+        logger.warning(
+            "Plugin catalog at %s is empty or unreadable — every /ingest "
+            "will 400 with 'unknown alg' until the catalog is fixed and "
+            "the service restarts.",
+            settings.plugins_catalog_path,
+        )
+    else:
+        logger.info(
+            "Loaded %d plugin entries from %s: %s",
+            len(app.state.plugin_catalog),
+            settings.plugins_catalog_path,
+            [e.alg for e in app.state.plugin_catalog],
+        )
+
     app.state.artifacts = ArtifactStore()
     app.state.records = MongoIngestionRecordRepository(get_ingestions_collection())
     app.state.failed_records = MongoFailedIngestionRepository(
@@ -92,6 +111,7 @@ async def lifespan(app: FastAPI):
 
     app.state.resolution_client = ResolutionPushClient()
     app.state.ingestion_service = IngestionService(
+        plugin_catalog=app.state.plugin_catalog,
         signing_service=app.state.signing_service,
         artifacts=app.state.artifacts,
         records=app.state.records,
