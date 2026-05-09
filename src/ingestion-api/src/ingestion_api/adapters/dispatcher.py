@@ -9,9 +9,9 @@ Watermark plugin (``type: watermark``):
 - ``POST /embed``  body = raw media bytes (``application/octet-stream``);
   required ``X-Binding-Value`` request header carries the API-generated
   value the plugin must embed; ``X-Media-Type`` carries the source MIME
-  (e.g. ``audio/wav``). Response body = watermarked bytes;
-  ``X-Binding-Value`` response header echoes the embedded value
-  (must equal the request header).
+  (e.g. ``audio/wav``). 
+  Response body = watermarked bytes; ``X-Binding-Value`` response header 
+  echoes the embedded value (must equal the request header).
 - ``POST /detect`` body = raw media bytes -> JSON ``{bindingValue|null}``
 - ``GET  /health``
 
@@ -31,10 +31,9 @@ Header contract for binary endpoints (``/embed``, ``/detect``, ``/compute``):
 Binding values are minted by ingestion-api (not by plugins) using
 ``secrets.token_bytes`` sized to the plugin's declared ``bindingBits``.
 Bit widths that aren't byte-aligned are supported (the high bits of the
-first byte are zeroed). This keeps the value collision-free, unlinkable,
-and free of any DB roundtrip on the hot path. The plugin must echo the
-value it embedded so we can detect a misbehaving plugin that ignored the
-header.
+first byte are zeroed). 
+The plugin must echo the value it embedded so we can detect a misbehaving 
+plugins that ignore the header.
 
 Bytes are exchanged in raw HTTP bodies, so plugin containers can run on
 hosts independent from ingestion-api (no shared filesystem required).
@@ -78,13 +77,7 @@ class EmbedResult:
 
 
 class PluginDispatcher:
-    """Thin HTTP wrapper around a single plugin container.
-
-    ``request_id`` is forwarded as ``X-Request-ID`` on every outbound
-    HTTP call so plugin-side logs collate with ingestion-api's logs
-    for the same end-to-end request. When None (e.g. test harness or
-    background reconciliation), no header is added.
-    """
+    """Thin HTTP wrapper around a single plugin container."""
 
     def __init__(
         self,

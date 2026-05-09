@@ -12,9 +12,13 @@ End-to-end pipeline:
            - watermark plugins: /embed -> watermarked bytes + bindingValue
              (later passes see the mutated bytes)
            - fingerprint plugins: /compute -> bindingValue (no mutation)
-        -> build C2PA manifest (EDIT intent: parent ingredient + c2pa.opened
-           injected automatically; we add c2pa.watermarked.bound + one
-           c2pa.soft-binding assertion per alg)
+        -> build C2PA manifest:
+           - parent ingredient added explicitly from the ORIGINAL
+             upload bytes (not the post-watermark output) so the
+             c2pa.opened action / provenance chain points at what the
+             user gave us. EDIT intent wires up c2pa.opened.
+           - we add c2pa.watermarked.bound + one c2pa.soft-binding
+             assertion per alg.
         -> sign (Builder.sign)
         -> extract canonical manifestId from signed asset (hard fail
            if SDK can't surface it — better than fabricating a UUID)
@@ -261,6 +265,7 @@ class IngestionService:
         signed_at = datetime.now(timezone.utc)
         built = await self._build_and_sign(
             passes, mime_type, payload, artifacts.signed_path,
+            parent_bytes=payload.data,
         )
         manifest_bytes_path = self._persist_manifest_bytes(artifacts, built)
         manifest_id = await self._extract_manifest_id(artifacts.signed_path)
@@ -341,12 +346,18 @@ class IngestionService:
         mime_type: str,
         payload: IngestionInput,
         dest_path: Path,
+        *,
+        parent_bytes: bytes,
     ) -> BuiltManifest:
-        """Build the manifest definition, set EDIT intent, sign.
+        """Build the manifest definition and sign.
 
         Runs the c2pa SDK call in a thread because the SDK is sync; we
         already captured ``request_id`` higher in the call chain, so
         the worker thread doesn't need to read the contextvar.
+
+        ``parent_bytes`` is the original upload (NOT ``passes[-1].output_bytes``,
+        which is the post-watermark output) — see the manifest builder
+        docstring for why this matters.
         """
         builder = ManifestBuilderService(signer=self._signing_service.signer)
         soft_bindings = [
@@ -364,6 +375,7 @@ class IngestionService:
                 partial(
                     builder.build_and_sign,
                     source_bytes=passes[-1].output_bytes,
+                    parent_bytes=parent_bytes,
                     dest_path=dest_path,
                     mime_type=mime_type,
                     soft_bindings=soft_bindings,

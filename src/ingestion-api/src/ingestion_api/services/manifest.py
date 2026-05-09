@@ -9,17 +9,40 @@ across imperative calls and inline manifest JSON.
 
 Pipeline:
 
-1. ``Context`` carries our builder defaults: EDIT intent, claim
-   generator info, thumbnail disabled (we sign audio — no thumbnail to
-   generate). With EDIT intent the SDK auto-creates the ``parentOf``
-   ingredient from the source stream and wires up a ``c2pa.opened``
-   action that references it via ``ingredientIds`` — no manual JUMBF
-   URL gymnastics required (see
+1. ``Context`` carries our builder defaults: EDIT intent, thumbnail
+   disabled (we sign audio — no thumbnail to generate), and a
+   ``verify`` block that disables remote manifest fetch + OCSP fetch
+   from inside the signing path. The latter closes a hidden SSRF
+   surface: when ``add_ingredient`` runs over a parent stream that
+   carries an ``xmpMM:Manifest`` / ``dcterms:provenance`` URL, the
+   default ``fetch_remote_manifests`` would otherwise issue an
+   outbound HTTP request from inside our worker. See
    https://opensource.contentauthenticity.org/docs/c2pa-python/docs/intents
    and
-   https://opensource.contentauthenticity.org/docs/c2pa-python/docs/context-settings/).
+   https://opensource.contentauthenticity.org/docs/c2pa-python/docs/context-settings/
 
-2. We add a ``c2pa.watermarked.bound`` action and one
+2. The parent ingredient is added EXPLICITLY via ``add_ingredient``
+   from the *original* upload bytes. EDIT intent then wires up the
+   ``c2pa.opened`` action referencing it via ``ingredientIds``. We do
+   NOT rely on the auto-parent path (where EDIT derives the parent
+   from the ``sign()`` source stream) because the source we sign over
+   is the post-watermark byte stream — the auto-parent would otherwise
+   point the ingredient at the watermarked output, producing a
+   semantically circular "we opened the file we just produced" claim
+   and silently dropping any prior provenance the upload carried.
+
+   If the parent bytes already carry an embedded JUMBF manifest box,
+   the SDK extracts it during ingredient construction and the prior
+   provenance chain is preserved automatically — no extra work on
+   our side. **Sidecar / remote-only manifests are not supported
+   today** (c2pa-python 0.32.3 / c2pa-rs 0.80.0 raises
+   ``Encoding: unable to encode assertion data`` whenever an
+   ingredient declares a ``manifest_data`` ResourceRef per c2pa-rs
+   PR #1091); callers whose uploads' provenance lives in a
+   ``.c2pa`` sidecar must embed it back into the asset bytes
+   client-side before uploading.
+
+3. We add a ``c2pa.watermarked.bound`` action and one
    ``c2pa.soft-binding`` assertion per ``SoftBindingSpec``. Multiple
    instances of the same assertion type are labelled
    ``c2pa.soft-binding``, ``c2pa.soft-binding__1``, ``c2pa.soft-binding__2``,
@@ -34,14 +57,15 @@ Pipeline:
    (whole-asset binding); when temporal scoping lands, replace the
    ``scope`` dict with ``{start, end}`` in samples.
 
-3. ``Builder.sign(...)`` writes the signed asset to the output path and
-   returns the raw manifest bytes, which we surface so the storage layer
-   can persist them alongside the asset. The signer is passed
-   explicitly to ``sign()`` (not via Context) so the long-lived
-   ``SigningService`` keeps ownership — explicit signers take
-   precedence over context signers per the SDK's precedence rules.
+4. ``Builder.sign(...)`` writes the signed asset to the output path
+   (the post-watermark bytes + the new manifest box) and returns the
+   raw manifest bytes, which we surface so the storage layer can
+   persist them alongside the asset. The signer is passed explicitly
+   to ``sign()`` (not via Context) so the long-lived ``SigningService``
+   keeps ownership — explicit signers take precedence over context
+   signers per the SDK's precedence rules.
 
-4. ``Reader`` (used by ``read_active_manifest_label``) is pinned to
+5. ``Reader`` (used by ``read_active_manifest_label``) is pinned to
    ``_READER_CTX``: no remote manifest fetch, no OCSP fetch, no
    verification on read. We just signed the file ourselves and only
    want the active_manifest URN — any network roundtrip here is wasted
@@ -76,17 +100,28 @@ SOFT_BINDING_LABEL = "c2pa.soft-binding"
 # the hash at sign time.
 _ASSERTION_JUMBF_PREFIX = "self#jumbf=c2pa.assertions/"
 
+# Verify settings shared by Reader (post-sign) and Builder (during
+# ingredient validation). Common rationale:
+# - ``remote_manifest_fetch=False``: never issue outbound HTTP from
+#   inside a signing/reading worker. SSRF surface + unbounded latency.
+#   Callers that need remote provenance must pre-fetch and supply the
+#   sidecar bytes via ``parent_manifest_data``.
+# - ``ocsp_fetch=False``: same argument, plus a slow OCSP responder
+#   can extend ingest latency by seconds.
+_VERIFY_NO_NETWORK = {
+    "remote_manifest_fetch": False,
+    "ocsp_fetch": False,
+}
+
 # Reader context for ``read_active_manifest_label``. We just signed the
 # file ourselves — there is nothing remote to validate against and
-# nothing to OCSP-check. Disable network-touching defaults so a slow
-# OCSP responder can't extend ingest latency by seconds. Also skip
-# verify-after-reading: we only need the active_manifest URN string,
-# not a re-validation of bytes we just produced.
+# nothing to OCSP-check. Also skip verify-after-reading: we only need
+# the active_manifest URN string, not a re-validation of bytes we just
+# produced.
 _READER_CTX = Context.from_dict({
     "verify": {
         "verify_after_reading": False,
-        "remote_manifest_fetch": False,
-        "ocsp_fetch": False,
+        **_VERIFY_NO_NETWORK,
     },
 })
 
@@ -138,17 +173,18 @@ def soft_binding_label(index: int) -> str:
 
 class ManifestBuilderService:
     """
-    Build and sign a C2PA manifest for an audio file.
+    Build and sign a C2PA manifest for a media asset.
 
-    Stateless aside from the Builder ``Context`` (which is just config).
-    Instantiate once at startup (or per-request, both fine) and reuse.
-    The ``Signer`` is injected so this class doesn't reach into config
-    directly; the orchestrator owns wiring.
+    No mutable instance state across calls; the Builder ``Context``
+    stored on ``self`` is declarative config only. Safe to share a
+    single instance across concurrent requests, or instantiate per
+    request — either works. The ``Signer`` is injected so this class
+    doesn't reach into config directly; the orchestrator owns wiring.
 
-    Builder defaults (intent, claim generator info, thumbnail) live in
-    the per-instance ``Context`` so they're declared in one place
-    instead of split between an imperative ``set_intent`` call and an
-    inline ``claim_generator_info`` field on the manifest JSON.
+    Builder defaults (intent, thumbnail, verify) live in the
+    per-instance ``Context`` so they're declared in one place instead
+    of being split between imperative method calls and inline manifest
+    JSON.
     """
 
     def __init__(
@@ -172,21 +208,33 @@ class ManifestBuilderService:
         # so all builder defaults live in one place.
         self._builder_ctx = Context.from_dict({
             "builder": {
-                # EDIT intent: SDK adds c2pa.opened + parentOf ingredient
-                # + the right ingredientIds linkage from the source stream.
+                # EDIT intent: SDK adds the c2pa.opened action wired to
+                # the parent ingredient we add explicitly in
+                # ``build_and_sign``. We don't rely on the auto-parent
+                # path (deriving the parent from the sign() source
+                # stream) because the source we sign over is the
+                # post-watermark output — the auto-parent would point
+                # the ingredient at our own output, not the upload.
                 # See: https://opensource.contentauthenticity.org/docs/c2pa-python/docs/intents
                 "intent": {"Edit": None},
                 # Audio ingest — no thumbnail to generate. Disabling
-                # also avoids the SDK trying and silently swallowing the
-                # error (default ``ignore_errors=true``).
+                # also avoids the SDK trying and silently swallowing
+                # the error (default ``ignore_errors=true``).
                 "thumbnail": {"enabled": False},
             },
+            # Disable network-touching defaults during ingredient
+            # validation. add_ingredient runs the Reader internally on
+            # the parent stream; with these on, a parent that carries
+            # an XMP remote-manifest URL or whose certs need OCSP would
+            # trigger outbound HTTP from inside the signing path.
+            "verify": _VERIFY_NO_NETWORK,
         })
 
     def build_and_sign(
         self,
         *,
         source_bytes: bytes,
+        parent_bytes: bytes,
         dest_path: Path,
         mime_type: str,
         soft_bindings: Sequence[SoftBindingSpec],
@@ -195,34 +243,56 @@ class ManifestBuilderService:
         """
         Build the manifest definition and sign.
 
-        The source bytes are fed through an in-memory stream — we never
-        persist the raw upload or any (dummy) watermarked intermediate.
-        Only the signed output is written, to ``dest_path``.
+        The source / parent bytes are fed through in-memory streams —
+        we never persist the raw upload or any watermarked
+        intermediate. Only the signed output is written, to
+        ``dest_path``.
 
         Args:
-            source_bytes: Watermarked media bytes that will become the
-                signed output's payload. The EDIT intent uses the same
-                stream to auto-create the ``parentOf`` ingredient.
+            source_bytes: Post-watermark media bytes that will become
+                the signed output's payload. These are what get hashed
+                into the new manifest's data hash assertion.
+            parent_bytes: ORIGINAL upload bytes. Added explicitly as a
+                ``parentOf`` ingredient so the new manifest's
+                ``c2pa.opened`` action / provenance chain points at
+                the actual source the user gave us, not at our own
+                post-watermark output. If the parent bytes carry an
+                embedded C2PA manifest, the SDK pulls it into the
+                ingredient automatically and the prior chain is
+                preserved. Sidecar / remote-only manifests are NOT
+                supported today (see module docstring) — callers must
+                pre-embed before uploading.
             dest_path: Where to write the signed asset.
-            mime_type: e.g. ``audio/wav``.
-            soft_bindings: One or more ``SoftBindingSpec`` to embed. One
-                ``c2pa.soft-binding`` assertion is emitted per entry.
-            title: Optional human-readable manifest title.
+            mime_type: e.g. ``audio/wav``. Applies to both the source
+                and parent streams (we don't currently support cases
+                where the watermark plugin transcodes to a different
+                MIME — the orchestrator rejects that earlier).
+            soft_bindings: One or more ``SoftBindingSpec`` to embed.
+                One ``c2pa.soft-binding`` assertion is emitted per
+                entry.
+            title: Optional human-readable manifest title. Also used
+                as the parent ingredient title when present.
 
         Returns:
-            ``BuiltManifest`` with the output path and the raw manifest bytes.
+            ``BuiltManifest`` with the output path and the raw
+            manifest bytes.
         """
         if not soft_bindings:
             raise ValueError("at least one SoftBindingSpec is required")
+        if not parent_bytes:
+            raise ValueError("parent_bytes is required")
 
         manifest_def = self._manifest_definition(soft_bindings, title=title)
         algs = ",".join(s.alg for s in soft_bindings)
         logger.debug(
-            "Building manifest -> %s (mime=%s algs=%s, %d input bytes)",
-            dest_path, mime_type, algs, len(source_bytes),
+            "Building manifest -> %s (mime=%s algs=%s, %d source / %d parent bytes)",
+            dest_path, mime_type, algs, len(source_bytes), len(parent_bytes),
         )
 
         with Builder.from_json(manifest_def, context=self._builder_ctx) as builder:
+            self._add_parent_ingredient(
+                builder, parent_bytes=parent_bytes, mime_type=mime_type, title=title,
+            )
             with io.BytesIO(source_bytes) as src, open(dest_path, "w+b") as dst:
                 # Explicit signer takes precedence over any context
                 # signer (per SDK precedence rules); we keep ownership
@@ -234,6 +304,31 @@ class ManifestBuilderService:
             dest_path, len(manifest_bytes),
         )
         return BuiltManifest(output_path=dest_path, manifest_bytes=manifest_bytes)
+
+    def _add_parent_ingredient(
+        self,
+        builder: Builder,
+        *,
+        parent_bytes: bytes,
+        mime_type: str,
+        title: str | None,
+    ) -> None:
+        """Attach the ``parentOf`` ingredient to the builder.
+
+        Plain ``add_ingredient`` over the parent stream. If the parent
+        bytes already contain a JUMBF box, the SDK extracts it and
+        chains the prior provenance into the new manifest
+        automatically. Once the ingredient is on the builder, EDIT
+        intent inserts the matching ``c2pa.opened`` action with
+        ``parameters.ingredientIds`` wired up at sign time.
+        """
+        ingredient_json: dict[str, Any] = {
+            "title": title or "source",
+            "relationship": "parentOf",
+            "format": mime_type,
+        }
+        with io.BytesIO(parent_bytes) as parent_src:
+            builder.add_ingredient(ingredient_json, mime_type, parent_src)
 
     def _manifest_definition(
         self,

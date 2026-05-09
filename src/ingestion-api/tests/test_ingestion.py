@@ -632,6 +632,110 @@ def test_signed_asset_round_trips_through_reader(
     assert sb["data"]["blocks"][0]["value"] == result.record.softBindings[0].bindingValue
 
 
+def test_ingest_parent_ingredient_uses_upload_not_plugin_output(
+    monkeypatch,
+    signing_service: SigningService,
+    artifacts: ArtifactStore,
+    records: InMemoryIngestionRecordRepository,
+    failed_records: InMemoryFailedIngestionRepository,
+    stub_resolution: _StubResolutionClient,
+    sample_wav_bytes: bytes,
+):
+    """Regression guard for the auto-parent foot-gun: when the watermark
+    plugin returns DIFFERENT bytes than it received (the realistic case),
+    the parent ingredient must be derived from the original upload bytes,
+    NOT from the post-watermark output. Otherwise we'd emit a circular
+    "we opened the file we just produced" claim and silently drop any
+    prior provenance the user supplied.
+
+    Strategy: stub a watermark plugin that mutates the bytes
+    (format-preserving so the orchestrator's format-preservation check
+    accepts the output), then assert via byte-level identity that the
+    parent ingredient stream we feed to the SDK equals the upload — by
+    snapshotting the call args via a wrapping ``ManifestBuilderService``.
+    """
+    import io
+    import wave
+    from ingestion_api.services import ingestion as ingestion_module
+
+    def _mutated_wav() -> bytes:
+        """Same shape (mono / 16-bit / 22050 Hz) so the format-preservation
+        guard passes; different sample stream so the bytes hash differently."""
+        buf = io.BytesIO()
+        with wave.open(buf, "w") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(22050)
+            w.writeframes(b"\xff\x7f" * 1000)
+        return buf.getvalue()
+
+    mutated = _mutated_wav()
+    assert mutated != sample_wav_bytes, "fixture invariant"
+
+    class _MutatingPlugin:
+        def __init__(self, e, **_kw):
+            self.entry = e
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return None
+        def embed(self, *, media_bytes, mime_type):
+            return EmbedResult(
+                binding_value=_binding_value(mutated),
+                watermarked_bytes=mutated,
+            )
+        def info_cached(self):
+            return {"version": "mutating-stub"}
+
+    entry = PluginEntry(
+        alg=BINDING_ALG,
+        type="watermark",
+        binding_bits=128,
+        media_types=("audio/wav",),
+        url="http://stubbed:8000",
+    )
+
+    captured: dict[str, object] = {}
+    real_cls = ingestion_module.ManifestBuilderService
+
+    class _CapturingBuilder(real_cls):
+        def build_and_sign(self, **kw):
+            captured["parent_bytes"] = kw.get("parent_bytes")
+            captured["source_bytes"] = kw.get("source_bytes")
+            return super().build_and_sign(**kw)
+
+    from ingestion_api.pipeline import orchestrator as pipeline_module
+    monkeypatch.setattr(pipeline_module, "PluginDispatcher", _MutatingPlugin)
+    monkeypatch.setattr(ingestion_module, "ManifestBuilderService", _CapturingBuilder)
+
+    svc = IngestionService(
+        plugin_catalog=[entry],
+        signing_service=signing_service,
+        artifacts=artifacts,
+        records=records,
+        failed_records=failed_records,
+        resolution_client=stub_resolution,
+    )
+
+    asyncio.run(
+        svc.ingest(
+            IngestionInput(
+                filename="sample.wav",
+                content_type="audio/wav",
+                data=sample_wav_bytes,
+                algs=[BINDING_ALG],
+            )
+        )
+    )
+
+    assert captured["parent_bytes"] == sample_wav_bytes, (
+        "parent ingredient must come from the upload bytes"
+    )
+    assert captured["source_bytes"] == mutated, (
+        "sign source must be the post-watermark bytes"
+    )
+
+
 def test_ingest_with_watermark_plus_fingerprint(
     monkeypatch,
     signing_service: SigningService,
