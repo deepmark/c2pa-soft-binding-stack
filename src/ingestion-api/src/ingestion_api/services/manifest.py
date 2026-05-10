@@ -60,10 +60,13 @@ Pipeline:
 4. ``Builder.sign(...)`` writes the signed asset to the output path
    (the post-watermark bytes + the new manifest box) and returns the
    raw manifest bytes, which we surface so the storage layer can
-   persist them alongside the asset. The signer is passed explicitly
-   to ``sign()`` (not via Context) so the long-lived ``SigningService``
-   keeps ownership — explicit signers take precedence over context
-   signers per the SDK's precedence rules.
+   persist them alongside the asset. The ``Signer`` is owned by the
+   builder Context (consumed at ``__init__`` time per SDK rules — see
+   https://opensource.contentauthenticity.org/docs/c2pa-python/docs/usage/#context-with-a-signer),
+   so ``sign()`` is called without an explicit signer arg. This means
+   one ``ManifestBuilderService`` per process — instantiate once at
+   app startup; do NOT construct per request, or you'll consume a
+   fresh ``Signer`` each time.
 
 5. ``Reader`` (used by ``read_active_manifest_label``) is pinned to
    ``_READER_CTX``: no remote manifest fetch, no OCSP fetch, no
@@ -175,16 +178,27 @@ class ManifestBuilderService:
     """
     Build and sign a C2PA manifest for a media asset.
 
-    No mutable instance state across calls; the Builder ``Context``
-    stored on ``self`` is declarative config only. Safe to share a
-    single instance across concurrent requests, or instantiate per
-    request — either works. The ``Signer`` is injected so this class
-    doesn't reach into config directly; the orchestrator owns wiring.
+    Long-lived: instantiate **once** at app startup and reuse across
+    every request. The Builder ``Context`` owns the injected
+    ``Signer`` (consumed at ``__init__`` time per SDK rules — see
+    https://opensource.contentauthenticity.org/docs/c2pa-python/docs/usage/#context-with-a-signer),
+    so a fresh instance can't be cheaply built per request without
+    also building a fresh Signer per request.
 
-    Builder defaults (intent, thumbnail, verify) live in the
-    per-instance ``Context`` so they're declared in one place instead
-    of being split between imperative method calls and inline manifest
-    JSON.
+    Concurrency: ``build_and_sign`` constructs a fresh ``Builder``
+    (via ``Builder.from_json``) per call, sharing only the immutable
+    ``Context``. The signer's callback is the underlying
+    ``cryptography`` ``private_key.sign(...)``, which is thread-safe
+    on the same key, so concurrent requests can share this instance
+    safely.
+
+    Builder defaults (intent, thumbnail, verify) live in the Context
+    so they're declared in one place instead of being split between
+    imperative method calls and inline manifest JSON.
+
+    Use as a context manager (``with ManifestBuilderService(...) as
+    builder:``) or call ``close()`` at shutdown to release the
+    Context — and through it, the consumed Signer's FFI handle.
     """
 
     def __init__(
@@ -194,7 +208,6 @@ class ManifestBuilderService:
         claim_generator_name: str | None = None,
         claim_generator_version: str | None = None,
     ) -> None:
-        self._signer = signer
         self._claim_generator_name = claim_generator_name or settings.claim_generator_name
         self._claim_generator_version = (
             claim_generator_version or settings.claim_generator_version
@@ -206,6 +219,12 @@ class ManifestBuilderService:
         # ``c2pa-rs`` library marker shows up. Re-evaluate when bumping
         # the SDK; if Context starts honoring it, move the field here
         # so all builder defaults live in one place.
+        #
+        # The Signer is consumed by Context.__init__ (it calls
+        # ``signer._mark_consumed()``) — caller MUST hand over
+        # ownership (see SigningService.release_signer). We deliberately
+        # don't keep a Python-side ref to the consumed signer; the
+        # Context owns its lifecycle now.
         self._builder_ctx = Context.from_dict({
             "builder": {
                 # EDIT intent: SDK adds the c2pa.opened action wired to
@@ -228,7 +247,22 @@ class ManifestBuilderService:
             # an XMP remote-manifest URL or whose certs need OCSP would
             # trigger outbound HTTP from inside the signing path.
             "verify": _VERIFY_NO_NETWORK,
-        })
+        }, signer=signer)
+
+    def __enter__(self) -> "ManifestBuilderService":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Release the Context (and through it, the consumed Signer's
+        native handle). Idempotent; safe to call from app lifespan
+        shutdown."""
+        try:
+            self._builder_ctx.close()
+        except Exception:
+            logger.exception("Failed to close ManifestBuilderService Context")
 
     def build_and_sign(
         self,
@@ -294,10 +328,12 @@ class ManifestBuilderService:
                 builder, parent_bytes=parent_bytes, mime_type=mime_type, title=title,
             )
             with io.BytesIO(source_bytes) as src, open(dest_path, "w+b") as dst:
-                # Explicit signer takes precedence over any context
-                # signer (per SDK precedence rules); we keep ownership
-                # of the long-lived Signer in SigningService.
-                manifest_bytes = builder.sign(self._signer, mime_type, src, dst)
+                # No explicit signer: the Context owns the consumed
+                # Signer and supplies it through the FFI handle. Per
+                # SDK rules, an explicit signer arg here would take
+                # precedence over the context signer — we deliberately
+                # don't pass one to keep the wiring single-sourced.
+                manifest_bytes = builder.sign(mime_type, src, dst)
 
         logger.info(
             "Signed manifest %s (manifest_bytes=%d)",

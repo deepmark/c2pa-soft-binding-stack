@@ -1,5 +1,11 @@
 """
 Wire-shape models for HTTP responses.
+
+``ResolutionPushOutput`` lives here despite not being a top-level HTTP
+response: it's a Pydantic model so it can nest inside
+``IngestionResponse.resolutionPush`` without dataclass-to-pydantic
+conversion at the router. The publisher adapter also returns it
+directly to the service layer.
 """
 from __future__ import annotations
 
@@ -9,17 +15,17 @@ from ingestion_api.models.enums import ResolutionPushStatus
 from ingestion_api.models.ingestion import IngestionRecord, _IngestionCommon
 
 
-class ResolutionPushResult(BaseModel):
+class ResolutionPushOutput(BaseModel):
     """Outcome of the auto-push to resolution-api.
 
     Used both as the return type of ``ResolutionPushClient.push`` and as
-    the embedded ``resolutionPush`` field on ``IngestResponse``.
+    the embedded ``resolutionPush`` field on ``IngestionResponse``.
     """
     status: ResolutionPushStatus
     error: str | None = None
 
 
-class IngestResponse(_IngestionCommon):
+class IngestionResponse(_IngestionCommon):
     """Response body for ``POST /ingest``."""
     outputAssetUrl: str = Field(
         ...,
@@ -33,7 +39,7 @@ class IngestResponse(_IngestionCommon):
         ...,
         description="SHA-256 hex digest of the signed asset (64 chars)",
     )
-    resolutionPush: ResolutionPushResult = Field(
+    resolutionPush: ResolutionPushOutput = Field(
         ...,
         description="Outcome of the auto-push to the soft-binding resolution API",
     )

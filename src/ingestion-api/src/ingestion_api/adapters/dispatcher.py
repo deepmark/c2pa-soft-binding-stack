@@ -70,8 +70,8 @@ def reset_plugin_info_cache() -> None:
 
 
 @dataclass(slots=True, frozen=True)
-class EmbedResult:
-    """Outcome of a watermark ``/embed`` call."""
+class WatermarkOutput:
+    """Response payload of a watermark ``/embed`` call."""
     binding_value: str
     watermarked_bytes: bytes
 
@@ -96,8 +96,9 @@ class PluginDispatcher:
         self._owned_client = client is None
         self._client = client or httpx.Client(timeout=self._timeout)
         # Capture explicitly when constructed in async context, fall
-        # back to the contextvar otherwise. Safe across thread-pool
-        # executor calls because the value is held on the instance.
+        # back to the contextvar otherwise. 
+        # Safe across thread-pool executor calls because the value is 
+        # held on the instance (not the contextvar).
         self._request_id = request_id if request_id is not None else get_request_id()
 
     @property
@@ -124,11 +125,10 @@ class PluginDispatcher:
     def info_cached(self) -> dict:
         """``/info`` result, cached per-process keyed on plugin URL.
 
-        Forensic data we capture per-ingest (``IngestionRecord.pluginVersions``)
-        rarely changes — caching avoids one HTTP call per plugin per
-        ingest. Cache is wiped on process restart, so deploying a new
-        plugin version + a rolling restart of ingestion-api is the
-        canonical way to refresh it.
+        Caching avoids one HTTP call per plugin per ingest. 
+        Cache is wiped on process restart, so deploying a new
+        plugin version + a rolling restart of ingestion-api is 
+        the only way to refresh it.
         """
         cached = _PLUGIN_INFO_CACHE.get(self._entry.url)
         if cached is not None:
@@ -146,13 +146,12 @@ class PluginDispatcher:
         *,
         media_bytes: bytes,
         mime_type: str,
-    ) -> EmbedResult:
+    ) -> WatermarkOutput:
         """Watermark plugin only. Returns the watermarked bytes + binding value.
 
         The binding value is minted here (not by the plugin). The plugin
-        embeds whatever value we hand it via ``X-Binding-Value`` and must
-        echo the same value back in its response header — we verify the
-        echo to catch plugins that silently ignore the request header.
+        embeds whatever value we hand it via ``X-Binding-Value``. 
+        We verify the echo to catch plugins that silently ignore the request header.
         """
         if self._entry.type != "watermark":
             raise PluginUnavailableError(
@@ -186,7 +185,7 @@ class PluginDispatcher:
                 f"Plugin {self.alg!r} echoed a different binding value than "
                 f"requested (sent={binding_value!r}, got={echoed!r})"
             )
-        return EmbedResult(binding_value=binding_value, watermarked_bytes=r.content)
+        return WatermarkOutput(binding_value=binding_value, watermarked_bytes=r.content)
 
     def detect(self, *, media_bytes: bytes, mime_type: str) -> str | None:
         """Watermark plugin only."""

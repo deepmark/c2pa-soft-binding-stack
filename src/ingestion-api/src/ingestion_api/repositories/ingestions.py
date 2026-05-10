@@ -41,9 +41,7 @@ _RecordT = TypeVar("_RecordT", IngestionRecord, FailedIngestion)
 # Defined so consumers (IngestionService, routers) can declare the
 # narrowest surface they need without coupling to a concrete backend
 # (Mongo in production, InMemory in tests). Both Mongo* and InMemory*
-# implementations below structurally satisfy these Protocols — there's
-# no explicit ``class X(Protocol)`` inheritance, just shape compliance,
-# which is the whole point of Protocols.
+# implementations below structurally satisfy these Protocols. 
 # ---------------------------------------------------------------------------
 
 
@@ -86,7 +84,8 @@ def _to_doc(record: IngestionRecord | FailedIngestion) -> dict:
     # _id := ingestionId so the primary-key index doubles as the
     # ingestionId index (no extra index/storage). 
     # mode="python" keeps datetimes as datetime 
-    # mode="json" would store ISO strings and break range queries / push_retry_idx ordering.
+    # mode="json" would store ISO strings and break range 
+    # queries / push_retry_idx ordering.
     doc = record.model_dump(mode="python")
     doc["_id"] = record.ingestionId
     return doc
@@ -153,9 +152,7 @@ class MongoIngestionRecordRepository:
     ) -> IngestionListPage:
         """Paginate ingestions, newest-first.
 
-        ``cursor`` is an opaque token returned as ``next_cursor`` in the
-        previous page. Stable across same-millisecond ties because the
-        sort is (``createdAt`` desc, ``_id`` desc).
+        Stable across same-millisecond ties because the sort is (``createdAt`` desc, ``_id`` desc).
         """
         if limit <= 0:
             return IngestionListPage(items=[], next_cursor=None)

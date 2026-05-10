@@ -15,8 +15,8 @@ class SoftBindingSpec:
 
     ``related_to_watermark_action`` is a layering hook: when True, this
     spec's assertion label is listed in the ``c2pa.watermarked.bound``
-    action's ``relatedAssertions``. Fingerprints leave it False — they
-    don't get a watermark action.
+    action's ``relatedAssertions``. 
+    For fingerprints leave this as False. They don't get a c2pa.watermarked.bound action.
     """
     alg: str
     kind: SoftBindingKind

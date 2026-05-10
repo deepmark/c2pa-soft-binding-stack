@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     max_algs_per_ingest: int = Field(default=8, ge=1)
     max_title_length: int = Field(default=128, ge=0)
 
-    # Public base URL used when building absolute URLs in IngestResponse
+    # Public base URL used when building absolute URLs in IngestionResponse
     # (outputAssetUrl, manifestUrl). When unset, the app falls back to
     # request.base_url (rewritten by the proxy-headers middleware so
     # X-Forwarded-Proto/Host are honored). Set this in production behind
@@ -81,9 +81,9 @@ class Settings(BaseSettings):
     public_base_url: str = ""
 
     # Trusted proxy CIDRs for ProxyHeadersMiddleware. ``*`` accepts
-    # X-Forwarded-* from any peer — fine when the pod is only reachable
-    # from a known proxy (k8s ClusterIP, Docker overlay). Lock down to
-    # the proxy's CIDR for hardened deploys.
+    # X-Forwarded-* from any peer.
+    # This is fine when the pod is only reachable from a known proxy (k8s ClusterIP, Docker overlay). 
+    # Lock down to the proxy's CIDR for hardened deployments.
     forwarded_allow_ips: str = "*"
 
     # Resolution-api auto-push. 

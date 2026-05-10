@@ -1,11 +1,9 @@
 """Plugin catalog + pipeline contracts.
 
-``PluginEntry`` is the YAML-row shape produced by ``core.plugins``
-and consumed by the dispatcher / orchestrator / service. ``PluginPass``
-is the per-alg output of a single plugin invocation.
+``PluginEntry`` is the YAML-row shape produced by ``core.plugin``
+and consumed by the dispatcher / orchestrator / service. 
 
-Both live here because they cross layer boundaries — the catalog reader
-loads them, the service holds them, the adapter calls plugins with them.
+``PluginPassOutput`` is the per-alg output of a single plugin invocation.
 """
 from __future__ import annotations
 
@@ -24,7 +22,7 @@ class PluginEntry:
 
 
 @dataclass(slots=True, frozen=True)
-class PluginPass:
+class PluginPassOutput:
     """Output of a single plugin pass — one per configured alg."""
     entry: PluginEntry
     binding_value: str

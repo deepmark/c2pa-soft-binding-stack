@@ -148,11 +148,26 @@ class SigningService:
     startup (so a missing-cert deploy fails fast instead of throwing
     503s on first ingest). ``ensure_loaded()`` remains so
     pre-validate code paths still work in tests.
+
+    Ownership transfer: the C2PA SDK's ``Context(signer=...)`` consumes
+    the ``Signer`` (calls ``_mark_consumed`` on it). To support the
+    SDK's preferred "Context owns the signer" pattern,
+    ``release_signer()`` hands the Signer to a caller that will
+    consume it (typically ``ManifestBuilderService.__init__``); after
+    release, this service no longer owns the signer's lifecycle —
+    ``close()`` becomes a no-op for the signer (the consumer / its
+    Context closes the underlying handle).
+
+    After ``release_signer()`` you can still read ``credentials``
+    (cert metadata for ``IngestionRecord`` / ``/health/deep``);
+    accessing ``signer`` raises, since lying about ownership would
+    silently double-free the FFI handle on shutdown.
     """
 
     def __init__(self, creds: SignerCredentials | None = None) -> None:
         self._creds = creds or SignerCredentials.from_settings()
         self._signer: Signer | None = None
+        self._released = False
 
     @property
     def credentials(self) -> SignerCredentials:
@@ -175,6 +190,11 @@ class SigningService:
         self.ensure_loaded()
 
     def ensure_loaded(self) -> Signer:
+        if self._released:
+            raise RuntimeError(
+                "Signer has been released to another owner; "
+                "construct a new SigningService if you need a fresh Signer.",
+            )
         if self._signer is None:
             self._signer = _build_signer(self._creds)
         return self._signer
@@ -182,6 +202,19 @@ class SigningService:
     @property
     def signer(self) -> Signer:
         return self.ensure_loaded()
+
+    def release_signer(self) -> Signer:
+        """Transfer ownership of the Signer to the caller.
+
+        Use when handing the Signer to a ``c2pa.Context``, which
+        consumes it. After this call, ``close()`` becomes a no-op
+        (the new owner / its Context manages the FFI handle's
+        lifecycle) and ``signer`` / ``ensure_loaded()`` raise.
+        """
+        signer = self.ensure_loaded()
+        self._signer = None
+        self._released = True
+        return signer
 
     def close(self) -> None:
         if self._signer is not None:

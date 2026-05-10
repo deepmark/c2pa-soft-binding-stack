@@ -60,11 +60,11 @@ from pathlib import Path
 
 from ingestion_api.adapters.dispatcher import PluginUnavailableError
 from ingestion_api.adapters.publisher import ResolutionPushClient
-from ingestion_api.contracts.ingestion import IngestionInput, IngestionResult
+from ingestion_api.contracts.ingestion import IngestionRequest, IngestionOutput
 from ingestion_api.contracts.manifest import SoftBindingSpec
-from ingestion_api.contracts.plugin import PluginEntry, PluginPass
-from ingestion_api.contracts.publisher import BindingPair, ResolutionPushRequest
-from ingestion_api.core.plugins import resolve_plugin
+from ingestion_api.contracts.plugin import PluginEntry, PluginPassOutput
+from ingestion_api.contracts.publisher import ResolutionPushBinding, ResolutionPushRequest
+from ingestion_api.core.plugin import resolve_plugin
 from ingestion_api.core.errors import (
     IngestionError,
     InvalidAlgRequestError,
@@ -74,7 +74,7 @@ from ingestion_api.core.errors import (
 from ingestion_api.core.logging import get_logger, get_request_id
 from ingestion_api.models.enums import FailureStage, MediaType
 from ingestion_api.models.ingestion import FailedIngestion, IngestionRecord
-from ingestion_api.models.responses import ResolutionPushResult
+from ingestion_api.models.responses import ResolutionPushOutput
 from ingestion_api.models.soft_binding import SoftBindingRecord, make_soft_binding
 from ingestion_api.pipeline.orchestrator import (
     capture_plugin_versions,
@@ -110,7 +110,7 @@ class _PushOutcome:
     status (push disabled in config) is *not* an attempt; everything
     else is. The persisted ``IngestionRecord`` needs both.
     """
-    result: ResolutionPushResult
+    result: ResolutionPushOutput
     attempted: bool
 
 
@@ -129,19 +129,26 @@ class IngestionService:
         *,
         plugin_catalog: Sequence[PluginEntry],
         signing_service: SigningService,
+        manifest_builder: ManifestBuilderService,
         artifacts: ArtifactStore,
         records: IngestionRecordRepository,
         failed_records: FailedIngestionRepository | None = None,
         resolution_client: ResolutionPushClient | None = None,
     ) -> None:
+        # ``signing_service`` stays for credential metadata
+        # (cert_sha1, signing_alg, ta_url) on the ``IngestionRecord``.
+        # The actual ``Signer`` was released to ``manifest_builder``
+        # at startup — see ``ManifestBuilderService`` for ownership
+        # rules.
         self._plugin_catalog = list(plugin_catalog)
         self._signing_service = signing_service
+        self._manifest_builder = manifest_builder
         self._artifacts = artifacts
         self._records = records
         self._failed_records = failed_records
         self._resolution_client = resolution_client or ResolutionPushClient()
 
-    async def ingest(self, payload: IngestionInput) -> IngestionResult:
+    async def ingest(self, payload: IngestionRequest) -> IngestionOutput:
         # 0. Pre-allocate validation: media format + alg list shape.
         # These are caller bugs (4xx) — never persisted as pipeline failures.
         guessed = guess_media_format(payload.filename, payload.content_type)
@@ -247,7 +254,7 @@ class IngestionService:
 
     async def _run_pipeline(
         self,
-        payload: IngestionInput,
+        payload: IngestionRequest,
         media_type: MediaType,
         mime_type: str,
         entries: list[PluginEntry],
@@ -256,7 +263,7 @@ class IngestionService:
         artifacts: IngestionArtifacts,
         *,
         request_id: str | None = None,
-    ) -> IngestionResult:
+    ) -> IngestionOutput:
         """Top-level choreography. Each step is a private async method
         named after what it does — read top-to-bottom for the pipeline."""
         passes = await self._run_plugins(
@@ -296,7 +303,7 @@ class IngestionService:
             record.assetSha256[:12],
             push.result.status.value,
         )
-        return IngestionResult(
+        return IngestionOutput(
             record=record,
             signed_asset_path=artifacts.signed_path,
             manifest_bytes_path=manifest_bytes_path,
@@ -315,7 +322,7 @@ class IngestionService:
         mime_type: str,
         *,
         request_id: str | None,
-    ) -> list[PluginPass]:
+    ) -> list[PluginPassOutput]:
         try:
             passes = await asyncio.get_running_loop().run_in_executor(
                 None,
@@ -342,9 +349,9 @@ class IngestionService:
 
     async def _build_and_sign(
         self,
-        passes: Sequence[PluginPass],
+        passes: Sequence[PluginPassOutput],
         mime_type: str,
-        payload: IngestionInput,
+        payload: IngestionRequest,
         dest_path: Path,
         *,
         parent_bytes: bytes,
@@ -359,7 +366,6 @@ class IngestionService:
         which is the post-watermark output) — see the manifest builder
         docstring for why this matters.
         """
-        builder = ManifestBuilderService(signer=self._signing_service.signer)
         soft_bindings = [
             SoftBindingSpec(
                 alg=p.entry.alg,
@@ -373,7 +379,7 @@ class IngestionService:
             return await asyncio.get_running_loop().run_in_executor(
                 None,
                 partial(
-                    builder.build_and_sign,
+                    self._manifest_builder.build_and_sign,
                     source_bytes=passes[-1].output_bytes,
                     parent_bytes=parent_bytes,
                     dest_path=dest_path,
@@ -421,7 +427,7 @@ class IngestionService:
         self,
         manifest_bytes: bytes,
         manifest_id: str,
-        passes: Sequence[PluginPass],
+        passes: Sequence[PluginPassOutput],
         *,
         request_id: str | None,
     ) -> _PushOutcome:
@@ -435,7 +441,7 @@ class IngestionService:
             manifest_bytes=manifest_bytes or b"",
             manifest_id=manifest_id,
             bindings=[
-                BindingPair(alg=p.entry.alg, binding_value=p.binding_value)
+                ResolutionPushBinding(alg=p.entry.alg, binding_value=p.binding_value)
                 for p in passes
             ],
         )
@@ -455,7 +461,7 @@ class IngestionService:
         ingestion_id: str,
         mime_type: str,
         media_type: MediaType,
-        passes: Sequence[PluginPass],
+        passes: Sequence[PluginPassOutput],
         entries: Sequence[PluginEntry],
         manifest_id: str,
         signed_path: Path,

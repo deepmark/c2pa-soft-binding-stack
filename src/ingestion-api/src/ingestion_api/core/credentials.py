@@ -5,10 +5,6 @@ Holds the paths + signing-alg metadata for the cert chain and private
 key, and exposes cheap forensic helpers (``cert_sha1``,
 ``leaf_not_after``) that ``/health/deep`` and the persisted
 ``IngestionRecord`` consume.
-
-Deliberately free of any dependency on the c2pa SDK so health probes
-and record-builder code paths can import these without dragging the
-heavy native module into their import graph.
 """
 from __future__ import annotations
 
@@ -79,7 +75,7 @@ class SignerCredentials:
 
         Used by ``/health/deep`` to surface impending cert expiry to
         ops dashboards. 
-        Never raises — this is forensic data, not a readiness gate.
+        This is forensic data, not a readiness gate. Never raises.
         """
         try:
             pem_bytes = self.cert_chain_path.read_bytes()

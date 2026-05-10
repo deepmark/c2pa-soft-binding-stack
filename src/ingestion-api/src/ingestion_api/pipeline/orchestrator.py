@@ -8,10 +8,10 @@ are gated by a media-type-specific format-preservation check so a
 plugin that re-samples / mono-mixes / otherwise mutates the container
 is rejected before the bytes reach the manifest signer.
 
-Stateless module-level functions (no class, no DI) — this is a
-pipeline step, not an application service. The IngestionService calls
-``run_plugin_passes`` once per ingest and ``capture_plugin_versions``
-once per ingest for the persisted record.
+Stateless module-level functions (no class, no DIapplication).
+This is a pipeline step, not an application service. 
+The IngestionService calls ``run_plugin_passes`` once per ingest and 
+``capture_plugin_versions`` once per ingest for the persisted record.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from collections.abc import Sequence
 
 from ingestion_api.adapters.dispatcher import PluginDispatcher
 from ingestion_api.contracts.plugin import PluginEntry
-from ingestion_api.contracts.plugin import PluginPass
+from ingestion_api.contracts.plugin import PluginPassOutput
 from ingestion_api.core.logging import get_logger
 from ingestion_api.core.errors import IngestionError
 from ingestion_api.models.enums import FailureStage, MediaType
@@ -35,7 +35,7 @@ def run_plugin_passes(
     mime_type: str,
     *,
     request_id: str | None = None,
-) -> list[PluginPass]:
+) -> list[PluginPassOutput]:
     """Run every alg's plugin, threading mutated bytes through.
 
     Watermark plugins replace ``current_bytes`` with their /embed
@@ -49,7 +49,7 @@ def run_plugin_passes(
     and re-raises ``PluginUnavailableError`` from the HTTP layer so the
     caller can distinguish transport failures from contract failures.
     """
-    passes: list[PluginPass] = []
+    passes: list[PluginPassOutput] = []
     current_bytes = initial_bytes
     for entry in entries:
         with PluginDispatcher(entry, request_id=request_id) as plugin:
@@ -78,7 +78,7 @@ def run_plugin_passes(
                     stage=FailureStage.PLUGIN_PASS,
                 )
         passes.append(
-            PluginPass(
+            PluginPassOutput(
                 entry=entry,
                 binding_value=binding_value,
                 output_bytes=current_bytes,
@@ -131,10 +131,9 @@ def _verify_format_preserved(
     implemented inspector the check is skipped with a loud warning so
     adding a new MIME doesn't silently turn the safeguard off.
 
-    Skipped silently when either side is unparseable — we don't want a
-    header-parser quirk to nuke an otherwise-valid ingest. Real format
-    mismatches (a plugin that mono-mixed a stereo input, re-sampled to
-    a different rate, etc.) raise ``IngestionError``.
+    Skipped silently when either side is unparseable. 
+    Real format mismatches (a plugin that mono-mixed a stereo input, 
+    re-sampled to a different rate, etc.) raise ``IngestionError``.
     """
     if media_type is not MediaType.AUDIO:
         logger.warning(

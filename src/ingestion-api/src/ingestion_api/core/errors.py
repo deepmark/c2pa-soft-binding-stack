@@ -19,28 +19,19 @@ class IngestionError(RuntimeError):
 
 
 class UnsupportedMediaError(IngestionError):
-    """4xx-class — MIME isn't in the supported registry. Pre-allocate, never persisted."""
+    """4xx-class — MIME isn't in the supported registry."""
 
 
 class InvalidAlgRequestError(IngestionError):
-    """4xx-class — caller asked for an empty / unknown / MIME-incompatible alg.
-
-    Raised before allocating an ingestion id (where possible) so the
-    failure isn't persisted as a pipeline error.
-    """
+    """4xx-class — caller asked for an empty / unknown / MIME-incompatible alg."""
 
 
 class MissingSigningMaterialError(IngestionError):
-    """Cert/key files vanished or became unreadable at sign time.
-
-    Distinct type so the ingest router can map it to a 503 cleanly,
-    rather than catching a bare ``FileNotFoundError``
-    (which would swallow unrelated FS failures from anywhere in the call tree).
-    """
+    """Cert/key files vanished or became unreadable at sign time."""
 
 
 class PluginUnavailableError(IngestionError):
-    """The plugin container couldn't be reached, or returned a non-2xx."""
+    """The plugin container couldn't be reached, or returned a non-2xx response."""
 
 
 class PluginNotFoundError(IngestionError):

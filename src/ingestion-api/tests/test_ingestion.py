@@ -7,7 +7,7 @@ Stubs:
   mints the value via ``secrets`` and sends it to the plugin; the stub
   bypasses both sides for deterministic assertions.
 - ``ResolutionPushClient.push`` -> records the request and returns a
-  ``ResolutionPushResult.OK``.
+  ``ResolutionPushOutput.OK``.
 
 Requires the ES256 test credentials at the repo root (`credentials/`).
 """
@@ -20,12 +20,12 @@ from pathlib import Path
 import pytest
 
 from ingestion_api.adapters.dispatcher import (
-    EmbedResult,
+    WatermarkOutput,
     PluginUnavailableError,
     reset_plugin_info_cache,
 )
 from ingestion_api.contracts.plugin import PluginEntry
-from ingestion_api.contracts.ingestion import IngestionInput
+from ingestion_api.contracts.ingestion import IngestionRequest
 from ingestion_api.core.errors import (
     IngestionError,
     InvalidAlgRequestError,
@@ -36,13 +36,14 @@ from ingestion_api.models.enums import (
     MediaType,
     ResolutionPushStatus,
 )
-from ingestion_api.models.responses import ResolutionPushResult
+from ingestion_api.models.responses import ResolutionPushOutput
 from ingestion_api.repositories.artifacts import ArtifactStore
 from ingestion_api.repositories.ingestions import (
     InMemoryFailedIngestionRepository,
     InMemoryIngestionRecordRepository,
 )
 from ingestion_api.services.ingestion import IngestionService
+from ingestion_api.services.manifest import ManifestBuilderService
 from ingestion_api.services.signing import SigningService
 from ingestion_api.utils.hashing import sha256_hex, sha256_truncated_b64
 
@@ -75,9 +76,9 @@ class _StubPluginDispatcher:
     def __exit__(self, *exc):
         return None
 
-    def embed(self, *, media_bytes: bytes, mime_type: str) -> EmbedResult:
+    def embed(self, *, media_bytes: bytes, mime_type: str) -> WatermarkOutput:
         self.last_mime_type = mime_type
-        return EmbedResult(
+        return WatermarkOutput(
             binding_value=_binding_value(media_bytes),
             watermarked_bytes=media_bytes,
         )
@@ -105,7 +106,7 @@ class _StubResolutionClient:
     def push(self, req, *, request_id=None):
         self.calls.append(req)
         self.request_ids.append(request_id)
-        return ResolutionPushResult(status=ResolutionPushStatus.OK)
+        return ResolutionPushOutput(status=ResolutionPushStatus.OK)
 
     def close(self):
         pass
@@ -147,6 +148,17 @@ def signing_service(credentials_present: bool) -> SigningService:
 
 
 @pytest.fixture
+def manifest_builder(signing_service: SigningService) -> ManifestBuilderService:
+    """Singleton ManifestBuilderService for the test.
+
+    Mirrors production wiring (``__main__.py``): consume the
+    signing_service's Signer into the builder's Context exactly once.
+    Each test gets a fresh ``signing_service`` (function-scoped), so a
+    fresh Signer is built and consumed per test."""
+    return ManifestBuilderService(signer=signing_service.release_signer())
+
+
+@pytest.fixture
 def stub_resolution() -> _StubResolutionClient:
     return _StubResolutionClient()
 
@@ -172,6 +184,7 @@ def patched_plugin(monkeypatch) -> PluginEntry:
 @pytest.fixture
 def ingestion_service(
     signing_service: SigningService,
+    manifest_builder: ManifestBuilderService,
     artifacts: ArtifactStore,
     records: InMemoryIngestionRecordRepository,
     failed_records: InMemoryFailedIngestionRepository,
@@ -181,6 +194,7 @@ def ingestion_service(
     return IngestionService(
         plugin_catalog=[patched_plugin],
         signing_service=signing_service,
+        manifest_builder=manifest_builder,
         artifacts=artifacts,
         records=records,
         failed_records=failed_records,
@@ -199,7 +213,7 @@ def test_ingest_produces_signed_asset_and_record(
     sample_wav_bytes: bytes,
     stub_resolution: _StubResolutionClient,
 ):
-    payload = IngestionInput(
+    payload = IngestionRequest(
         filename="sample.wav",
         content_type="audio/wav",
         data=sample_wav_bytes,
@@ -267,7 +281,7 @@ def test_ingest_manifest_id_matches_signed_asset(
     """Stored manifestId is exactly the active_manifest URN inside the signed file."""
     result = asyncio.run(
         ingestion_service.ingest(
-            IngestionInput(
+            IngestionRequest(
                 filename="sample.wav",
                 content_type="audio/wav",
                 data=sample_wav_bytes,
@@ -284,6 +298,7 @@ def test_ingest_manifest_id_matches_signed_asset(
 
 def test_ingest_records_failed_push(
     signing_service: SigningService,
+    manifest_builder: ManifestBuilderService,
     artifacts: ArtifactStore,
     records: InMemoryIngestionRecordRepository,
     failed_records: InMemoryFailedIngestionRepository,
@@ -298,7 +313,7 @@ def test_ingest_records_failed_push(
         enabled = True
 
         def push(self, req, *, request_id=None):
-            return ResolutionPushResult(status=ResolutionPushStatus.FAILED, error="boom")
+            return ResolutionPushOutput(status=ResolutionPushStatus.FAILED, error="boom")
 
         def close(self):
             pass
@@ -306,6 +321,7 @@ def test_ingest_records_failed_push(
     svc = IngestionService(
         plugin_catalog=[patched_plugin],
         signing_service=signing_service,
+        manifest_builder=manifest_builder,
         artifacts=artifacts,
         records=records,
         failed_records=failed_records,
@@ -314,7 +330,7 @@ def test_ingest_records_failed_push(
 
     result = asyncio.run(
         svc.ingest(
-            IngestionInput(
+            IngestionRequest(
                 filename="sample.wav",
                 content_type="audio/wav",
                 data=sample_wav_bytes,
@@ -331,6 +347,7 @@ def test_ingest_records_failed_push(
 
 def test_pipeline_failure_persists_failed_ingestion(
     signing_service: SigningService,
+    manifest_builder: ManifestBuilderService,
     artifacts: ArtifactStore,
     records: InMemoryIngestionRecordRepository,
     failed_records: InMemoryFailedIngestionRepository,
@@ -369,6 +386,7 @@ def test_pipeline_failure_persists_failed_ingestion(
     svc = IngestionService(
         plugin_catalog=[entry],
         signing_service=signing_service,
+        manifest_builder=manifest_builder,
         artifacts=artifacts,
         records=records,
         failed_records=failed_records,
@@ -378,7 +396,7 @@ def test_pipeline_failure_persists_failed_ingestion(
     with pytest.raises(IngestionError) as exc_info:
         asyncio.run(
             svc.ingest(
-                IngestionInput(
+                IngestionRequest(
                     filename="sample.wav",
                     content_type="audio/wav",
                     data=sample_wav_bytes,
@@ -405,6 +423,7 @@ def test_pipeline_failure_persists_failed_ingestion(
 
 def test_pipeline_rejects_plugin_that_changes_audio_format(
     signing_service: SigningService,
+    manifest_builder: ManifestBuilderService,
     artifacts: ArtifactStore,
     records: InMemoryIngestionRecordRepository,
     failed_records: InMemoryFailedIngestionRepository,
@@ -445,7 +464,7 @@ def test_pipeline_rejects_plugin_that_changes_audio_format(
             return None
 
         def embed(self, *, media_bytes, mime_type):
-            return EmbedResult(
+            return WatermarkOutput(
                 binding_value=_binding_value(media_bytes),
                 watermarked_bytes=_resampled_wav(),
             )
@@ -459,6 +478,7 @@ def test_pipeline_rejects_plugin_that_changes_audio_format(
     svc = IngestionService(
         plugin_catalog=[entry],
         signing_service=signing_service,
+        manifest_builder=manifest_builder,
         artifacts=artifacts,
         records=records,
         failed_records=failed_records,
@@ -468,7 +488,7 @@ def test_pipeline_rejects_plugin_that_changes_audio_format(
     with pytest.raises(IngestionError, match="changed audio format") as exc_info:
         asyncio.run(
             svc.ingest(
-                IngestionInput(
+                IngestionRequest(
                     filename="sample.wav",
                     content_type="audio/wav",
                     data=sample_wav_bytes,
@@ -491,7 +511,7 @@ def test_ingest_rejects_unsupported_media_format(
     with pytest.raises(UnsupportedMediaError):
         asyncio.run(
             ingestion_service.ingest(
-                IngestionInput(
+                IngestionRequest(
                     filename="not_audio.txt",
                     content_type="text/plain",
                     data=b"hello",
@@ -508,7 +528,7 @@ def test_ingest_rejects_empty_algs(
     with pytest.raises(InvalidAlgRequestError, match="at least one alg"):
         asyncio.run(
             ingestion_service.ingest(
-                IngestionInput(
+                IngestionRequest(
                     filename="sample.wav",
                     content_type="audio/wav",
                     data=sample_wav_bytes,
@@ -520,6 +540,7 @@ def test_ingest_rejects_empty_algs(
 
 def test_ingest_rejects_unknown_alg(
     signing_service: SigningService,
+    manifest_builder: ManifestBuilderService,
     artifacts: ArtifactStore,
     records: InMemoryIngestionRecordRepository,
     failed_records: InMemoryFailedIngestionRepository,
@@ -530,6 +551,7 @@ def test_ingest_rejects_unknown_alg(
     svc = IngestionService(
         plugin_catalog=[],  # empty catalog -> every alg is "unknown"
         signing_service=signing_service,
+        manifest_builder=manifest_builder,
         artifacts=artifacts,
         records=records,
         failed_records=failed_records,
@@ -539,7 +561,7 @@ def test_ingest_rejects_unknown_alg(
     with pytest.raises(InvalidAlgRequestError, match="unknown algs"):
         asyncio.run(
             svc.ingest(
-                IngestionInput(
+                IngestionRequest(
                     filename="sample.wav",
                     content_type="audio/wav",
                     data=sample_wav_bytes,
@@ -555,6 +577,7 @@ def test_ingest_rejects_unknown_alg(
 
 def test_ingest_rejects_alg_incompatible_with_mime(
     signing_service: SigningService,
+    manifest_builder: ManifestBuilderService,
     artifacts: ArtifactStore,
     records: InMemoryIngestionRecordRepository,
     failed_records: InMemoryFailedIngestionRepository,
@@ -573,6 +596,7 @@ def test_ingest_rejects_alg_incompatible_with_mime(
     svc = IngestionService(
         plugin_catalog=[video_only_entry],
         signing_service=signing_service,
+        manifest_builder=manifest_builder,
         artifacts=artifacts,
         records=records,
         failed_records=failed_records,
@@ -582,7 +606,7 @@ def test_ingest_rejects_alg_incompatible_with_mime(
     with pytest.raises(InvalidAlgRequestError, match="incompatible"):
         asyncio.run(
             svc.ingest(
-                IngestionInput(
+                IngestionRequest(
                     filename="sample.wav",
                     content_type="audio/wav",
                     data=sample_wav_bytes,
@@ -601,7 +625,7 @@ def test_signed_asset_round_trips_through_reader(
 ):
     result = asyncio.run(
         ingestion_service.ingest(
-            IngestionInput(
+            IngestionRequest(
                 filename="sample.wav",
                 content_type="audio/wav",
                 data=sample_wav_bytes,
@@ -650,13 +674,12 @@ def test_ingest_parent_ingredient_uses_upload_not_plugin_output(
 
     Strategy: stub a watermark plugin that mutates the bytes
     (format-preserving so the orchestrator's format-preservation check
-    accepts the output), then assert via byte-level identity that the
-    parent ingredient stream we feed to the SDK equals the upload — by
-    snapshotting the call args via a wrapping ``ManifestBuilderService``.
+    accepts the output), then snapshot the parent/source bytes the
+    pipeline hands to the manifest builder by injecting a
+    ``ManifestBuilderService`` subclass that captures call args.
     """
     import io
     import wave
-    from ingestion_api.services import ingestion as ingestion_module
 
     def _mutated_wav() -> bytes:
         """Same shape (mono / 16-bit / 22050 Hz) so the format-preservation
@@ -680,7 +703,7 @@ def test_ingest_parent_ingredient_uses_upload_not_plugin_output(
         def __exit__(self, *exc):
             return None
         def embed(self, *, media_bytes, mime_type):
-            return EmbedResult(
+            return WatermarkOutput(
                 binding_value=_binding_value(mutated),
                 watermarked_bytes=mutated,
             )
@@ -696,21 +719,22 @@ def test_ingest_parent_ingredient_uses_upload_not_plugin_output(
     )
 
     captured: dict[str, object] = {}
-    real_cls = ingestion_module.ManifestBuilderService
 
-    class _CapturingBuilder(real_cls):
+    class _CapturingBuilder(ManifestBuilderService):
         def build_and_sign(self, **kw):
             captured["parent_bytes"] = kw.get("parent_bytes")
             captured["source_bytes"] = kw.get("source_bytes")
             return super().build_and_sign(**kw)
 
+    capturing_builder = _CapturingBuilder(signer=signing_service.release_signer())
+
     from ingestion_api.pipeline import orchestrator as pipeline_module
     monkeypatch.setattr(pipeline_module, "PluginDispatcher", _MutatingPlugin)
-    monkeypatch.setattr(ingestion_module, "ManifestBuilderService", _CapturingBuilder)
 
     svc = IngestionService(
         plugin_catalog=[entry],
         signing_service=signing_service,
+        manifest_builder=capturing_builder,
         artifacts=artifacts,
         records=records,
         failed_records=failed_records,
@@ -719,7 +743,7 @@ def test_ingest_parent_ingredient_uses_upload_not_plugin_output(
 
     asyncio.run(
         svc.ingest(
-            IngestionInput(
+            IngestionRequest(
                 filename="sample.wav",
                 content_type="audio/wav",
                 data=sample_wav_bytes,
@@ -739,6 +763,7 @@ def test_ingest_parent_ingredient_uses_upload_not_plugin_output(
 def test_ingest_with_watermark_plus_fingerprint(
     monkeypatch,
     signing_service: SigningService,
+    manifest_builder: ManifestBuilderService,
     artifacts: ArtifactStore,
     records: InMemoryIngestionRecordRepository,
     failed_records: InMemoryFailedIngestionRepository,
@@ -769,6 +794,7 @@ def test_ingest_with_watermark_plus_fingerprint(
     svc = IngestionService(
         plugin_catalog=catalog,
         signing_service=signing_service,
+        manifest_builder=manifest_builder,
         artifacts=artifacts,
         records=records,
         failed_records=failed_records,
@@ -777,7 +803,7 @@ def test_ingest_with_watermark_plus_fingerprint(
 
     result = asyncio.run(
         svc.ingest(
-            IngestionInput(
+            IngestionRequest(
                 filename="sample.wav",
                 content_type="audio/wav",
                 data=sample_wav_bytes,

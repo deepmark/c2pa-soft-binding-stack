@@ -15,7 +15,7 @@ from ingestion_api.adapters.dispatcher import (
 )
 from ingestion_api.contracts.plugin import PluginEntry
 from ingestion_api.core.errors import PluginNotFoundError
-from ingestion_api.core.plugins import load_plugin_catalog, resolve_plugin
+from ingestion_api.core.plugin import load_plugin_catalog, resolve_plugin
 
 
 def _entry(**kw) -> PluginEntry:

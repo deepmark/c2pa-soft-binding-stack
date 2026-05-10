@@ -6,7 +6,7 @@ import json
 import httpx
 
 from ingestion_api.adapters.publisher import ResolutionPushClient
-from ingestion_api.contracts.publisher import BindingPair, ResolutionPushRequest
+from ingestion_api.contracts.publisher import ResolutionPushBinding, ResolutionPushRequest
 from ingestion_api.models.enums import ResolutionPushStatus
 
 MID = "urn:c2pa:test-id"
@@ -21,7 +21,7 @@ def _req(*pairs: tuple[str, str], manifest: bytes = b"manifest") -> ResolutionPu
     return ResolutionPushRequest(
         manifest_bytes=manifest,
         manifest_id=MID,
-        bindings=[BindingPair(alg=a, binding_value=v) for a, v in pairs],
+        bindings=[ResolutionPushBinding(alg=a, binding_value=v) for a, v in pairs],
     )
 
 

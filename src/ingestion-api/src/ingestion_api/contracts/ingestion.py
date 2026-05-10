@@ -8,13 +8,14 @@ from ingestion_api.models.ingestion import IngestionRecord
 
 
 @dataclass(slots=True)
-class IngestionInput:
+class IngestionRequest:
     """Inputs to a single ingest call.
 
     ``algs`` is the caller-supplied, ordered list of algorithm IDs to
     apply. Each must exist in ``plugins.yaml`` and declare the
-    upload's MIME in its ``mediaTypes``. Order matters — watermark
-    passes mutate bytes for subsequent passes (put watermarks first).
+    upload's MIME in its ``mediaTypes``. 
+    Order matters — watermark plugins mutate bytes for subsequent passes 
+    (put watermarks first).
     """
     filename: str
     content_type: str | None
@@ -24,7 +25,7 @@ class IngestionInput:
 
 
 @dataclass(slots=True)
-class IngestionResult:
+class IngestionOutput:
     record: IngestionRecord
     signed_asset_path: Path
     manifest_bytes_path: Path | None

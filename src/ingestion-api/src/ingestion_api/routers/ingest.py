@@ -45,7 +45,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from ingestion_api.contracts.ingestion import IngestionInput
+from ingestion_api.contracts.ingestion import IngestionRequest
 from ingestion_api.core.config import settings
 from ingestion_api.core.logging import get_logger
 from ingestion_api.core.credentials import MissingSigningMaterialError
@@ -58,8 +58,8 @@ from ingestion_api.models.enums import ResolutionPushStatus
 from ingestion_api.models.ingestion import IngestionRecord
 from ingestion_api.models.responses import (
     IngestionListResponse,
-    IngestResponse,
-    ResolutionPushResult,
+    IngestionResponse,
+    ResolutionPushOutput,
 )
 from ingestion_api.repositories.artifacts import ArtifactStore
 from ingestion_api.repositories.ingestions import (
@@ -105,7 +105,7 @@ def _build_response(
     record: IngestionRecord,
     request: Request,
     artifacts: ArtifactStore,
-) -> IngestResponse:
+) -> IngestionResponse:
     base = _response_base_url(request)
     output_url = f"{base}/ingest/{record.ingestionId}/asset"
     # Derive manifestUrl from the artifact store rather than persisting
@@ -115,11 +115,11 @@ def _build_response(
         if artifacts.load_manifest_bytes_path(record.ingestionId)
         else None
     )
-    push_result = ResolutionPushResult(
+    push_result = ResolutionPushOutput(
         status=record.resolutionPushStatus,
         error=record.resolutionPushError,
     )
-    return IngestResponse(
+    return IngestionResponse(
         ingestionId=record.ingestionId,
         manifestId=record.manifestId,
         softBindings=record.softBindings,
@@ -148,7 +148,7 @@ def _signed_asset_media_type(path) -> str:
 
 @router.post(
     "/ingest",
-    response_model=IngestResponse,
+    response_model=IngestionResponse,
     summary="Ingest a media asset: apply soft-bindings, build C2PA manifest, sign, store, push",
     responses={
         200: {"description": "Asset ingested successfully"},
@@ -186,7 +186,7 @@ async def ingest_media(
     ),
     service: IngestionService = Depends(get_ingestion_service),
     artifacts: ArtifactStore = Depends(get_artifact_store),
-) -> IngestResponse:
+) -> IngestionResponse:
     if len(algs) > settings.max_algs_per_ingest:
         raise HTTPException(
             status_code=400,
@@ -207,7 +207,7 @@ async def ingest_media(
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload")
 
-    payload = IngestionInput(
+    payload = IngestionRequest(
         filename=file.filename or "upload.bin",
         content_type=file.content_type,
         data=data,

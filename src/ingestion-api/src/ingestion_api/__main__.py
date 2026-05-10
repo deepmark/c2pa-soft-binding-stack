@@ -4,7 +4,16 @@ FastAPI application entry point for ingestion-api.
 App startup wires the long-lived collaborators onto ``app.state``:
 - ``app.state.plugin_catalog``     — parsed plugins.yaml (loaded once;
                                      re-read requires process restart)
-- ``app.state.signing_service``    — single C2PA Signer for the process
+- ``app.state.signing_service``    — keeps cert metadata (signing_alg,
+                                     ta_url, cert_sha1) for the
+                                     IngestionRecord; the underlying
+                                     Signer is released to
+                                     ``manifest_builder`` (Context
+                                     ownership transfer per the c2pa
+                                     SDK rules)
+- ``app.state.manifest_builder``   — singleton ManifestBuilderService;
+                                     its Context owns the consumed
+                                     Signer for the process lifetime
 - ``app.state.artifacts``          — filesystem-backed binary artifact store
 - ``app.state.records``            — MongoDB-backed IngestionRecord repository
 - ``app.state.resolution_client``  — auto-push HTTP client (no-op when
@@ -14,7 +23,7 @@ App startup wires the long-lived collaborators onto ``app.state``:
 Middleware stack (outermost first; ASGI middleware runs in reverse-add order):
 - ``RequestIDMiddleware``      — generates/echoes X-Request-ID, binds contextvar
 - ``ProxyHeadersMiddleware``   — honors X-Forwarded-Proto/Host so absolute URLs
-                                  in IngestResponse are correct behind a proxy.
+                                  in IngestionResponse are correct behind a proxy.
 
 Body-size enforcement is delegated to the reverse proxy (nginx
 ``client_max_body_size`` / k8s ingress ``proxy-body-size``); the
@@ -35,7 +44,7 @@ from fastapi import FastAPI
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from ingestion_api.adapters.publisher import ResolutionPushClient
-from ingestion_api.core.plugins import load_plugin_catalog
+from ingestion_api.core.plugin import load_plugin_catalog
 from ingestion_api.core.config import settings
 from ingestion_api.repositories.database import (
     MongoDB,
@@ -52,6 +61,7 @@ from ingestion_api.repositories.ingestions import (
 )
 from ingestion_api.routers import health, ingest
 from ingestion_api.services.ingestion import IngestionService
+from ingestion_api.services.manifest import ManifestBuilderService
 from ingestion_api.services.signing import SigningService
 
 logger = get_logger(__name__)
@@ -109,10 +119,20 @@ async def lifespan(app: FastAPI):
         raise
     app.state.signing_service = signing_service
 
+    # Hand the Signer to a long-lived ManifestBuilderService. The
+    # SDK's Context consumes the Signer on construction (see
+    # services/manifest.py and services/signing.py for the ownership
+    # rules); after this call, signing_service.signer is invalid and
+    # the manifest builder owns the FFI handle until shutdown.
+    app.state.manifest_builder = ManifestBuilderService(
+        signer=signing_service.release_signer(),
+    )
+
     app.state.resolution_client = ResolutionPushClient()
     app.state.ingestion_service = IngestionService(
         plugin_catalog=app.state.plugin_catalog,
         signing_service=app.state.signing_service,
+        manifest_builder=app.state.manifest_builder,
         artifacts=app.state.artifacts,
         records=app.state.records,
         failed_records=app.state.failed_records,
@@ -123,6 +143,13 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("Shutting down")
+        # ManifestBuilderService owns the Signer's FFI handle (via
+        # its Context); close it before signing_service so the
+        # Context releases the consumed Signer first.
+        try:
+            app.state.manifest_builder.close()
+        except Exception:
+            logger.exception("Error closing manifest builder")
         try:
             app.state.signing_service.close()
         except Exception:

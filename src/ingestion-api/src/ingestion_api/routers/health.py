@@ -35,7 +35,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ingestion_api.contracts.plugin import PluginEntry
-from ingestion_api.core.plugins import load_plugin_catalog
+from ingestion_api.core.plugin import load_plugin_catalog
 from ingestion_api.core.config import settings
 from ingestion_api.repositories.database import MongoDB
 from ingestion_api.core.logging import get_logger

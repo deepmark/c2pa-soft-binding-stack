@@ -32,7 +32,7 @@ from ingestion_api.contracts.publisher import ResolutionPushRequest
 from ingestion_api.core.config import settings
 from ingestion_api.core.logging import REQUEST_ID_HEADER, get_logger, get_request_id
 from ingestion_api.models.enums import ResolutionPushStatus
-from ingestion_api.models.responses import ResolutionPushResult
+from ingestion_api.models.responses import ResolutionPushOutput
 
 logger = get_logger(__name__)
 
@@ -92,21 +92,21 @@ class ResolutionPushClient:
         req: ResolutionPushRequest,
         *,
         request_id: str | None = None,
-    ) -> ResolutionPushResult:
+    ) -> ResolutionPushOutput:
         """
         Push manifest + every binding to resolution-api.
 
-        Never raises — failure modes are surfaced through
-        ``ResolutionPushResult.status=FAILED``.
+        Never raises. Failure modes are surfaced through the
+        ``ResolutionPushOutput.status=FAILED`` field.
 
         ``request_id`` is forwarded as ``X-Request-ID`` on every call
         so resolution-api logs collate with ingestion-api's.
         """
         if not self.enabled:
-            return ResolutionPushResult(status=ResolutionPushStatus.SKIPPED)
+            return ResolutionPushOutput(status=ResolutionPushStatus.SKIPPED)
 
         if not req.bindings:
-            return ResolutionPushResult(
+            return ResolutionPushOutput(
                 status=ResolutionPushStatus.FAILED,
                 error="ResolutionPushRequest.bindings must be non-empty",
             )
@@ -116,13 +116,13 @@ class ResolutionPushClient:
             self._post_manifest(req.manifest_bytes, rid)
             for pair in req.bindings:
                 self._post_binding(pair.alg, pair.binding_value, req.manifest_id, rid)
-            return ResolutionPushResult(status=ResolutionPushStatus.OK)
+            return ResolutionPushOutput(status=ResolutionPushStatus.OK)
         except httpx.HTTPError as exc:
             logger.warning("Resolution-api push failed: %s", exc)
-            return ResolutionPushResult(status=ResolutionPushStatus.FAILED, error=str(exc))
+            return ResolutionPushOutput(status=ResolutionPushStatus.FAILED, error=str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("Unexpected resolution-api push failure")
-            return ResolutionPushResult(status=ResolutionPushStatus.FAILED, error=str(exc))
+            return ResolutionPushOutput(status=ResolutionPushStatus.FAILED, error=str(exc))
 
     def _post_manifest(self, manifest_bytes: bytes, request_id: str | None) -> None:
         url = f"{self._base_url}/manifests"

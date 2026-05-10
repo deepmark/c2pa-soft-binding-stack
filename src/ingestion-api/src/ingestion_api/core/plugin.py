@@ -9,12 +9,6 @@ algorithm identifier (``alg``) to the plugin that implements it:
 - its binding value width in bits,
 - supported media types,
 - a base URL for the plugin container (``url``).
-
-This module is pure config — no HTTP, no plugin invocation. The
-``PluginEntry`` dataclass lives in ``contracts.plugin`` because it
-crosses layers; the loader + resolver here just materialise it from YAML.
-The outbound HTTP wrapper that actually talks to plugins lives in
-``adapters.dispatcher``.
 """
 from __future__ import annotations
 
@@ -33,12 +27,6 @@ logger = get_logger(__name__)
 def load_plugin_catalog(path: Path | None = None) -> list[PluginEntry]:
     """Read + validate the YAML catalog. Returns an empty list if the file
     is missing or malformed (each malformed row is skipped with a warning).
-
-    ``bindingBits`` is required and must be positive. Non-byte-aligned
-    widths are allowed — the value generator zeroes the unused high
-    bits of the first byte. Entries with missing or non-positive
-    ``bindingBits`` are skipped at load time so the misconfig surfaces
-    at boot, not at first request.
     """
     catalog_path = path or settings.plugins_catalog_path
     if not catalog_path.is_file():
@@ -77,9 +65,7 @@ def resolve_plugin(
 
     ``catalog`` should be supplied by the caller (loaded once at startup
     and threaded through DI). When omitted, a fresh on-disk load is
-    performed — handy for ad-hoc scripts and the rare test that doesn't
-    construct a full ``IngestionService``, but every hot-path caller
-    should pass an explicit catalog to avoid per-request YAML I/O.
+    performed.
     """
     entries = catalog if catalog is not None else load_plugin_catalog()
     for entry in entries:

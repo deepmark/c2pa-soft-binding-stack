@@ -61,7 +61,7 @@ def test_signed_wav_is_produced(
     dest = tmp_path / "signed.wav"
     binding = compute_binding_value(sample_wav_bytes)
 
-    builder = ManifestBuilderService(signer=signing_service.signer)
+    builder = ManifestBuilderService(signer=signing_service.release_signer())
     result = builder.build_and_sign(
         source_bytes=sample_wav_bytes,
         parent_bytes=sample_wav_bytes,
@@ -86,7 +86,7 @@ def test_signed_manifest_has_opened_watermarked_and_softbinding(
     """End-to-end check of the C2PA contents of the signed asset."""
     dest = tmp_path / "signed.wav"
     binding = compute_binding_value(sample_wav_bytes)
-    builder = ManifestBuilderService(signer=signing_service.signer)
+    builder = ManifestBuilderService(signer=signing_service.release_signer())
     builder.build_and_sign(
         source_bytes=sample_wav_bytes,
         parent_bytes=sample_wav_bytes,
@@ -152,7 +152,7 @@ def test_manifest_id_can_be_read_back(
     """The Reader-derived active manifest URN should be a urn:c2pa:..."""
     dest = tmp_path / "signed.wav"
     binding = compute_binding_value(sample_wav_bytes)
-    builder = ManifestBuilderService(signer=signing_service.signer)
+    builder = ManifestBuilderService(signer=signing_service.release_signer())
     builder.build_and_sign(
         source_bytes=sample_wav_bytes,
         parent_bytes=sample_wav_bytes,
@@ -183,7 +183,7 @@ def test_claim_generator_info_surfaces_with_constructor_overrides(
     dest = tmp_path / "signed.wav"
     binding = compute_binding_value(sample_wav_bytes)
     builder = ManifestBuilderService(
-        signer=signing_service.signer,
+        signer=signing_service.release_signer(),
         claim_generator_name="Regression Test App",
         claim_generator_version="9.9.9",
     )
@@ -220,7 +220,7 @@ def test_thumbnail_disabled_via_context(
     Confirm no c2pa.thumbnail.* assertion is emitted."""
     dest = tmp_path / "signed.wav"
     binding = compute_binding_value(sample_wav_bytes)
-    builder = ManifestBuilderService(signer=signing_service.signer)
+    builder = ManifestBuilderService(signer=signing_service.release_signer())
     builder.build_and_sign(
         source_bytes=sample_wav_bytes,
         parent_bytes=sample_wav_bytes,
@@ -250,7 +250,7 @@ def test_build_and_sign_requires_parent_bytes(
     """Empty parent_bytes is a programmer error — caller must pass the
     original upload, not rely on auto-parent (which would point at our
     own post-watermark output)."""
-    builder = ManifestBuilderService(signer=signing_service.signer)
+    builder = ManifestBuilderService(signer=signing_service.release_signer())
     with pytest.raises(ValueError, match="parent_bytes"):
         builder.build_and_sign(
             source_bytes=sample_wav_bytes,
@@ -294,7 +294,7 @@ def test_parent_ingredient_uses_parent_bytes_not_source_bytes(
     assert mutated != sample_wav_bytes
 
     dest = tmp_path / "signed.wav"
-    builder = ManifestBuilderService(signer=signing_service.signer)
+    builder = ManifestBuilderService(signer=signing_service.release_signer())
     builder.build_and_sign(
         source_bytes=mutated,
         parent_bytes=sample_wav_bytes,
@@ -355,7 +355,7 @@ def test_pre_existing_embedded_manifest_is_chained(
        store and the active one's parentOf ingredient references the
        grandparent's active_manifest URN.
     """
-    builder = ManifestBuilderService(signer=signing_service.signer)
+    builder = ManifestBuilderService(signer=signing_service.release_signer())
     parent_dest = tmp_path / "parent.wav"
     builder.build_and_sign(
         source_bytes=sample_wav_bytes,
