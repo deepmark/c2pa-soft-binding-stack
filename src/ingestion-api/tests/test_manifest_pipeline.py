@@ -15,14 +15,9 @@ import pytest
 from ingestion_api.contracts.manifest import SoftBindingSpec
 from ingestion_api.services.manifest import ManifestBuilderService
 from ingestion_api.services.signing import SigningService
-from ingestion_api.utils.hashing import sha256_truncated_b64
+from _helpers import stub_binding_value as compute_binding_value
 
 BINDING_ALG = "me.deepmark.audio.vigil.128"
-
-
-def compute_binding_value(b: bytes) -> str:
-    """Same derivation as the vigil-128 plugin (sha256[:16] -> base64)."""
-    return sha256_truncated_b64(b, n_bits=128)
 
 
 def watermark_spec(value: str, alg: str = BINDING_ALG) -> SoftBindingSpec:

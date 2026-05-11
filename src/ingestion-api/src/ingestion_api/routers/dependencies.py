@@ -18,9 +18,7 @@ def _state(request: Request, name: str, label: str, expected: type[_T]) -> _T:
     """Pull a long-lived collaborator off ``app.state`` or 503.
 
     ``expected`` is only used for the return type hint and a runtime
-    safety check — startup misconfiguration that wires the wrong type
-    onto ``app.state`` will surface here as a 500 instead of failing in
-    a method call deep in the handler.
+    safety check.
     """
     obj = getattr(request.app.state, name, None)
     if obj is None:
@@ -51,10 +49,6 @@ def get_record_repository(request: Request) -> IngestionRecordRepository:
     """Returns the active ``IngestionRecordRepository`` (Mongo in prod,
     in-memory in tests). Typed against the Protocol so handlers can
     accept either backend without importing the concrete class.
-
-    We can't ``isinstance``-check a Protocol at runtime without
-    ``@runtime_checkable``, so the provider asserts presence only and
-    trusts startup wiring for the type contract.
     """
     obj = getattr(request.app.state, "records", None)
     if obj is None:

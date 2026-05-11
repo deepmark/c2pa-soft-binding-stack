@@ -25,14 +25,8 @@ Middleware stack (outermost first; ASGI middleware runs in reverse-add order):
 - ``ProxyHeadersMiddleware``   — honors X-Forwarded-Proto/Host so absolute URLs
                                   in IngestionResponse are correct behind a proxy.
 
-Body-size enforcement is delegated to the reverse proxy (nginx
-``client_max_body_size`` / k8s ingress ``proxy-body-size``); the
-application doesn't try to cap uploads itself. See
-``middleware/request_id.py`` for the rationale.
-
-Signing material is validated at startup (cert + key parse-loaded into a
-``Signer``); a missing or malformed cert fails the lifespan startup
-hard rather than throwing 503s on the first ingest.
+Signing material is validated at startup (cert + key parsed into a ``Signer``). 
+A missing or malformed cert fails the lifespan startup hard rather than throwing 503s on the first ingest.
 """
 from __future__ import annotations
 
@@ -59,7 +53,7 @@ from ingestion_api.repositories.ingestions import (
     MongoFailedIngestionRepository,
     MongoIngestionRecordRepository,
 )
-from ingestion_api.routers import health, ingest
+from ingestion_api.routers import health, ingestion
 from ingestion_api.services.ingestion import IngestionService
 from ingestion_api.services.manifest import ManifestBuilderService
 from ingestion_api.services.signing import SigningService
@@ -86,7 +80,7 @@ async def lifespan(app: FastAPI):
     app.state.plugin_catalog = load_plugin_catalog()
     if not app.state.plugin_catalog:
         logger.warning(
-            "Plugin catalog at %s is empty or unreadable — every /ingest "
+            "Plugin catalog at %s is empty or unreadable. Every /ingest "
             "will 400 with 'unknown alg' until the catalog is fixed and "
             "the service restarts.",
             settings.plugins_catalog_path,
@@ -107,9 +101,8 @@ async def lifespan(app: FastAPI):
 
     signing_service = SigningService()
     try:
-        # Eager parse of cert + key. Missing or malformed signing
-        # material is a fatal config error — don't start the app at all
-        # rather than 503ing on first ingest.
+        # Eager parse of cert + key. 
+        # Missing or malformed signing material is a fatal config error.
         signing_service.validate()
     except MissingSigningMaterialError:
         logger.exception("Signing material missing or unreadable; aborting startup")
@@ -122,11 +115,26 @@ async def lifespan(app: FastAPI):
     # Hand the Signer to a long-lived ManifestBuilderService. The
     # SDK's Context consumes the Signer on construction (see
     # services/manifest.py and services/signing.py for the ownership
-    # rules); after this call, signing_service.signer is invalid and
-    # the manifest builder owns the FFI handle until shutdown.
-    app.state.manifest_builder = ManifestBuilderService(
-        signer=signing_service.release_signer(),
-    )
+    # rules); after this call, ``signing_service.signer`` raises
+    # RuntimeError (ownership transferred) and the manifest builder
+    # owns the FFI handle until shutdown.
+    #
+    # release_signer() and ManifestBuilderService(signer=...) aren't
+    # atomic: if the constructor raises after release succeeded, the
+    # Signer is orphaned (signing_service no longer owns it; the
+    # half-built manifest builder doesn't either). Close it
+    # explicitly so the FFI handle isn't dependent on GC timing.
+    released_signer = signing_service.release_signer()
+    try:
+        app.state.manifest_builder = ManifestBuilderService(signer=released_signer)
+    except Exception:
+        try:
+            released_signer.close()
+        except Exception:
+            logger.exception(
+                "Failed to close orphaned Signer after ManifestBuilderService init failure",
+            )
+        raise
 
     app.state.resolution_client = ResolutionPushClient()
     app.state.ingestion_service = IngestionService(
@@ -143,21 +151,25 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("Shutting down")
-        # ManifestBuilderService owns the Signer's FFI handle (via
-        # its Context); close it before signing_service so the
-        # Context releases the consumed Signer first.
-        try:
-            app.state.manifest_builder.close()
-        except Exception:
-            logger.exception("Error closing manifest builder")
-        try:
-            app.state.signing_service.close()
-        except Exception:
-            logger.exception("Error closing signing service")
-        try:
-            app.state.resolution_client.close()
-        except Exception:
-            logger.exception("Error closing resolution client")
+        # Each app.state.* may be unset if startup crashed before
+        # wiring it. Guard with getattr so a partial-startup shutdown
+        # doesn't emit AttributeError stack traces that mask the real
+        # startup failure in the logs.
+        #
+        # Order: manifest_builder before signing_service, so the
+        # Context releases the consumed Signer's FFI handle before
+        # the (now-empty) signing service tears down. signing_service
+        # itself is a no-op in normal production lifespan
+        # (release_signer already nulled _signer); kept for tests and
+        # any future code path that bypasses release_signer.
+        for name in ("manifest_builder", "signing_service", "resolution_client"):
+            obj = getattr(app.state, name, None)
+            if obj is None:
+                continue
+            try:
+                obj.close()
+            except Exception:
+                logger.exception("Error closing %s", name)
         try:
             await MongoDB.close()
         except Exception:
@@ -183,7 +195,7 @@ app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=settings.forwarded_allo
 app.add_middleware(RequestIDMiddleware)
 
 app.include_router(health.router)
-app.include_router(ingest.router)
+app.include_router(ingestion.router)
 
 
 @app.get("/", include_in_schema=False)

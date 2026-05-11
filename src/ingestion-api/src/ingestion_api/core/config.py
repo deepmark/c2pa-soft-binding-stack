@@ -51,6 +51,18 @@ class Settings(BaseSettings):
         ...,
         description="Database name for the ingestions collection.",
     )
+    # Mongo client tunables.
+    mongo_server_selection_timeout_s: float = Field(default=5.0, gt=0)
+    mongo_connect_timeout_s: float = Field(default=5.0, gt=0)
+    mongo_socket_timeout_s: float = Field(default=30.0, gt=0)
+    mongo_heartbeat_frequency_s: float = Field(default=10.0, gt=0)
+    mongo_min_pool_size: int = Field(default=2, ge=0)
+    mongo_max_pool_size: int = Field(default=50, ge=1)
+
+    # Health probe tunables.
+    ready_mongo_timeout_s: float = Field(default=1.5, gt=0)
+    # Per-probe HTTP timeout for the deep fan-out (plugin /health calls).
+    health_deep_probe_timeout_s: float = Field(default=2.0, gt=0)
 
     # Persistent on-disk artifact store (signed asset + manifest bytes - metadata is stored in MongoDB).
     storage_root: Path = Field(
@@ -146,6 +158,23 @@ class Settings(BaseSettings):
                 "RESOLUTION_API_URL must be set when RESOLUTION_PUSH_ENABLED=true. "
                 "Set RESOLUTION_PUSH_ENABLED=false for standalone deployments "
                 "with no resolution-api downstream."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _ready_timeout_below_server_selection(self) -> Settings:
+        # /ready's mongo ping must time out before the motor client's
+        # own server-selection timeout — otherwise the kubelet waits
+        # for the client's deadline, defeating the point of the
+        # bounded readiness probe.
+        if self.ready_mongo_timeout_s >= self.mongo_server_selection_timeout_s:
+            raise ValueError(
+                "READY_MONGO_TIMEOUT_S "
+                f"({self.ready_mongo_timeout_s}) must be < "
+                "MONGO_SERVER_SELECTION_TIMEOUT_S "
+                f"({self.mongo_server_selection_timeout_s}); "
+                "otherwise /ready waits for the Mongo client's own "
+                "server-selection deadline before responding."
             )
         return self
 

@@ -7,16 +7,6 @@ soft-binding + manifest + sign pipeline, persists the record to MongoDB,
 auto-pushes to the resolution API, and returns JSON describing the
 resulting artifacts with download URLs.
 
-Pre-existing C2PA provenance: when the upload bytes carry an
-embedded JUMBF manifest, the prior chain is preserved automatically
-(the manifest builder adds the upload as a ``parentOf`` ingredient
-and the SDK extracts the embedded manifest from the stream).
-**Sidecar / remote-only provenance is not supported today** —
-upstream c2pa-python (0.32.3 / c2pa-rs 0.80.0) returns an encoding
-error whenever the ingredient declares a ``manifest_data`` reference
-(c2pa-rs PR #1091's feature). Clients with sidecar manifests must
-embed them client-side before uploading.
-
 Helpers:
 - ``GET    /ingestions``                  page through ingestions (cursor)
 - ``GET    /ingest/{ingestionId}``        ingestion record (from MongoDB)
@@ -24,11 +14,10 @@ Helpers:
 - ``GET    /ingest/{ingestionId}/manifest`` download raw signed manifest bytes
 - ``DELETE /ingest/{ingestionId}``        local takedown (artifacts + record)
 
-Edge concerns owned here (out-of-scope: auth, rate limiting, body-size
-caps — the last is the reverse proxy's job):
+Edge concerns owned here:
 - 415 for unsupported MIME, 400 for caller-shape errors.
 - 503 mapped from ``MissingSigningMaterialError`` (cert/key vanished).
-- Hybrid absolute-URL builder: ``settings.public_base_url`` wins,
+- Hybrid absolute-URL builder: ``settings.public_base_url`` wins when set,
   otherwise ``request.base_url`` rewritten by ProxyHeadersMiddleware.
 """
 from __future__ import annotations

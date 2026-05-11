@@ -26,21 +26,14 @@ Pipeline:
    ``c2pa.opened`` action referencing it via ``ingredientIds``. We do
    NOT rely on the auto-parent path (where EDIT derives the parent
    from the ``sign()`` source stream) because the source we sign over
-   is the post-watermark byte stream — the auto-parent would otherwise
+   is the post-watermark byte stream. The auto-parent would otherwise
    point the ingredient at the watermarked output, producing a
    semantically circular "we opened the file we just produced" claim
    and silently dropping any prior provenance the upload carried.
 
    If the parent bytes already carry an embedded JUMBF manifest box,
    the SDK extracts it during ingredient construction and the prior
-   provenance chain is preserved automatically — no extra work on
-   our side. **Sidecar / remote-only manifests are not supported
-   today** (c2pa-python 0.32.3 / c2pa-rs 0.80.0 raises
-   ``Encoding: unable to encode assertion data`` whenever an
-   ingredient declares a ``manifest_data`` ResourceRef per c2pa-rs
-   PR #1091); callers whose uploads' provenance lives in a
-   ``.c2pa`` sidecar must embed it back into the asset bytes
-   client-side before uploading.
+   provenance chain is preserved automatically.
 
 3. We add a ``c2pa.watermarked.bound`` action and one
    ``c2pa.soft-binding`` assertion per ``SoftBindingSpec``. Multiple
@@ -70,14 +63,11 @@ Pipeline:
 
 5. ``Reader`` (used by ``read_active_manifest_label``) is pinned to
    ``_READER_CTX``: no remote manifest fetch, no OCSP fetch, no
-   verification on read. We just signed the file ourselves and only
-   want the active_manifest URN — any network roundtrip here is wasted
-   at best, a latency hazard at worst.
-
-The watermark itself is *not* an ingredient — it's an action + an
-assertion on the new asset. That's the whole point of
-``c2pa.watermarked.bound``: the bound watermark is part of the new
-content's provenance, not a referenced input.
+   verification on read. We just signed the manifest ourselves and
+   only want the active_manifest URN. The Reader runs against the
+   in-memory ``manifest_bytes`` returned by ``Builder.sign`` (not the
+   on-disk asset) so we don't pay a disk round-trip for a single
+   string lookup.
 """
 from __future__ import annotations
 
@@ -136,23 +126,32 @@ class BuiltManifest:
     manifest_bytes: bytes
 
 
-def read_active_manifest_label(signed_path: Path) -> str | None:
-    """Extract the ``active_manifest`` URN from a freshly-signed asset.
+def read_active_manifest_label(manifest_bytes: bytes) -> str | None:
+    """Extract the ``active_manifest`` URN from raw signed-manifest bytes.
 
     Drives ``IngestionRecord.manifestId`` and the foreign-key handed to
     resolution-api. Returns None on any reader failure (logged at debug)
-    so the orchestrator can decide whether the missing label is fatal —
+    so the caller can decide whether the missing label is fatal —
     ingestion-api treats it as a hard pipeline failure today, but a
-    background reconciler that re-reads existing files would want to
-    distinguish "missing" from "raise."
+    background reconciler that re-reads existing manifests would want
+    to distinguish "missing" from "raise."
+
+    Reads from in-memory bytes rather than the on-disk signed asset so
+    we don't pay an extra disk read on the hot path. Symmetric with
+    resolution-api's ``_extract_manifest_id`` (``store.py``), which
+    runs the same parse server-side after we push the bytes —
+    keeping the two paths in lockstep.
     """
     try:
-        with Reader(str(signed_path), context=_READER_CTX) as reader:
+        with Reader(
+            "application/c2pa", io.BytesIO(manifest_bytes), context=_READER_CTX,
+        ) as reader:
             data = json.loads(reader.json())
             return data.get("active_manifest")
     except Exception:
         logger.debug(
-            "Could not read active manifest label from %s", signed_path, exc_info=True,
+            "Could not read active manifest label from %d-byte manifest",
+            len(manifest_bytes), exc_info=True,
         )
         return None
 
@@ -164,12 +163,11 @@ def soft_binding_label(index: int) -> str:
     First instance is ``c2pa.soft-binding``; subsequent instances are
     suffixed ``__1``, ``__2``, ... per C2PA assertion-labelling rules.
 
-    NB: this predicts the label the c2pa-rs Builder will assign — we
-    DON'T pass these suffixed labels in on input. The Builder
-    auto-suffixes duplicate assertion type labels itself; pre-suffixing
-    produces double-suffixes (``__1__1``) and a hashedURI mismatch.
-    Use this helper when you need to *reference* a soft-binding
-    assertion (e.g. ``relatedAssertions``).
+        NB: this predicts the label the c2pa-rs Builder will assign. 
+        We DON'T pass these suffixed labels in on input. The Builder
+        auto-suffixes duplicate assertion type labels itself. 
+        Pre-suffixing produces double-suffixes (``__1__1``) and a hashedURI mismatch.
+        Use this helper when you need to *reference* a soft-binding assertion (e.g. ``relatedAssertions``).
     """
     return SOFT_BINDING_LABEL if index == 0 else f"{SOFT_BINDING_LABEL}__{index}"
 
@@ -222,9 +220,7 @@ class ManifestBuilderService:
         #
         # The Signer is consumed by Context.__init__ (it calls
         # ``signer._mark_consumed()``) — caller MUST hand over
-        # ownership (see SigningService.release_signer). We deliberately
-        # don't keep a Python-side ref to the consumed signer; the
-        # Context owns its lifecycle now.
+        # ownership (see SigningService.release_signer). 
         self._builder_ctx = Context.from_dict({
             "builder": {
                 # EDIT intent: SDK adds the c2pa.opened action wired to
@@ -236,9 +232,7 @@ class ManifestBuilderService:
                 # the ingredient at our own output, not the upload.
                 # See: https://opensource.contentauthenticity.org/docs/c2pa-python/docs/intents
                 "intent": {"Edit": None},
-                # Audio ingest — no thumbnail to generate. Disabling
-                # also avoids the SDK trying and silently swallowing
-                # the error (default ``ignore_errors=true``).
+                # This is currently an audio-only ingest — no thumbnail to generate.
                 "thumbnail": {"enabled": False},
             },
             # Disable network-touching defaults during ingredient
@@ -331,8 +325,7 @@ class ManifestBuilderService:
                 # No explicit signer: the Context owns the consumed
                 # Signer and supplies it through the FFI handle. Per
                 # SDK rules, an explicit signer arg here would take
-                # precedence over the context signer — we deliberately
-                # don't pass one to keep the wiring single-sourced.
+                # precedence over the context signer.
                 manifest_bytes = builder.sign(mime_type, src, dst)
 
         logger.info(

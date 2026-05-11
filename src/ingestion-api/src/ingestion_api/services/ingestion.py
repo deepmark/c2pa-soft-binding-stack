@@ -41,13 +41,6 @@ Alg ordering is significant: watermark passes mutate the bytes, so any
 fingerprints listed after a watermark are computed on the watermarked
 asset (the same bytes a downstream consumer would recompute from). Put
 watermarks first.
-
-This service is intentionally thin choreography — pure plugin /
-manifest / record concerns live in their dedicated layers
-(``pipeline.orchestrator``, ``services.manifest``,
-``repositories.ingestions``, ``adapters.publisher``). The service only
-wires them in the right order and owns the success/failure record
-bookkeeping.
 """
 from __future__ import annotations
 
@@ -76,7 +69,7 @@ from ingestion_api.models.enums import FailureStage, MediaType
 from ingestion_api.models.ingestion import FailedIngestion, IngestionRecord
 from ingestion_api.models.responses import ResolutionPushOutput
 from ingestion_api.models.soft_binding import SoftBindingRecord, make_soft_binding
-from ingestion_api.pipeline.orchestrator import (
+from ingestion_api.pipeline.plugin_runner import (
     capture_plugin_versions,
     run_plugin_passes,
 )
@@ -116,12 +109,6 @@ class _PushOutcome:
 
 class IngestionService:
     """Holds the long-lived collaborators. Construct once, reuse per request.
-
-    ``plugin_catalog`` is the parsed ``plugins.yaml`` snapshot loaded at
-    startup. Threading it through DI (rather than re-reading the file
-    inside ``resolve_plugin``) keeps every ingest off the disk and makes
-    plugin-set changes a deliberate process restart instead of a silent
-    file-system race.
     """
 
     def __init__(
@@ -135,11 +122,6 @@ class IngestionService:
         failed_records: FailedIngestionRepository | None = None,
         resolution_client: ResolutionPushClient | None = None,
     ) -> None:
-        # ``signing_service`` stays for credential metadata
-        # (cert_sha1, signing_alg, ta_url) on the ``IngestionRecord``.
-        # The actual ``Signer`` was released to ``manifest_builder``
-        # at startup — see ``ManifestBuilderService`` for ownership
-        # rules.
         self._plugin_catalog = list(plugin_catalog)
         self._signing_service = signing_service
         self._manifest_builder = manifest_builder
@@ -149,8 +131,7 @@ class IngestionService:
         self._resolution_client = resolution_client or ResolutionPushClient()
 
     async def ingest(self, payload: IngestionRequest) -> IngestionOutput:
-        # 0. Pre-allocate validation: media format + alg list shape.
-        # These are caller bugs (4xx) — never persisted as pipeline failures.
+        
         guessed = guess_media_format(payload.filename, payload.content_type)
         if guessed is None:
             raise UnsupportedMediaError(
@@ -265,7 +246,7 @@ class IngestionService:
         request_id: str | None = None,
     ) -> IngestionOutput:
         """Top-level choreography. Each step is a private async method
-        named after what it does — read top-to-bottom for the pipeline."""
+        named after what it does"""
         passes = await self._run_plugins(
             entries, payload.data, media_type, mime_type, request_id=request_id,
         )
@@ -275,7 +256,7 @@ class IngestionService:
             parent_bytes=payload.data,
         )
         manifest_bytes_path = self._persist_manifest_bytes(artifacts, built)
-        manifest_id = await self._extract_manifest_id(artifacts.signed_path)
+        manifest_id = await self._extract_manifest_id(built.manifest_bytes)
         push = await self._push_to_resolution(
             built.manifest_bytes, manifest_id, passes, request_id=request_id,
         )
@@ -404,19 +385,22 @@ class IngestionService:
         self._artifacts.write_manifest_bytes(artifacts, built.manifest_bytes)
         return artifacts.manifest_bytes_path
 
-    async def _extract_manifest_id(self, signed_path: Path) -> str:
-        """Read back the active_manifest URN from the freshly-signed asset.
+    async def _extract_manifest_id(self, manifest_bytes: bytes) -> str:
+        """Read back the active_manifest URN from the freshly-signed manifest.
 
         Hard-fails if the SDK Reader can't surface a label; fabricating
         a UUID would cause a foreign-key mismatch with resolution-api,
         which derives the same id from the same bytes.
+
+        Reads from the in-memory manifest bytes (returned by
+        ``Builder.sign``) rather than the on-disk signed asset.
         """
         manifest_id = await asyncio.get_running_loop().run_in_executor(
-            None, read_active_manifest_label, signed_path,
+            None, read_active_manifest_label, manifest_bytes,
         )
         if not manifest_id:
             raise IngestionError(
-                "Could not extract active manifestId from signed asset — "
+                "Could not extract active manifestId from signed manifest — "
                 "C2PA Reader returned no active_manifest label. This "
                 "indicates a signing pipeline bug.",
                 stage=FailureStage.MANIFEST_ID_EXTRACT,
@@ -433,7 +417,7 @@ class IngestionService:
     ) -> _PushOutcome:
         """Push the manifest + each binding to resolution-api.
 
-        Never raises — the publisher returns a status, and a SKIPPED
+        Never raises. The publisher returns a status, and a SKIPPED
         status when push is disabled in config is *not* an attempt.
         """
         attempted = self._resolution_client.enabled

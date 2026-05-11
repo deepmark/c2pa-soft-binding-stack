@@ -30,14 +30,17 @@ class MongoDB:
 
     @classmethod
     async def connect(cls) -> None:
+        # motor / pymongo take milliseconds for *_MS args; settings
+        # expose seconds (consistent with every other timeout in the
+        # config), so convert at the call site.
         cls.client = AsyncIOMotorClient(
             settings.mongodb_url,
-            serverSelectionTimeoutMS=5_000,
-            connectTimeoutMS=5_000,
-            socketTimeoutMS=30_000,
-            heartbeatFrequencyMS=10_000,
-            minPoolSize=2,
-            maxPoolSize=50,
+            serverSelectionTimeoutMS=int(settings.mongo_server_selection_timeout_s * 1000),
+            connectTimeoutMS=int(settings.mongo_connect_timeout_s * 1000),
+            socketTimeoutMS=int(settings.mongo_socket_timeout_s * 1000),
+            heartbeatFrequencyMS=int(settings.mongo_heartbeat_frequency_s * 1000),
+            minPoolSize=settings.mongo_min_pool_size,
+            maxPoolSize=settings.mongo_max_pool_size,
             retryWrites=True,
             uuidRepresentation="standard",
         )

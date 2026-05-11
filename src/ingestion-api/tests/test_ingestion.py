@@ -45,13 +45,10 @@ from ingestion_api.repositories.ingestions import (
 from ingestion_api.services.ingestion import IngestionService
 from ingestion_api.services.manifest import ManifestBuilderService
 from ingestion_api.services.signing import SigningService
-from ingestion_api.utils.hashing import sha256_hex, sha256_truncated_b64
+from ingestion_api.utils.hashing import sha256_hex
+from _helpers import stub_binding_value as _binding_value
 
 BINDING_ALG = "me.deepmark.audio.vigil.128"
-
-
-def _binding_value(b: bytes) -> str:
-    return sha256_truncated_b64(b, n_bits=128)
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +163,8 @@ def stub_resolution() -> _StubResolutionClient:
 @pytest.fixture
 def patched_plugin(monkeypatch) -> PluginEntry:
     """Build a deterministic test ``PluginEntry`` and replace
-    ``PluginDispatcher`` (the symbol the pipeline orchestrator imported)
-    with the stub. The catalog itself is now threaded through DI — see
+    ``PluginDispatcher`` (the symbol the plugin runner imported) with
+    the stub. The catalog itself is now threaded through DI — see
     the ``ingestion_service`` fixture for how it's wired."""
     entry = PluginEntry(
         alg=BINDING_ALG,
@@ -176,7 +173,7 @@ def patched_plugin(monkeypatch) -> PluginEntry:
         media_types=("audio/wav",),
         url="http://stubbed:8000",
     )
-    from ingestion_api.pipeline import orchestrator as pipeline_module
+    from ingestion_api.pipeline import plugin_runner as pipeline_module
     monkeypatch.setattr(pipeline_module, "PluginDispatcher", _StubPluginDispatcher)
     return entry
 
@@ -363,7 +360,7 @@ def test_pipeline_failure_persists_failed_ingestion(
         media_types=("audio/wav",),
         url="http://stubbed:8000",
     )
-    from ingestion_api.pipeline import orchestrator as pipeline_module
+    from ingestion_api.pipeline import plugin_runner as pipeline_module
 
     class _BrokenPluginDispatcher:
         def __init__(self, e, **_kw):
@@ -472,7 +469,7 @@ def test_pipeline_rejects_plugin_that_changes_audio_format(
         def info_cached(self):
             return {"version": "resampler"}
 
-    from ingestion_api.pipeline import orchestrator as pipeline_module
+    from ingestion_api.pipeline import plugin_runner as pipeline_module
     monkeypatch.setattr(pipeline_module, "PluginDispatcher", _ResamplingPlugin)
 
     svc = IngestionService(
@@ -673,8 +670,8 @@ def test_ingest_parent_ingredient_uses_upload_not_plugin_output(
     prior provenance the user supplied.
 
     Strategy: stub a watermark plugin that mutates the bytes
-    (format-preserving so the orchestrator's format-preservation check
-    accepts the output), then snapshot the parent/source bytes the
+    (format-preserving so the plugin runner's format-preservation
+    check accepts the output), then snapshot the parent/source bytes the
     pipeline hands to the manifest builder by injecting a
     ``ManifestBuilderService`` subclass that captures call args.
     """
@@ -728,7 +725,7 @@ def test_ingest_parent_ingredient_uses_upload_not_plugin_output(
 
     capturing_builder = _CapturingBuilder(signer=signing_service.release_signer())
 
-    from ingestion_api.pipeline import orchestrator as pipeline_module
+    from ingestion_api.pipeline import plugin_runner as pipeline_module
     monkeypatch.setattr(pipeline_module, "PluginDispatcher", _MutatingPlugin)
 
     svc = IngestionService(
@@ -788,7 +785,7 @@ def test_ingest_with_watermark_plus_fingerprint(
             url="http://stubbed:8001",
         ),
     ]
-    from ingestion_api.pipeline import orchestrator as pipeline_module
+    from ingestion_api.pipeline import plugin_runner as pipeline_module
     monkeypatch.setattr(pipeline_module, "PluginDispatcher", _StubPluginDispatcher)
 
     svc = IngestionService(

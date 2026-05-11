@@ -45,11 +45,11 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["health"])
 
-# MongoDB ``ping`` is bounded by ``serverSelectionTimeoutMS=5_000`` from ``core/database.py``; 
-_READY_MONGO_TIMEOUT_S = 1.5
-# Per-probe HTTP timeout for the deep fan-out. Plugins respond to
-# ``/health`` in tens of milliseconds locally; 2s is a generous cap.
-_DEEP_HTTP_TIMEOUT_S = 2.0
+# Probe timeouts come from Settings — see core/config.py. The
+# settings model_validator enforces
+# ``ready_mongo_timeout_s < mongo_server_selection_timeout_s`` so
+# /ready can't accidentally exceed the Mongo client's own
+# server-selection deadline.
 
 
 def _build_info() -> dict[str, str | None]:
@@ -83,7 +83,9 @@ async def ready(request: Request) -> JSONResponse:
     Cheap readiness check, suitable for kubelet polling every ~10s.
 
     Checks:
-    - process state: signing service has loaded a Signer at startup
+    - process state: ``signing_service.is_loaded`` — true once startup
+      built a Signer (stays true after the Signer is handed off to
+      ``ManifestBuilderService``'s Context, which is the owner today)
     - cert + key files present on disk (existence only — no parse)
     - MongoDB ping (bounded)
     """
@@ -149,7 +151,7 @@ async def health_deep(request: Request) -> JSONResponse:
         # the full lifespan; production always has it on app.state.
         catalog = load_plugin_catalog()
 
-    async with httpx.AsyncClient(timeout=_DEEP_HTTP_TIMEOUT_S) as client:
+    async with httpx.AsyncClient(timeout=settings.health_deep_probe_timeout_s) as client:
         plugin_task = asyncio.create_task(_probe_plugins(client, catalog))
         resolution_task = asyncio.create_task(_probe_resolution(client))
         plugins_report, plugins_ok = await plugin_task
@@ -206,7 +208,7 @@ async def _check_mongo() -> dict[str, Any]:
     try:
         await asyncio.wait_for(
             MongoDB.client.admin.command("ping"),
-            timeout=_READY_MONGO_TIMEOUT_S,
+            timeout=settings.ready_mongo_timeout_s,
         )
         return {
             "ok": True,
@@ -219,7 +221,7 @@ async def _check_mongo() -> dict[str, Any]:
             "ok": False,
             "url": settings.mongodb_url,
             "database": settings.database_name,
-            "error": f"ping timed out after {_READY_MONGO_TIMEOUT_S}s",
+            "error": f"ping timed out after {settings.ready_mongo_timeout_s}s",
         }
     except Exception as exc:  # noqa: BLE001
         return {

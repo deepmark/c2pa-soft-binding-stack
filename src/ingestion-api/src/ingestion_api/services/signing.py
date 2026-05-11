@@ -1,15 +1,21 @@
 """
 C2PA signer service.
 
-Owns the long-lived ``c2pa.Signer`` instance for the app's lifetime.
-Construction is eager-validated at startup (so a missing-cert deploy
-fails fast instead of throwing 503s on first ingest).
+Builds the ``c2pa.Signer`` once at app startup (eager-validated so a
+missing-cert deploy fails fast instead of throwing 503s on first
+ingest), then transfers ownership to ``ManifestBuilderService``'s
+Context via ``release_signer()`` — the SDK's preferred pattern. 
+After release this service is a thin wrapper around ``SignerCredentials``: 
+it still surfaces the cert metadata that the ``IngestionRecord`` and 
+``/health/deep`` need (``cert_sha1``, ``signing_alg``, ``ta_url``, ``leaf_not_after``),
+but the FFI handle for the Signer lives in the manifest builder for
+the rest of the process lifetime.
 
 Implementation note: the C2PA Python SDK's ``Signer.from_info`` is broken
 for ES256 in 0.32.3 (returns ``Signature: empty string``). The official
 example (``c2pa-python/examples/sign.py``) instead drives signing via
 ``Signer.from_callback`` with the ``cryptography`` library doing the
-actual ECDSA / RSA-PSS work — that's what this module does.
+actual ECDSA / RSA-PSS work.
 
 The cert chain (PEM) is passed to the SDK as a string. The private key
 (PEM) stays in Python; ``cryptography.serialization.load_pem_private_key``
@@ -142,26 +148,26 @@ def _build_signer(creds: SignerCredentials) -> Signer:
 
 class SigningService:
     """
-    Holds a single ``Signer`` instance for the app's lifetime.
+    Builds a ``Signer`` once at startup, then hands it off.
 
-    The signer is built eagerly when ``validate()`` is called at app
-    startup (so a missing-cert deploy fails fast instead of throwing
-    503s on first ingest). ``ensure_loaded()`` remains so
-    pre-validate code paths still work in tests.
+    Lifecycle:
+    1. ``__init__`` stores credentials only (no Signer yet).
+    2. ``validate()`` (called from app startup) eagerly parses cert +
+       key and constructs the ``Signer``. Raises if either is missing
+       or malformed — fail-fast deploy gating.
+    3. ``release_signer()`` transfers ownership of the Signer to
+       ``ManifestBuilderService``'s Context (which consumes it via
+       ``_mark_consumed``). After this call this service no longer
+       owns the FFI handle; ``close()`` is a no-op for the Signer.
+    4. ``credentials`` keeps working forever. It's just the cert
+       metadata (paths, alg, ta_url, ``cert_sha1``, ``leaf_not_after``)
+       that the ``IngestionRecord`` and ``/health/deep`` need.
 
-    Ownership transfer: the C2PA SDK's ``Context(signer=...)`` consumes
-    the ``Signer`` (calls ``_mark_consumed`` on it). To support the
-    SDK's preferred "Context owns the signer" pattern,
-    ``release_signer()`` hands the Signer to a caller that will
-    consume it (typically ``ManifestBuilderService.__init__``); after
-    release, this service no longer owns the signer's lifecycle —
-    ``close()`` becomes a no-op for the signer (the consumer / its
-    Context closes the underlying handle).
+    ``ensure_loaded()`` / ``signer`` raise after ``release_signer()``
 
-    After ``release_signer()`` you can still read ``credentials``
-    (cert metadata for ``IngestionRecord`` / ``/health/deep``);
-    accessing ``signer`` raises, since lying about ownership would
-    silently double-free the FFI handle on shutdown.
+    ``is_loaded`` is sticky-true once a Signer has ever been built
+    (released or not), so the readiness probe stays green after
+    ownership transfer.
     """
 
     def __init__(self, creds: SignerCredentials | None = None) -> None:
@@ -175,7 +181,14 @@ class SigningService:
 
     @property
     def is_loaded(self) -> bool:
-        return self._signer is not None
+        """True once startup has built a Signer.
+
+        Stays True after ``release_signer()``. The readiness probe
+        wants to know that startup completed successfully (i.e. the
+        cert + key parsed and a Signer was constructed), not that
+        this service still owns the FFI handle.
+        """
+        return self._signer is not None or self._released
 
     def validate(self) -> None:
         """Verify cert+key are present and parseable, build the Signer.

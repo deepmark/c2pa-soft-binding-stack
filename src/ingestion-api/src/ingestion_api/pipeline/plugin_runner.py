@@ -8,8 +8,10 @@ are gated by a media-type-specific format-preservation check so a
 plugin that re-samples / mono-mixes / otherwise mutates the container
 is rejected before the bytes reach the manifest signer.
 
-Stateless module-level functions (no class, no DIapplication).
-This is a pipeline step, not an application service. 
+Stateless module-level functions (no class, no DI).
+This is a pipeline step, not an application service. The actual
+orchestration (plugin runner -> manifest builder -> repos -> push)
+lives in ``services.ingestion.IngestionService``.
 The IngestionService calls ``run_plugin_passes`` once per ingest and 
 ``capture_plugin_versions`` once per ingest for the persisted record.
 """
