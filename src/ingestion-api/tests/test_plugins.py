@@ -141,8 +141,8 @@ def test_plugin_client_embed_generates_value_and_sends_headers():
     # Value is generated, non-empty, and matches what the plugin echoed.
     assert result.binding_value == captured["sent_value"]
     assert result.binding_value
-    # 128 bits = 16 bytes -> urlsafe-b64 unpadded len = 22.
-    assert len(result.binding_value) == 22
+    # 128 bits = 16 bytes -> standard b64 with padding len = 24.
+    assert len(result.binding_value) == 24
     assert result.watermarked_bytes == b"watermarked-bytes"
     assert captured["url"] == "http://plugin:8000/embed"
     assert captured["body"] == b"raw-audio"
@@ -151,7 +151,7 @@ def test_plugin_client_embed_generates_value_and_sends_headers():
 
 
 def test_plugin_client_embed_handles_non_byte_aligned_bits():
-    """Width of 100 bits: high 4 bits of the first decoded byte must be zero."""
+    """Width of 100 bits: low 4 bits of the last decoded byte must be zero."""
     import base64
 
     captured: dict = {}
@@ -165,10 +165,10 @@ def test_plugin_client_embed_handles_non_byte_aligned_bits():
         plugin = PluginDispatcher(_entry(binding_bits=100), client=c)
         result = plugin.embed(media_bytes=b"a", mime_type="audio/wav")
 
-    raw = base64.urlsafe_b64decode(result.binding_value + "==")
+    raw = base64.b64decode(result.binding_value)
     assert len(raw) == 13  # ceil(100 / 8)
-    # 4 unused high bits of the first byte must be masked.
-    assert raw[0] & 0xF0 == 0
+    # 4 unused low bits of the last byte must be masked.
+    assert raw[-1] & 0x0F == 0
 
 
 def test_plugin_client_embed_values_are_unique_across_calls():
