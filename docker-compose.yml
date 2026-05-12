@@ -34,7 +34,7 @@ services:
     depends_on:
       - mongo
       - resolution-api
-      - watermark-vigil-128
+      - watermark-aware-20
     ports:
       - "${INGESTION_API_PORT:-8001}:8001"
     environment:
@@ -46,6 +46,7 @@ services:
       PLUGINS_CATALOG_PATH: /catalog/plugins.yaml
       STORAGE_ROOT: /var/lib/ingestion-api/storage
       CREDENTIALS_DIR: /credentials
+      DEFAULT_AUDIO_ALG: ${DEFAULT_AUDIO_ALG:-me.deepmark.audio.aware.20}
       SIGNING_ALG: ${SIGNING_ALG:-ES256}
       TA_URL: ${TA_URL:-}
       # Resolution-api auto-push (default ON). Set
@@ -55,18 +56,23 @@ services:
       RESOLUTION_API_URL: ${RESOLUTION_API_URL:-http://resolution-api:8000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON: ${LOG_JSON:-false}
+      PLUGIN_REQUEST_TIMEOUT_S: 300
     volumes:
       - ./plugins.yaml:/catalog/plugins.yaml:ro
       - ./credentials:/credentials:ro
       - ingestion-storage:/var/lib/ingestion-api/storage
 
-  watermark-vigil-128:
+  watermark-aware-20:
     build:
-      context: ./src/plugins/watermark/vigil-128
-    container_name: watermark-vigil-128
+      context: ./src/plugins/watermark/aware
+    container_name: watermark-aware-20
     restart: unless-stopped
     ports:
-      - "${VIGIL_128_PORT:-8101}:8000"
+      - "${AWARE_20_PORT:-8102}:9004"
+    environment:
+      APP_PORT: "9004"
+      HOST: "0.0.0.0"
+
 
 volumes:
   mongo-data:

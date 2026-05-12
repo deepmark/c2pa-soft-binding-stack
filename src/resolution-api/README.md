@@ -34,5 +34,23 @@ vars (or `.env`):
 pytest -q
 ```
 
-No Mongo required for the bundled tests (route smoke + YAML catalog
-loader).
+### Test Coverage
+
+Most tests use mocked dependencies (no real MongoDB required):
+
+- **test_routes.py** - Route registration smoke tests
+- **test_service.py** - `/services/supportedAlgorithms` endpoint
+- **test_store.py** - `POST /bindings`, `POST /manifests`, `DELETE /manifests/{id}`
+- **test_query.py** - `/matches/byBinding`, `/matches/byContent`, `/matches/byReference`
+- **test_fetch.py** - `GET /manifests/{id}`, manifest receipts
+
+### Integration Tests
+
+**test_aware_plugin.py** requires the AWARE watermark container running:
+
+```bash
+docker compose up watermark-aware-20
+python tests/test_aware_plugin.py
+```
+
+This test validates the full watermark embed/detect round-trip with a complex audio signal.

@@ -14,18 +14,18 @@
 #   url          -- HTTP URL of the plugin container, used by ingestion-api
 
 plugins:
-  - alg: me.deepmark.audio.vigil.128
+  - alg: me.deepmark.audio.aware.20
     type: watermark
-    bindingBits: 128
-    # Use canonical IANA MIMEs only — ingestion-api canonicalizes
-    # aliases (audio/wave, audio/x-wav, audio/mp3, audio/x-flac) before
-    # matching against this list, so listing them here is redundant.
+    bindingBits: 20
     mediaTypes:
       - audio/wav
+      - audio/wave
+      - audio/x-wav
       - audio/mpeg
       - audio/flac
-      - audio/mp4
-    url: http://watermark-vigil-128:8000
+      - audio/x-flac
+      - audio/ogg
+    url: http://watermark-aware-20:9004
 
   # Fingerprint plugins go here, e.g.:
   #

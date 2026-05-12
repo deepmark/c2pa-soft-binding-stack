@@ -9,7 +9,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY pyproject.toml ./
 COPY src ./src
-COPY tests ./tests
 
 RUN pip install --upgrade pip \
  && pip install .

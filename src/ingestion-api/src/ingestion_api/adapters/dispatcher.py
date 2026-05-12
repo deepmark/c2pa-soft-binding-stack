@@ -269,5 +269,5 @@ def _new_binding_value(binding_bits: int) -> str:
     raw = bytearray(secrets.token_bytes(n_bytes))
     extra = (8 * n_bytes) - binding_bits
     if extra:
-        raw[0] &= 0xFF >> extra
-    return base64.urlsafe_b64encode(bytes(raw)).rstrip(b"=").decode("ascii")
+        raw[-1] &= (0xFF << extra) & 0xFF
+    return base64.b64encode(bytes(raw)).decode("ascii")
