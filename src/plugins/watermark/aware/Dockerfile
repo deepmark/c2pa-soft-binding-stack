@@ -15,8 +15,8 @@ WORKDIR /app
 
 # CPU-only PyTorch (skips ~1.5 GB of NVIDIA libs)
 RUN pip install --timeout=300 \
-    torch==2.7.0+cpu torchaudio==2.7.0+cpu \
-    --index-url https://download.pytorch.org/whl/cpu
+    torch==2.7.0+cpu torchaudio==2.7.0 \
+    --extra-index-url https://download.pytorch.org/whl/cpu
 
 ARG AWARE_VERSION=v1.0.0
 RUN git clone https://github.com/deepmarkpy/aware.git aware \
