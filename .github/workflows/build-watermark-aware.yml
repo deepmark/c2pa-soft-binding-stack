@@ -1,0 +1,68 @@
+name: Build and Push Watermark AWARE Plugin to AWS ECR
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - "src/plugins/watermark/aware/**"
+      - ".github/workflows/build-watermark-aware.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_WATERMARK_AWARE }}
+        run: |
+          IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY
+
+          BRANCH_NAME=${GITHUB_REF_NAME}
+
+          echo "Building image for branch: $BRANCH_NAME"
+
+          if [ "$BRANCH_NAME" = "main" ]; then
+            BASE_TAG=$(echo $GITHUB_SHA | cut -c1-7)
+            echo "Base image tag (SHA): $BASE_TAG"
+
+            docker build -t $IMAGE_URI:$BASE_TAG \
+              -f src/plugins/watermark/aware/Dockerfile \
+              src/plugins/watermark/aware
+
+            docker push $IMAGE_URI:$BASE_TAG
+
+            echo "Tagging image as 'latest' for main branch"
+            docker tag $IMAGE_URI:$BASE_TAG $IMAGE_URI:latest
+            docker push $IMAGE_URI:latest
+
+          elif [ "$BRANCH_NAME" = "dev" ]; then
+            echo "Building and pushing image tagged 'dev' for dev branch"
+            docker build -t $IMAGE_URI:dev \
+              -f src/plugins/watermark/aware/Dockerfile \
+              src/plugins/watermark/aware
+            docker push $IMAGE_URI:dev
+
+          else
+            echo "Branch $BRANCH_NAME is not configured for this workflow"
+          fi
