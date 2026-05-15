@@ -9,6 +9,14 @@ on:
       - "src/plugins/watermark/aware/**"
       - ".github/workflows/build-watermark-aware.yml"
 
+  pull_request:  
+    branches:
+      - main
+      - dev
+    paths:
+      - "src/plugins/watermark/aware/**"
+      - ".github/workflows/build-watermark-aware.yml"
+
 permissions:
   id-token: write
   contents: read
@@ -22,12 +30,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials via OIDC
+        if: github.event_name == 'push'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
+        if: github.event_name == 'push'
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
@@ -36,9 +46,18 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_WATERMARK_AWARE }}
         run: |
-          IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY
-
           BRANCH_NAME=${GITHUB_REF_NAME}
+          
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "Pull Request detected - building image to validate Dockerfile"
+            docker build -t watermark-aware:pr-test \
+              -f src/plugins/watermark/aware/Dockerfile \
+              src/plugins/watermark/aware
+            echo "Build successful - Dockerfile is valid"
+            exit 0
+          fi
+          
+          IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY
 
           echo "Building image for branch: $BRANCH_NAME"
 
