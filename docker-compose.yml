@@ -21,6 +21,7 @@ services:
       MONGODB_URL: mongodb://mongo:27017
       DATABASE_NAME: c2pa_soft_bindings
       PLUGINS_CATALOG_PATH: /catalog/plugins.yaml
+      VIGIL_URL: ${VIGIL_URL}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON: ${LOG_JSON:-false}
     volumes:
@@ -54,6 +55,7 @@ services:
       # that don't talk to resolution-api.
       RESOLUTION_PUSH_ENABLED: ${RESOLUTION_PUSH_ENABLED:-true}
       RESOLUTION_API_URL: ${RESOLUTION_API_URL:-http://resolution-api:8000}
+      VIGIL_URL: ${VIGIL_URL}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON: ${LOG_JSON:-false}
       PLUGIN_REQUEST_TIMEOUT_S: 300
