@@ -12,6 +12,7 @@ algorithm identifier (``alg``) to the plugin that implements it:
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
@@ -33,7 +34,8 @@ def load_plugin_catalog(path: Path | None = None) -> list[PluginEntry]:
         logger.warning("Plugin catalog not found at %s", catalog_path)
         return []
 
-    raw = yaml.safe_load(catalog_path.read_text("utf-8")) or {}
+    raw_text = os.path.expandvars(catalog_path.read_text("utf-8"))
+    raw = yaml.safe_load(raw_text) or {}
     out: list[PluginEntry] = []
     for i, entry in enumerate(raw.get("plugins") or []):
         try:

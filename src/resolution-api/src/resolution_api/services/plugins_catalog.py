@@ -21,6 +21,7 @@ having to bounce the service when a new plugin is added to the catalog.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -70,7 +71,8 @@ def load_plugin_catalog(path: Path | None = None) -> list[PluginEntry]:
         logger.warning("Plugin catalog not found at %s", catalog_path)
         return []
 
-    raw = yaml.safe_load(catalog_path.read_text("utf-8")) or {}
+    raw_text = os.path.expandvars(catalog_path.read_text("utf-8"))
+    raw = yaml.safe_load(raw_text) or {}
     plugins = raw.get("plugins") or []
     out: list[PluginEntry] = []
     for i, entry in enumerate(plugins):
