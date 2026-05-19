@@ -27,6 +27,17 @@ plugins:
       - audio/ogg
     url: http://watermark-aware-20:9004
 
+  - alg: me.deepmark.audio.vigil.128
+    type: watermark
+    bindingBits: 106
+    mediaTypes:
+      - audio/wav
+      - audio/wave
+      - audio/x-wav
+      - audio/flac
+      - audio/x-flac
+    url: ${VIGIL_URL}
+
   # Fingerprint plugins go here, e.g.:
   #
   # - alg: org.example.audiofp.v1
