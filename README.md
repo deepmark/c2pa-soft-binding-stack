@@ -22,7 +22,7 @@ soft-binding-resolution-api/
     │   └── src/ingestion_api/          ← POST /ingest, /ready, …
     └── plugins/
         ├── watermark/
-        │   └── vigil-128/              ← me.deepmark.audio.vigil.128 (FastAPI plugin)
+        │   └── aware/                  ← me.deepmark.audio.aware.20 (FastAPI plugin, default)
         └── fingerprint/                ← drop new fingerprint plugins here
 ```
 
@@ -35,14 +35,16 @@ Four containers wired together via `docker-compose`:
   watermark plugin, builds + signs the C2PA manifest, persists artifacts,
   auto-pushes the resulting manifest store + binding to
   `resolution-api`.
-- **`watermark-vigil-128`** (port 8101) — soft-binding watermark plugin
-  for `me.deepmark.audio.vigil.128`. Current implementation is a
-  passthrough dummy: it stores `sha256(bytes) -> binding_value` in a
-  process-local map at `/embed` time and looks the value up at
-  `/detect` time. The binding value itself is minted by ingestion-api
-  and handed to the plugin via the `X-Binding-Value` request header.
-  Drop in real DSP without touching the FastAPI surface (see
-  [src/plugins/watermark/vigil-128/README.md](src/plugins/watermark/vigil-128/README.md)).
+- **`watermark-aware-20`** (host port 8102, container port 9004) —
+  soft-binding watermark plugin for `me.deepmark.audio.aware.20`. Real
+  20-bit AWARE DSP: decodes the upload, embeds the binding value the
+  ingestion-api minted (handed in via the `X-Binding-Value` request
+  header), and returns watermarked bytes. This is the default plugin
+  shipped in `docker-compose.yml`.
+
+  A second proprietary plugin (`me.deepmark.audio.vigil.128`) is
+  declared in `plugins.yaml` for internal deployments. It is not open
+  sourced and not wired into this repo's `docker-compose.yml`.
 - **`mongo`** — backing store for **both** APIs. Each owns an
   independent database on the same dev cluster (`c2pa_ingestions` for
   ingestion-api; `c2pa_soft_bindings` for resolution-api). In
@@ -59,14 +61,14 @@ Client
   │ multipart upload (audio file)
   ▼
 ingestion-api (8001)
-  │ mints a random 128-bit binding value (per-plugin bindingBits)
-  │ POST http://watermark-vigil-128:8000/embed
+  │ mints a random binding value (per-plugin bindingBits — e.g. 20 for aware-20)
+  │ POST http://watermark-aware-20:9004/embed
   │   Content-Type: application/octet-stream     (wire encoding)
   │   X-Media-Type:    audio/wav                 (semantic format)
-  │   X-Binding-Value: <base64 128-bit>          (API-minted; plugin embeds this)
+  │   X-Binding-Value: <base64 binding value>    (API-minted; plugin embeds this)
   │   <raw audio bytes>
   ▼
-watermark-vigil-128 (8000 internal)
+watermark-aware-20 (9004 internal)
   │ reads body, embeds, returns:
   │   Content-Type:    application/octet-stream
   │   X-Binding-Value: <echo of request value — verified by ingestion-api>
@@ -128,7 +130,7 @@ docker compose exec resolution-api resolution-init-db
 # Sanity checks:
 curl http://localhost:8000/health
 curl http://localhost:8001/ready | jq .
-curl http://localhost:8101/info  | jq .
+curl http://localhost:8102/info  | jq .
 curl http://localhost:8000/services/supportedAlgorithms | jq .
 ```
 
@@ -138,7 +140,7 @@ exist in `plugins.yaml` and declare the upload's MIME):
 ```bash
 curl -X POST http://localhost:8001/ingest \
   -F "file=@/path/to/audio.wav;type=audio/wav" \
-  -F "algs=me.deepmark.audio.vigil.128" \
+  -F "algs=me.deepmark.audio.aware.20" \
   -F "title=Hello world" | jq .
 ```
 
@@ -151,27 +153,31 @@ The response carries `outputAssetUrl`, `manifestUrl`, and
 Then verify the lookup side resolves the new asset:
 
 ```bash
-curl "http://localhost:8000/matches/byBinding?alg=me.deepmark.audio.vigil.128&value=<bindingValue>"
+curl "http://localhost:8000/matches/byBinding?alg=me.deepmark.audio.aware.20&value=<bindingValue>"
 ```
 
 ## Local development without docker
 
-Each service is a `pip install -e .`-able package. Run them from one
-shared venv (or one per service — your call):
+The two APIs are `pip install -e .`-able packages and run fine on bare
+metal. The aware plugin is **not** — it depends on a git-installed
+AWARE model package, CPU PyTorch from a custom index, and system
+libraries (`ffmpeg`, `libsndfile1`); see
+[src/plugins/watermark/aware/Dockerfile](src/plugins/watermark/aware/Dockerfile)
+for the full install. The path of least resistance is to keep aware in
+Docker and run only the APIs locally.
 
 ```bash
 python -m venv venv && source venv/bin/activate
 
 pip install -e "./src/resolution-api[dev]"
 pip install -e "./src/ingestion-api[dev]"
-pip install -r ./src/plugins/watermark/vigil-128/requirements.txt
 ```
 
-Then in three terminals (with mongo running locally on 27017):
+Then (with mongo running locally on 27017):
 
 ```bash
-# 1. plugin
-cd src/plugins/watermark/vigil-128 && uvicorn app:app --port 8101
+# 1. plugin (via docker — exposed on host port 8102)
+docker compose up -d watermark-aware-20
 
 # 2. resolution-api
 cd src/resolution-api && resolution-api          # PORT=8000
@@ -196,7 +202,7 @@ export DATABASE_NAME=c2pa_ingestions
 export RESOLUTION_API_URL=http://127.0.0.1:8000   # or RESOLUTION_PUSH_ENABLED=false
 
 # point ingestion-api at the local plugin instead of the docker hostname
-sed -i 's|http://watermark-vigil-128:8000|http://127.0.0.1:8101|' plugins.yaml
+sed -i 's|http://watermark-aware-20:9004|http://127.0.0.1:8102|' plugins.yaml
 ```
 
 resolution-api ships defaults for `MONGODB_URL`
@@ -207,30 +213,28 @@ ingestion-api's DB or point at a separate cluster.
 
 ## Tests
 
-Each service ships its own pytest suite. From the repo root:
+The two APIs ship pytest suites. From the repo root:
 
 ```bash
 ( cd src/resolution-api && pytest -q )
 ( cd src/ingestion-api  && pytest -q )
-( cd src/plugins/watermark/vigil-128 && PYTHONPATH=. pytest -q )
 ```
 
-- `src/resolution-api` — route smoke + algorithms catalog loader. No Mongo needed.
-- `src/ingestion-api` — end-to-end orchestrator with a stubbed plugin client
-  + stubbed resolution-api auto-push. Needs `credentials/` for real
-  C2PA signing (auto-skips otherwise). Catalog + plugin client + push
-  client are tested separately with `httpx.MockTransport`.
-- `src/plugins/watermark/vigil-128` — algorithm unit tests + FastAPI
-  TestClient over `/info`, `/health`, `/embed`, `/detect`.
+- `src/resolution-api` — route smoke, store, query, catalog loader. No
+  Mongo needed (uses in-memory repos).
+- `src/ingestion-api` — end-to-end orchestrator with a stubbed plugin
+  client + stubbed resolution-api auto-push. Needs `credentials/` for
+  real C2PA signing (auto-skips otherwise). Catalog + plugin client +
+  push client are tested separately with `httpx.MockTransport`.
 
-All suites run with no external services (Mongo / plugin containers /
-resolution-api are stubbed or use in-memory repos). Pass on a fresh
-checkout once `credentials/` is populated.
+Both suites run with no external services (Mongo, plugin containers,
+and resolution-api are stubbed or use in-memory repos). Pass on a
+fresh checkout once `credentials/` is populated.
 
 ## Adding a new plugin
 
 1. Create `src/plugins/<watermark|fingerprint>/<name>/{app.py,requirements.txt,Dockerfile}`.
-   Mirror `src/plugins/watermark/vigil-128/` for the shape — watermark
+   Mirror `src/plugins/watermark/aware/` for the shape — watermark
    plugins expose `/info`, `/embed`, `/detect`, `/health`; fingerprint
    plugins expose `/info`, `/compute`, `/health`. The binary endpoints
    (`/embed`, `/detect`, `/compute`) take raw asset bytes in the request
@@ -238,7 +242,9 @@ checkout once `credentials/` is populated.
    `X-Media-Type: <real mime>` header. `/embed` additionally requires
    `X-Binding-Value` (the API-minted value the plugin must embed) and
    echoes it on the response; `/detect` and `/compute` return JSON.
-2. Register the plugin in `plugins.yaml`.
+2. Register the plugin in `plugins.yaml`. The `url` field supports
+   `${ENV_VAR}` substitution, so internal-only plugins can be declared
+   in the catalog without hard-coding their location.
 3. Add a service block to `docker-compose.yml` with a hostname matching
    the YAML `url`.
 4. Restart with `docker compose up -d --build`.
@@ -267,6 +273,7 @@ Common knobs:
 | `STORAGE_ROOT` | ingestion-api | **required** | Where signed assets + manifest bytes land (records live in Mongo) |
 | `CREDENTIALS_DIR` | ingestion-api | **required** | Cert + key root |
 | `SIGNING_ALG` | ingestion-api | `ES256` | C2PA signing algorithm |
+| `DEFAULT_AUDIO_ALG` | ingestion-api | `me.deepmark.audio.aware.20` | Alg used when `POST /ingest` doesn't pass an explicit `algs` field |
 | `TA_URL` | ingestion-api | _(unset)_ | RFC 3161 timestamp authority |
 | `RESOLUTION_PUSH_ENABLED` | ingestion-api | `true` | Auto-push to resolution-api after sign |
 | `RESOLUTION_API_URL` | ingestion-api | _(required when push enabled)_ | Auto-push target |
@@ -291,9 +298,9 @@ Common knobs:
 - `Signer.from_info` is broken for ES256 in c2pa-python 0.32.3; we use
   `Signer.from_callback` + `cryptography` in ingestion-api. Drop the
   explicit `cryptography` dep when the upstream bug is fixed.
-- vigil-128 is a dummy embedder. Replace `_embed_bytes` and
-  `_detect_bytes` in `src/plugins/watermark/vigil-128/app.py` to wire in
-  real Vigil-128 DSP.
+- The default audio plugin is `me.deepmark.audio.aware.20`. A second
+  proprietary plugin is referenced in `plugins.yaml` for internal
+  deployments and is not part of this open-source repo.
 - Fingerprint plugins: not implemented; see
   `src/plugins/fingerprint/README.md` for the contract.
 - Ingestion-api stores binary artifacts on a Docker volume only; for

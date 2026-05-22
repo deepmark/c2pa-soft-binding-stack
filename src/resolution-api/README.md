@@ -16,6 +16,32 @@ resolution-init-db          # seed Mongo with sample manifests + indexes
 resolution-api              # uvicorn on port 8000
 ```
 
+## Docker
+
+Easiest path is the repo-root `docker-compose.yml`, which wires this
+service together with Mongo, ingestion-api, and the watermark plugin:
+
+```bash
+# from the repo root
+docker compose up -d resolution-api
+docker compose exec resolution-api resolution-init-db
+```
+
+To build and run just this service standalone:
+
+```bash
+# from src/resolution-api/
+docker build -t resolution-api .
+docker run --rm -p 8000:8000 \
+  -e MONGODB_URL=mongodb://host.docker.internal:27017 \
+  -e PLUGINS_CATALOG_PATH=/catalog/plugins.yaml \
+  -v "$PWD/../../plugins.yaml:/catalog/plugins.yaml:ro" \
+  resolution-api
+```
+
+The image is multi-stage (builder + slim runtime) and runs as a
+non-root `appuser`. See [Dockerfile](Dockerfile) for the full build.
+
 ## Config
 
 Settings live in `src/resolution_api/core/config.py`. Override via env
@@ -43,14 +69,3 @@ Most tests use mocked dependencies (no real MongoDB required):
 - **test_store.py** - `POST /bindings`, `POST /manifests`, `DELETE /manifests/{id}`
 - **test_query.py** - `/matches/byBinding`, `/matches/byContent`, `/matches/byReference`
 - **test_fetch.py** - `GET /manifests/{id}`, manifest receipts
-
-### Integration Tests
-
-**test_aware_plugin.py** requires the AWARE watermark container running:
-
-```bash
-docker compose up watermark-aware-20
-python tests/test_aware_plugin.py
-```
-
-This test validates the full watermark embed/detect round-trip with a complex audio signal.
