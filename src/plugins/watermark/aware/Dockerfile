@@ -19,7 +19,7 @@ RUN pip install --timeout=300 \
     --extra-index-url https://download.pytorch.org/whl/cpu
 
 ARG AWARE_VERSION=v1.0.0
-RUN git clone https://github.com/deepmarkpy/aware.git aware \
+RUN git clone https://github.com/deepmark/aware.git aware \
  && cd aware && git checkout ${AWARE_VERSION} \
  && pip install --timeout=300 --no-deps -e . \
  && pip install --timeout=300 \
