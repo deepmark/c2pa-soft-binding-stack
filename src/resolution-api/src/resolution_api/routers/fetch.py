@@ -59,10 +59,13 @@ async def get_manifest_by_id(
                 detail="C2PA Manifest Id not found",
             )
 
-        # Return the appropriate manifest data (active vs full store, per query flag)
-        file_id = manifest_doc.get(
-            "activeManifestFileId" if returnActiveManifest else "manifestStoreFileId"
-        )
+        if returnActiveManifest:
+            raise HTTPException(
+                status_code=501,
+                detail="Returning only the active manifest is not yet implemented",
+            )
+
+        file_id = manifest_doc.get("manifestStoreFileId")
         if file_id is None:
             raise HTTPException(
                 status_code=404,
