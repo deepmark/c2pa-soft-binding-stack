@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "C2PA Soft Binding Resolution API (Decoupled spec v2.4) over FastAPI + MongoDB."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "TBD" }
+license = { text = "MIT" }
 authors = [{ name = "Kosta" }]
 keywords = ["c2pa", "soft-binding", "resolution", "fastapi", "mongodb"]
 classifiers = [

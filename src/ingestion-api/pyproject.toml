@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Audio ingest pipeline: watermark + C2PA sign + persist + push to resolution-api."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "TBD" }
+license = { text = "MIT" }
 authors = [{ name = "Kosta" }]
 keywords = ["c2pa", "watermark", "ingest", "fastapi"]
 classifiers = [
