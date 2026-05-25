@@ -27,7 +27,7 @@ from resolution_api.services.plugins_catalog import (
     PluginEntry,
     PluginNotFoundError,
     PluginUnavailableError,
-    load_plugin_catalog,
+    load_all_plugins,
     resolve,
 )
 
@@ -70,9 +70,9 @@ def _make_pinned_transport(resolved_ip: str) -> httpx.AsyncHTTPTransport:
     return transport
 
 
-def _resolve_or_400(alg: str) -> PluginEntry:
+async def _resolve_or_400(alg: str) -> PluginEntry:
     try:
-        return resolve(alg)
+        return await resolve(alg)
     except PluginNotFoundError:
         raise HTTPException(
             status_code=400,
@@ -166,9 +166,9 @@ async def _detect_from_bytes(
     all_matches: list[ManifestMatch] = []
 
     if alg:
-        entries_to_try = [_resolve_or_400(alg)]
+        entries_to_try = [await _resolve_or_400(alg)]
     else:
-        catalog = load_plugin_catalog()
+        catalog = await load_all_plugins()
         entries_to_try = [
             e for e in catalog
             if e.type == "watermark" and e.url
