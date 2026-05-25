@@ -63,6 +63,11 @@ class MongoDB:
             name="binding_unique",
             unique=True,
         )
+        await cls.db.supported_algorithms.create_index(
+            [("alg", ASCENDING)],
+            name="alg_unique",
+            unique=True,
+        )
 
 
 def get_manifests_collection() -> AsyncIOMotorCollection:
@@ -73,6 +78,11 @@ def get_manifests_collection() -> AsyncIOMotorCollection:
 def get_soft_bindings_collection() -> AsyncIOMotorCollection:
     assert MongoDB.db is not None, "MongoDB not connected"
     return MongoDB.db["soft_bindings"]
+
+
+def get_supported_algorithms_collection() -> AsyncIOMotorCollection:
+    assert MongoDB.db is not None, "MongoDB not connected"
+    return MongoDB.db["supported_algorithms"]
 
 
 def get_manifest_blobs_bucket() -> AsyncIOMotorGridFSBucket:
