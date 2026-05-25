@@ -397,11 +397,17 @@ async def query_by_content(
                 detail=f"Invalid asset type: {file.content_type} is not supported",
             )
 
+        MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
         content = await file.read()
         if not content:
             raise HTTPException(
                 status_code=400,
                 detail="Invalid request body: uploaded file is empty",
+            )
+        if len(content) > MAX_UPLOAD_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid request body: file exceeds maximum allowed size of {MAX_UPLOAD_SIZE} bytes",
             )
 
         return await _detect_from_bytes(content, alg=alg, maxResults=maxResults)
