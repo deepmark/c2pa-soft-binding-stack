@@ -69,14 +69,17 @@ class BindingsRequest(BaseModel):
     """
     alg: str = Field(
         ...,
+        max_length=256,
         description="Soft binding algorithm identifier (extension over spec)",
     )
     bindingValue: str = Field(
         ...,
+        max_length=10000,
         description="A soft binding value to be associated with a C2PA Manifest Store",
     )
     manifestId: str = Field(
         ...,
+        max_length=512,
         description="Identifier of the active C2PA Manifest of a C2PA Manifest Store",
     )
 
