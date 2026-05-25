@@ -5,7 +5,12 @@ Searches for matching manifests using a soft binding. The soft binding value
 is either provided by the caller, or is computed from an asset.
 """
 import base64
+import ipaddress
+import socket
+import typing
+from urllib.parse import urlparse
 
+import httpcore
 import httpx
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 
@@ -31,6 +36,40 @@ logger = get_logger(__name__)
 router = APIRouter(tags=["query"])
 
 
+class _PinnedBackend(httpcore.AsyncNetworkBackend):
+    """Network backend that forces TCP connections to a pre-resolved IP."""
+
+    def __init__(self, resolved_ip: str) -> None:
+        self._resolved_ip = resolved_ip
+        self._backend = httpcore._backends.auto.AutoBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: typing.Iterable[typing.Any] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        return await self._backend.connect_tcp(
+            self._resolved_ip,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+
+def _make_pinned_transport(resolved_ip: str) -> httpx.AsyncHTTPTransport:
+    """Create an httpx transport that pins all connections to resolved_ip."""
+    transport = httpx.AsyncHTTPTransport(verify=True)
+    transport._pool = httpcore.AsyncConnectionPool(
+        ssl_context=transport._pool._ssl_context,
+        network_backend=_PinnedBackend(resolved_ip),
+    )
+    return transport
+
+
 def _resolve_or_400(alg: str) -> PluginEntry:
     try:
         return resolve(alg)
@@ -39,6 +78,81 @@ def _resolve_or_400(alg: str) -> PluginEntry:
             status_code=400,
             detail=f"Unsupported algorithm: '{alg}' is not registered",
         )
+
+
+_BLOCKED_METADATA_HOSTS = frozenset(
+    {
+        "metadata.google.internal",
+        "metadata.goog",
+        "169.254.169.254",
+    }
+)
+
+
+def _is_blocked_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True if the resolved address must not be reached."""
+    if addr.is_private:
+        return True
+    if addr.is_loopback:
+        return True
+    if addr.is_link_local:
+        return True
+    if addr.is_multicast:
+        return True
+    if addr.is_reserved:
+        return True
+    if addr.is_unspecified:
+        return True
+    # CGN (Carrier-Grade NAT) range not covered by is_private in older Python
+    if isinstance(addr, ipaddress.IPv4Address):
+        if addr in ipaddress.IPv4Network("100.64.0.0/10"):
+            return True
+    return False
+
+
+async def _validate_and_resolve_url(url_str: str) -> tuple[str, int, str]:
+    """Resolve hostname, validate all resulting IPs, return (ip, port, hostname).
+
+    Raises HTTPException(400) if the URL targets a blocked address.
+    """
+    parsed = urlparse(url_str)
+    hostname = parsed.hostname
+    port = parsed.port or 443
+
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Invalid referenceUrl: no hostname")
+
+    if hostname.lower() in _BLOCKED_METADATA_HOSTS:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid request body: referenceUrl points to a blocked host",
+        )
+
+    try:
+        addrinfos = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid request body: referenceUrl hostname could not be resolved",
+        )
+
+    if not addrinfos:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid request body: referenceUrl hostname could not be resolved",
+        )
+
+    for family, _, _, _, sockaddr in addrinfos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if _is_blocked_ip(ip):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid request body: referenceUrl points to a blocked host",
+            )
+
+    # Return first resolved IP to pin the connection
+    resolved_ip = addrinfos[0][4][0]
+    return resolved_ip, port, hostname
 
 
 async def _detect_from_bytes(
@@ -176,7 +290,8 @@ async def query_by_binding(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Service failure: {str(e)}")
+        logger.exception("Unexpected error")
+        raise HTTPException(status_code=500, detail="Service failure")
 
 
 @router.post(
@@ -241,7 +356,8 @@ async def query_by_large_binding(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Service failure: {str(e)}")
+        logger.exception("Unexpected error")
+        raise HTTPException(status_code=500, detail="Service failure")
 
 
 @router.post(
@@ -293,7 +409,8 @@ async def query_by_content(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Service failure: {str(e)}")
+        logger.exception("Unexpected error")
+        raise HTTPException(status_code=500, detail="Service failure")
 
 
 @router.post(
@@ -347,21 +464,26 @@ async def query_by_reference(
                 detail=f"Invalid request body: assetLength exceeds maximum allowed size of {MAX_DOWNLOAD_SIZE} bytes",
             )
 
-        # SSRF Prevention: block obvious local hosts.
-        # In production, implement more comprehensive SSRF protection
-        # (e.g., an allowlist of domains, blocking cloud metadata endpoints).
-        blocked_hosts = ["localhost", "127.0.0.1", "0.0.0.0", "::1"]
+        # SSRF prevention: resolve hostname, reject internal/metadata IPs,
+        # pin connection to the resolved IP, disable redirects.
         url_str = str(query.referenceUrl)
-        if any(host in url_str.lower() for host in blocked_hosts):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid request body: referenceUrl points to a blocked host",
-            )
+        resolved_ip, port, hostname = await _validate_and_resolve_url(url_str)
 
-        # Download the asset with size limit
+        # Download the asset with size limit.
+        # Connection is pinned to the pre-validated resolved IP to prevent
+        # DNS rebinding between our check and the actual TCP connect.
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                async with client.stream("GET", str(query.referenceUrl)) as response:
+            async with httpx.AsyncClient(
+                timeout=30.0,
+                follow_redirects=False,
+                transport=_make_pinned_transport(resolved_ip),
+            ) as client:
+                async with client.stream("GET", url_str) as response:
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Invalid request body: referenceUrl returned a redirect",
+                        )
                     response.raise_for_status()
 
                     # Validate content type if specified
@@ -398,4 +520,5 @@ async def query_by_reference(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Service failure: {str(e)}")
+        logger.exception("Unexpected error")
+        raise HTTPException(status_code=500, detail="Service failure")
