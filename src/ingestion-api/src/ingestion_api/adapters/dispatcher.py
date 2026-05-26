@@ -89,7 +89,7 @@ class PluginDispatcher:
     ) -> None:
         if not entry.url:
             raise PluginUnavailableError(
-                f"alg={entry.alg!r} has no URL configured in plugins.yaml"
+                f"alg={entry.alg!r} has no URL configured in supported_algorithms"
             )
         self._entry = entry
         self._timeout = timeout_s if timeout_s is not None else settings.plugin_request_timeout_s

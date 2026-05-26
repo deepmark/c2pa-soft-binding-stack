@@ -2,8 +2,6 @@
 FastAPI application entry point for ingestion-api.
 
 App startup wires the long-lived collaborators onto ``app.state``:
-- ``app.state.plugin_catalog``     — parsed plugins.yaml (loaded once;
-                                     re-read requires process restart)
 - ``app.state.signing_service``    — keeps cert metadata (signing_alg,
                                      ta_url, cert_sha1) for the
                                      IngestionRecord; the underlying
@@ -38,7 +36,7 @@ from fastapi import FastAPI
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from ingestion_api.adapters.publisher import ResolutionPushClient
-from ingestion_api.core.plugin import load_plugin_catalog
+from ingestion_api.core.plugin import load_plugin_catalog_from_db  # used in startup check
 from ingestion_api.core.config import settings
 from ingestion_api.repositories.database import (
     MongoDB,
@@ -77,20 +75,19 @@ async def lifespan(app: FastAPI):
             "ingested records will not be queryable via /matches/byBinding."
         )
 
-    app.state.plugin_catalog = load_plugin_catalog()
-    if not app.state.plugin_catalog:
+    plugin_catalog = await load_plugin_catalog_from_db()
+    if not plugin_catalog:
         logger.warning(
-            "Plugin catalog at %s is empty or unreadable. Every /ingest "
-            "will 400 with 'unknown alg' until the catalog is fixed and "
-            "the service restarts.",
-            settings.plugins_catalog_path,
+            "No algorithms found in %s.supported_algorithms at startup. "
+            "Algorithms will be resolved from MongoDB on each request.",
+            settings.algorithms_database_name,
         )
     else:
         logger.info(
-            "Loaded %d plugin entries from %s: %s",
-            len(app.state.plugin_catalog),
-            settings.plugins_catalog_path,
-            [e.alg for e in app.state.plugin_catalog],
+            "Found %d plugin entries in %s.supported_algorithms: %s",
+            len(plugin_catalog),
+            settings.algorithms_database_name,
+            [e.alg for e in plugin_catalog],
         )
 
     app.state.artifacts = ArtifactStore()
@@ -138,7 +135,6 @@ async def lifespan(app: FastAPI):
 
     app.state.resolution_client = ResolutionPushClient()
     app.state.ingestion_service = IngestionService(
-        plugin_catalog=app.state.plugin_catalog,
         signing_service=app.state.signing_service,
         manifest_builder=app.state.manifest_builder,
         artifacts=app.state.artifacts,

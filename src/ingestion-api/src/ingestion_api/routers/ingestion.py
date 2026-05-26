@@ -160,9 +160,10 @@ async def ingest_media(
         ...,
         description=(
             "Ordered list of soft-binding algorithm IDs to apply. Each must "
-            "exist in plugins.yaml and declare the upload's MIME in its "
-            "`mediaTypes`. Order matters: watermark passes mutate bytes for subsequent passes. "
-            "We advise putting watermarks first. Pass repeated form fields: `algs=a&algs=b`. "
+            "exist in the supported_algorithms catalog and declare the upload's "
+            "MIME in its `mediaTypes`. Order matters: watermark passes mutate "
+            "bytes for subsequent passes. We advise putting watermarks first. "
+            "Pass repeated form fields: `algs=a&algs=b`. "
             f"Capped at {settings.max_algs_per_ingest} entries per request."
         ),
     ),

@@ -24,7 +24,6 @@ dependencies = [
     "pydantic-settings==2.6.0",
     "python-multipart==0.0.12",
     "httpx==0.27.0",
-    "pyyaml>=6",
     "c2pa-python==0.32.3",
     # Signer.from_info is broken for ES256 in c2pa-python 0.32.3 — we drive
     # signing through Signer.from_callback using cryptography directly.

@@ -12,8 +12,8 @@ class IngestionRequest:
     """Inputs to a single ingest call.
 
     ``algs`` is the caller-supplied, ordered list of algorithm IDs to
-    apply. Each must exist in ``plugins.yaml`` and declare the
-    upload's MIME in its ``mediaTypes``. 
+    apply. Each must exist in the supported_algorithms catalog and
+    declare the upload's MIME in its ``mediaTypes``. 
     Order matters — watermark plugins mutate bytes for subsequent passes 
     (put watermarks first).
     """

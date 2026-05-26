@@ -41,7 +41,7 @@ services:
       # from resolution-api's; here we share a container in dev.
       MONGODB_URL: mongodb://mongo:27017
       DATABASE_NAME: c2pa_ingestions
-      PLUGINS_CATALOG_PATH: /catalog/plugins.yaml
+      ALGORITHMS_DATABASE_NAME: c2pa_soft_bindings
       STORAGE_ROOT: /var/lib/ingestion-api/storage
       CREDENTIALS_DIR: /credentials
       SIGNING_ALG: ${SIGNING_ALG:-ES256}
@@ -55,7 +55,6 @@ services:
       LOG_JSON: ${LOG_JSON:-false}
       PLUGIN_REQUEST_TIMEOUT_S: 300
     volumes:
-      - ./plugins.yaml:/catalog/plugins.yaml:ro
       - ./credentials:/credentials:ro
       - ingestion-storage:/var/lib/ingestion-api/storage
 
