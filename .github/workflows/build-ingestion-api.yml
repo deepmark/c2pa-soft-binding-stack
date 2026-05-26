@@ -6,15 +6,15 @@ on:
       - main
       - dev
     paths:
-      - "src/ingestion-api/**"
+      - "apps/ingestion-api/**"
       - ".github/workflows/build-ingestion-api.yml"
-  
-  pull_request:  
+
+  pull_request:
     branches:
       - main
       - dev
     paths:
-      - "src/ingestion-api/**"
+      - "apps/ingestion-api/**"
       - ".github/workflows/build-ingestion-api.yml"
 
 permissions:
@@ -24,64 +24,64 @@ permissions:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Configure AWS credentials via OIDC
         if: github.event_name == 'push'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
-      
+
       - name: Login to Amazon ECR
         if: github.event_name == 'push'
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-      
+
       - name: Build, tag, and push Docker image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_INGESTION_API }}
         run: |
           BRANCH_NAME=${GITHUB_REF_NAME}
-          
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "Pull Request detected - building image to validate Dockerfile"
             docker build -t ingestion-api:pr-test \
-              -f src/ingestion-api/Dockerfile \
-              src/ingestion-api
+              -f apps/ingestion-api/Dockerfile \
+              apps/ingestion-api
             echo "Build successful - Dockerfile is valid"
             exit 0
           fi
-          
+
           IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY
-         
+
           echo "Building image for branch: $BRANCH_NAME"
-          
+
           if [ "$BRANCH_NAME" = "main" ]; then
             BASE_TAG=$(echo $GITHUB_SHA | cut -c1-7)
             echo "Base image tag (SHA): $BASE_TAG"
-            
+
             docker build -t $IMAGE_URI:$BASE_TAG \
-              -f src/ingestion-api/Dockerfile \
-              src/ingestion-api
-            
+              -f apps/ingestion-api/Dockerfile \
+              apps/ingestion-api
+
               docker push $IMAGE_URI:$BASE_TAG
-            
+
             echo "Tagging image as 'latest' for main branch"
             docker tag $IMAGE_URI:$BASE_TAG $IMAGE_URI:latest
             docker push $IMAGE_URI:latest
-            
+
           elif [ "$BRANCH_NAME" = "dev" ]; then
             echo "Building and pushing image tagged 'dev' for dev branch"
             docker build -t $IMAGE_URI:dev \
-              -f src/ingestion-api/Dockerfile \
-              src/ingestion-api
+              -f apps/ingestion-api/Dockerfile \
+              apps/ingestion-api
             docker push $IMAGE_URI:dev
-            
+
           else
             echo "Branch $BRANCH_NAME is not configured for this workflow"
           fi

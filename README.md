@@ -1,305 +1,224 @@
 # C2PA Soft-Binding Stack
 
-Multi-service repo implementing the [C2PA Soft Binding Resolution API
-v2.4](https://spec.c2pa.org/specifications/specifications/2.4/softbinding/Decoupled.html)
-plus an audio ingest pipeline that produces signed manifests with
-soft-binding watermarks. Inspired by the
-[deepmarkpy-benchmark](https://github.com/deepmark/deepmarkpy-benchmark)
-plugin-per-container architecture.
+Multi-service implementation of the [C2PA Soft Binding Resolution API spec (v2.4)](https://spec.c2pa.org/specifications/specifications/2.4/softbinding/Decoupled.html) with an audio ingestion pipeline that watermarks media, builds signed C2PA manifests, and publishes them to a resolution service for later lookup.
 
-## Services
+## Architecture
 
 ```
 soft-binding-resolution-api/
-├── plugins.yaml                        ← shared catalog (mounted into both APIs)
 ├── docker-compose.yml
-├── .env.example
-├── credentials/                        ← cert + key, mounted only into ingestion-api
-└── src/
-    ├── resolution-api/                 ← lookup half of the spec
-    │   └── src/resolution_api/         ← /matches, /manifests, /bindings, /services
-    ├── ingestion-api/                  ← orchestrator: upload → embed → sign → store → push
-    │   └── src/ingestion_api/          ← POST /ingest, /ready, …
+├── mongo-init/                         <- seeds supported_algorithms on first boot
+├── credentials/                        <- cert + key for C2PA signing (not committed)
+└── apps/
+    ├── resolution-api/                 <- lookup + store: /matches, /manifests, /bindings
+    ├── ingestion-api/                  <- orchestrator: upload -> embed -> sign -> store -> push
     └── plugins/
-        ├── watermark/
-        │   └── vigil-128/              ← me.deepmark.audio.vigil.128 (FastAPI plugin)
-        └── fingerprint/                ← drop new fingerprint plugins here
+        └── watermark/
+            └── aware/                  <- me.deepmark.audio.aware.20 (AWARE watermark)
 ```
 
-Four containers wired together via `docker-compose`:
+Four containers via `docker compose`:
 
-- **`resolution-api`** (port 8000) — read/write of the C2PA Manifest
-  Store and the soft-binding lookup table. Reads supported algorithms
-  from `plugins.yaml`.
-- **`ingestion-api`** (port 8001) — accepts audio uploads, calls the
-  watermark plugin, builds + signs the C2PA manifest, persists artifacts,
-  auto-pushes the resulting manifest store + binding to
-  `resolution-api`.
-- **`watermark-vigil-128`** (port 8101) — soft-binding watermark plugin
-  for `me.deepmark.audio.vigil.128`. Current implementation is a
-  passthrough dummy: it stores `sha256(bytes) -> binding_value` in a
-  process-local map at `/embed` time and looks the value up at
-  `/detect` time. The binding value itself is minted by ingestion-api
-  and handed to the plugin via the `X-Binding-Value` request header.
-  Drop in real DSP without touching the FastAPI surface (see
-  [src/plugins/watermark/vigil-128/README.md](src/plugins/watermark/vigil-128/README.md)).
-- **`mongo`** — backing store for **both** APIs. Each owns an
-  independent database on the same dev cluster (`c2pa_ingestions` for
-  ingestion-api; `c2pa_soft_bindings` for resolution-api). In
-  production they can point at completely separate clusters via
-  `MONGODB_URL`. Ingestion-api additionally writes signed assets and
-  raw manifest bytes to a filesystem volume (`STORAGE_ROOT`) — the
-  binary artifacts don't fit cleanly into Mongo and live separately
-  from the indexed `IngestionRecord`s.
+| Service | Port | Role |
+|---------|------|------|
+| `resolution-api` | 8000 | C2PA manifest store + soft-binding lookup. Reads algorithm catalog from MongoDB. |
+| `ingestion-api` | 8001 | Accepts media uploads, calls watermark plugins, signs manifests, pushes to resolution-api. |
+| `watermark-aware-20` | 8102 | Audio watermark plugin (AWARE). Embeds/detects binding values in audio. |
+| `mongo` | 27017 | Shared MongoDB instance. Each API uses its own database. |
 
-### Data flow (`POST /ingest`)
+### Data flow
 
 ```
 Client
-  │ multipart upload (audio file)
-  ▼
-ingestion-api (8001)
-  │ mints a random 128-bit binding value (per-plugin bindingBits)
-  │ POST http://watermark-vigil-128:8000/embed
-  │   Content-Type: application/octet-stream     (wire encoding)
-  │   X-Media-Type:    audio/wav                 (semantic format)
-  │   X-Binding-Value: <base64 128-bit>          (API-minted; plugin embeds this)
-  │   <raw audio bytes>
-  ▼
-watermark-vigil-128 (8000 internal)
-  │ reads body, embeds, returns:
-  │   Content-Type:    application/octet-stream
-  │   X-Binding-Value: <echo of request value — verified by ingestion-api>
-  │   <watermarked audio bytes>
-  ▼
+  | POST /ingest (multipart: file + algs)
+  v
 ingestion-api
-  │ builds C2PA manifest (EDIT intent: c2pa.opened auto-injected against
-  │   an explicit parent ingredient built from the ORIGINAL upload bytes;
-  │   we add c2pa.watermarked.bound + one c2pa.soft-binding assertion per
-  │   alg)
-  │ signs with cert/key from /credentials
-  │ writes /var/lib/ingestion-api/storage/ingestions/<id>/{signed.wav,
-  │   manifest.c2pa}  (binaries on disk; the IngestionRecord lands in
-  │   the c2pa_ingestions Mongo DB)
-  │
-  │ POST http://resolution-api:8000/manifests   (raw c2pa bytes)
-  │ POST http://resolution-api:8000/bindings    ({alg, value, manifestId})
-  ▼
-resolution-api (8000)
-  │ persists into Mongo. /matches/byBinding now resolves the new asset.
-
-Response back to client (IngestionResponse):
-  { ingestionId, manifestId,
-    softBindings: [ { alg, kind, bindingValue }, ... ],
-    mimeType, mediaType, assetSha256,
-    outputAssetUrl, manifestUrl,
-    signingAlg, taUrl, signedAt, createdAt,
-    resolutionPush: { status, error? } }
+  | 1. Mints random binding value (sized to plugin's bindingBits)
+  | 2. POST http://watermark-aware-20:9004/embed
+  |      X-Binding-Value: <base64>
+  |      body: raw audio bytes
+  | 3. Receives watermarked bytes (plugin echoes binding value)
+  | 4. Builds C2PA manifest with soft-binding assertion
+  | 5. Signs manifest with configured cert/key
+  | 6. Stores signed asset + manifest to disk
+  | 7. POST http://resolution-api:8000/manifests  (manifest bytes)
+  |    POST http://resolution-api:8000/bindings   (alg + value + manifestId)
+  v
+resolution-api
+  | Persists to MongoDB. GET /matches/byBinding now resolves the asset.
 ```
 
-Fingerprint plugins (`type: fingerprint`) follow the same wire shape but
-hit `POST /compute` instead of `/embed`. They do not mutate bytes (so
-later passes still see the previous output), and they return the binding
-value as JSON `{bindingValue}` rather than echoing a header — the plugin
-computes it from the bytes rather than embedding a value the API minted.
-
-Bytes flow ingestion-api ⇄ plugins purely over HTTP, so plugin
-containers don't need to share a filesystem with ingestion-api and can
-run on a different host or behind a load balancer.
-
-## Quick start with `docker compose`
+## Quick start
 
 ```bash
-cp .env.example .env
-
-# Drop ES256 test certs in (cert chain + private key for local dev)
+# 1. Get signing credentials (test certs for local dev)
 mkdir -p credentials
 curl -fsSLo credentials/es256_certs.pem \
-  https://raw.githubusercontent.com/contentauth/c2pa-rs/main/sdk/tests/fixtures/certs/es256.pub
+  https://raw.githubusercontent.com/contentauth/c2pa-python/main/tests/fixtures/es256_certs.pem
 curl -fsSLo credentials/es256_private.key \
-  https://raw.githubusercontent.com/contentauth/c2pa-rs/main/sdk/tests/fixtures/certs/es256.pem
+  https://raw.githubusercontent.com/contentauth/c2pa-python/main/tests/fixtures/es256_private.key
 
-docker compose build
-docker compose up -d
+# 2. Start everything
+docker compose up -d --build
 
-# Seed resolution-api Mongo with the sample manifests + indexes.
-docker compose exec resolution-api resolution-init-db
-
-# Sanity checks:
+# 3. Verify
 curl http://localhost:8000/health
-curl http://localhost:8001/ready | jq .
-curl http://localhost:8101/info  | jq .
-curl http://localhost:8000/services/supportedAlgorithms | jq .
+curl http://localhost:8001/health/deep
+curl http://localhost:8000/services/supportedAlgorithms
 ```
 
-Ingest a media asset end-to-end (caller picks the algs, which must
-exist in `plugins.yaml` and declare the upload's MIME):
+### Ingest audio
 
 ```bash
 curl -X POST http://localhost:8001/ingest \
-  -F "file=@/path/to/audio.wav;type=audio/wav" \
-  -F "algs=me.deepmark.audio.vigil.128" \
-  -F "title=Hello world" | jq .
+  -F "file=@audio.wav;type=audio/wav" \
+  -F "algs=me.deepmark.audio.aware.20"
 ```
 
-Pass multiple algs by repeating the form field
-(`-F 'algs=foo' -F 'algs=bar'`); order matters (watermark passes
-mutate bytes for subsequent passes — put watermarks first).
+Response includes `ingestionId`, `manifestId`, `softBindings`, `outputAssetUrl`, and `resolutionPush.status`.
 
-The response carries `outputAssetUrl`, `manifestUrl`, and
-`resolutionPush.status` so you can confirm the auto-push succeeded.
-Then verify the lookup side resolves the new asset:
+### Look up by binding
 
 ```bash
-curl "http://localhost:8000/matches/byBinding?alg=me.deepmark.audio.vigil.128&value=<bindingValue>"
+curl "http://localhost:8000/matches/byBinding?alg=me.deepmark.audio.aware.20&value=<bindingValue>"
 ```
 
-## Local development without docker
-
-Each service is a `pip install -e .`-able package. Run them from one
-shared venv (or one per service — your call):
+### Detect from audio
 
 ```bash
-python -m venv venv && source venv/bin/activate
-
-pip install -e "./src/resolution-api[dev]"
-pip install -e "./src/ingestion-api[dev]"
-pip install -r ./src/plugins/watermark/vigil-128/requirements.txt
+curl -X POST http://localhost:8000/matches/byContent \
+  -F "file=@watermarked.wav;type=audio/wav"
 ```
 
-Then in three terminals (with mongo running locally on 27017):
+## API endpoints
 
-```bash
-# 1. plugin
-cd src/plugins/watermark/vigil-128 && uvicorn app:app --port 8101
+### Resolution API (port 8000)
 
-# 2. resolution-api
-cd src/resolution-api && resolution-api          # PORT=8000
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/matches/byBinding` | Look up manifests by soft binding value |
+| POST | `/matches/byBinding` | Same, for large binding values |
+| POST | `/matches/byContent` | Upload file, detect watermark, look up manifests |
+| POST | `/matches/byReference` | Fetch file by URL, detect watermark, look up manifests |
+| GET | `/manifests/{id}` | Download C2PA manifest store |
+| POST | `/manifests` | Store a manifest (used by ingestion-api push) |
+| POST | `/bindings` | Associate a binding with a manifest |
+| PUT | `/bindings` | Update a binding association |
+| DELETE | `/bindings` | Remove a binding association |
+| GET | `/services/supportedAlgorithms` | List registered algorithms |
+| GET | `/health` | Liveness probe |
+| GET | `/ready` | Readiness probe (checks MongoDB) |
 
-# 3. ingestion-api
-cd src/ingestion-api && ingestion-api            # PORT=8001
+Swagger UI: `http://localhost:8000/docs`
+
+### Ingestion API (port 8001)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/ingest` | Ingest media: watermark + sign + store + push |
+| GET | `/ingestions` | List ingestions (cursor pagination, filterable by lifecycle and push status) |
+| GET | `/ingest/{id}` | Get ingestion record |
+| GET | `/ingest/{id}/asset` | Download signed asset |
+| GET | `/ingest/{id}/manifest` | Download raw manifest bytes |
+| DELETE | `/ingest/{id}` | Delete ingestion (local only) |
+| GET | `/health` | Liveness probe |
+| GET | `/ready` | Readiness probe |
+| GET | `/health/deep` | Full diagnostics (plugins + resolution-api + cert expiry) |
+
+Swagger UI: `http://localhost:8001/docs`
+
+### Watermark plugin (port 8102)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/embed` | Embed a binding value into audio |
+| POST | `/detect` | Detect a binding value from audio |
+| GET | `/info` | Plugin metadata (alg, bindingBits, mediaTypes) |
+| GET | `/health` | Liveness probe |
+
+## Environment variables
+
+### Required (ingestion-api)
+
+| Variable | Description |
+|----------|-------------|
+| `MONGODB_URL` | MongoDB connection string |
+| `MONGODB_DATABASE` | MongoDB database containing ingestion and plugin catalog collections |
+| `STORAGE_ROOT` | Path for signed asset + manifest storage |
+| `CREDENTIALS_DIR` | Directory containing `<alg>_certs.pem` + `<alg>_private.key` |
+
+### Optional
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SIGNING_ALG` | `ES256` | C2PA signing algorithm |
+| `TA_URL` | _(empty)_ | RFC 3161 timestamp authority URL |
+| `RESOLUTION_PUSH_ENABLED` | `true` | Auto-push to resolution-api after signing |
+| `RESOLUTION_API_URL` | _(required when push enabled)_ | Resolution-api base URL |
+| `INGESTIONS_COLLECTION` | `ingestions` | Ingestion lifecycle records collection |
+| `SUPPORTED_ALGORITHMS_COLLECTION` | `supported_algorithms` | Shared plugin catalog collection |
+| `PLUGIN_REQUEST_TIMEOUT_S` | `60` | HTTP timeout for plugin calls |
+| `MAX_ALGS_PER_INGEST` | `8` | Max algorithms per ingest request |
+| `LOG_LEVEL` | `INFO` | Logging level |
+| `LOG_JSON` | `false` | JSON-formatted logs |
+
+### Resolution-api
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MONGODB_URL` | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGODB_DATABASE` | `c2pa` | MongoDB database name |
+| `MANIFESTS_COLLECTION` | `manifests` | Stored manifest metadata collection |
+| `SOFT_BINDINGS_COLLECTION` | `soft_bindings` | Binding lookup collection |
+| `SUPPORTED_ALGORITHMS_COLLECTION` | `supported_algorithms` | Shared plugin catalog collection |
+| `MANIFEST_BLOBS_BUCKET` | `manifest_blobs` | GridFS bucket for manifest bytes |
+| `LOG_LEVEL` | `INFO` | Logging level |
+
+## Algorithm catalog
+
+Supported algorithms are stored in the `c2pa.supported_algorithms` MongoDB collection by default. Both services read from this collection. The `mongo-init/seed-algorithms.js` script seeds the default AWARE algorithm on first container boot.
+
+To register a new algorithm, insert a document:
+
+```javascript
+db.supported_algorithms.insertOne({
+  alg: "me.example.audio.newalg.64",
+  type: "watermark",
+  bindingBits: 64,
+  mediaTypes: ["audio/wav", "audio/mpeg"],
+  url: "http://new-plugin-container:9000"
+})
 ```
 
-Tweak per-service config via the env vars described in each service's
-README + `.env.example` at the repo root. Default settings assume a
-Docker network, so for bare-metal dev you'll likely want:
-
-```bash
-# Shared by both APIs.
-export PLUGINS_CATALOG_PATH=$PWD/plugins.yaml
-
-# Ingestion-api required vars (Mongo + storage + credentials + push target).
-export STORAGE_ROOT=$PWD/.storage
-export CREDENTIALS_DIR=$PWD/credentials
-export MONGODB_URL=mongodb://127.0.0.1:27017
-export DATABASE_NAME=c2pa_ingestions
-export RESOLUTION_API_URL=http://127.0.0.1:8000   # or RESOLUTION_PUSH_ENABLED=false
-
-# point ingestion-api at the local plugin instead of the docker hostname
-sed -i 's|http://watermark-vigil-128:8000|http://127.0.0.1:8101|' plugins.yaml
-```
-
-resolution-api ships defaults for `MONGODB_URL`
-(`mongodb://localhost:27017`) and `DATABASE_NAME` (`c2pa_soft_bindings`)
-that work out of the box on a local Mongo, so it only *requires*
-`PLUGINS_CATALOG_PATH`. Override either env var if you want it to share
-ingestion-api's DB or point at a separate cluster.
-
-## Tests
-
-Each service ships its own pytest suite. From the repo root:
-
-```bash
-( cd src/resolution-api && pytest -q )
-( cd src/ingestion-api  && pytest -q )
-( cd src/plugins/watermark/vigil-128 && PYTHONPATH=. pytest -q )
-```
-
-- `src/resolution-api` — route smoke + algorithms catalog loader. No Mongo needed.
-- `src/ingestion-api` — end-to-end orchestrator with a stubbed plugin client
-  + stubbed resolution-api auto-push. Needs `credentials/` for real
-  C2PA signing (auto-skips otherwise). Catalog + plugin client + push
-  client are tested separately with `httpx.MockTransport`.
-- `src/plugins/watermark/vigil-128` — algorithm unit tests + FastAPI
-  TestClient over `/info`, `/health`, `/embed`, `/detect`.
-
-All suites run with no external services (Mongo / plugin containers /
-resolution-api are stubbed or use in-memory repos). Pass on a fresh
-checkout once `credentials/` is populated.
+Both services pick up new algorithms immediately (no restart required).
 
 ## Adding a new plugin
 
-1. Create `src/plugins/<watermark|fingerprint>/<name>/{app.py,requirements.txt,Dockerfile}`.
-   Mirror `src/plugins/watermark/vigil-128/` for the shape — watermark
-   plugins expose `/info`, `/embed`, `/detect`, `/health`; fingerprint
-   plugins expose `/info`, `/compute`, `/health`. The binary endpoints
-   (`/embed`, `/detect`, `/compute`) take raw asset bytes in the request
-   body with `Content-Type: application/octet-stream` plus an
-   `X-Media-Type: <real mime>` header. `/embed` additionally requires
-   `X-Binding-Value` (the API-minted value the plugin must embed) and
-   echoes it on the response; `/detect` and `/compute` return JSON.
-2. Register the plugin in `plugins.yaml`.
-3. Add a service block to `docker-compose.yml` with a hostname matching
-   the YAML `url`.
-4. Restart with `docker compose up -d --build`.
+1. Create `apps/plugins/<watermark|fingerprint>/<name>/` with `app.py`, `Dockerfile`, and `requirements.txt`.
+2. Implement the plugin HTTP contract:
+   - Watermark: `POST /embed`, `POST /detect`, `GET /info`, `GET /health`
+   - Fingerprint: `POST /compute`, `GET /info`, `GET /health`
+3. Add a service block to `docker-compose.yml`.
+4. Insert the algorithm into `supported_algorithms` (or add it to `mongo-init/seed-algorithms.js`).
+5. `docker compose up -d --build`
 
-resolution-api will surface the new alg on the next call to
-`/services/supportedAlgorithms` without a restart — it re-reads
-`plugins.yaml` per request. ingestion-api loads the catalog **once at
-startup** and threads it through DI, so it needs the restart triggered
-by step 4 above before the new alg is routable.
+Binary endpoints use `Content-Type: application/octet-stream` for the body and `X-Media-Type` to describe the actual format. Watermark `/embed` requires an `X-Binding-Value` header (the API mints the value; the plugin embeds and echoes it back).
 
-## Configuration reference
+## Tests
 
-See:
-- `src/resolution-api/src/resolution_api/core/config.py`
-- `src/ingestion-api/src/ingestion_api/core/config.py`
-- `credentials/README.md` — supported signing algorithms + how to drop in
-  test certs.
+```bash
+cd apps/resolution-api && pip install -e ".[dev]" && pytest
+cd apps/ingestion-api && pip install -e ".[dev]" && pytest
+```
 
-Common knobs:
+Tests run with no external services (MongoDB and plugins are mocked). Ingestion-api tests that exercise C2PA signing require test credentials in `credentials/` (auto-skipped otherwise).
 
-| Env var | Service | Default | What |
-| --- | --- | --- | --- |
-| `MONGODB_URL` | both (independent) | resolution: `mongodb://localhost:27017` / ingestion: **required** | Each service has its own Mongo cluster |
-| `DATABASE_NAME` | both (independent) | resolution: `c2pa_soft_bindings` / ingestion: **required** | Each service has its own DB |
-| `PLUGINS_CATALOG_PATH` | both | **required** | Shared YAML catalog path |
-| `STORAGE_ROOT` | ingestion-api | **required** | Where signed assets + manifest bytes land (records live in Mongo) |
-| `CREDENTIALS_DIR` | ingestion-api | **required** | Cert + key root |
-| `SIGNING_ALG` | ingestion-api | `ES256` | C2PA signing algorithm |
-| `TA_URL` | ingestion-api | _(unset)_ | RFC 3161 timestamp authority |
-| `RESOLUTION_PUSH_ENABLED` | ingestion-api | `true` | Auto-push to resolution-api after sign |
-| `RESOLUTION_API_URL` | ingestion-api | _(required when push enabled)_ | Auto-push target |
-| `RESOLUTION_MAX_RETRIES` | ingestion-api | `1` | Per-HTTP-call retries on transient failure (5xx, timeout, network); 4xx never retries |
-| `RESOLUTION_RETRY_BACKOFF_S` | ingestion-api | `0.5` | Initial backoff between retries (doubles each attempt) |
-| `RESOLUTION_REQUEST_TIMEOUT_S` | ingestion-api | `10.0` | Per-call HTTP timeout for `POST /manifests` and `POST /bindings` |
-| `PLUGIN_REQUEST_TIMEOUT_S` | ingestion-api | `60.0` | Per-call HTTP timeout for plugin `/embed` and `/compute` |
-| `MAX_ALGS_PER_INGEST` | ingestion-api | `8` | Cap on `algs` list per `POST /ingest` (rejects with 400 above this) |
-| `MAX_TITLE_LENGTH` | ingestion-api | `128` | Cap on the optional `title` form field |
-| `PUBLIC_BASE_URL` | ingestion-api | _(unset)_ | Pin the absolute base URL used for `outputAssetUrl` / `manifestUrl`. When unset, derived from `request.base_url` (rewritten by the proxy-headers middleware) |
-| `FORWARDED_ALLOW_IPS` | ingestion-api | `*` | CIDRs trusted to send `X-Forwarded-*`. Lock to the proxy CIDR in hardened deployments |
-| `MONGO_SERVER_SELECTION_TIMEOUT_S` | ingestion-api | `5.0` | Motor client server-selection deadline |
-| `READY_MONGO_TIMEOUT_S` | ingestion-api | `1.5` | `/ready`'s Mongo ping deadline. **Must be < `MONGO_SERVER_SELECTION_TIMEOUT_S`** (validated at startup) so the readiness probe returns before the client's own deadline |
-| `HEALTH_DEEP_PROBE_TIMEOUT_S` | ingestion-api | `2.0` | Per-probe timeout for `/health/deep`'s plugin `/health` fan-out |
-| `CLAIM_GENERATOR_NAME` / `_VERSION` | ingestion-api | `Deepmark Inc.` / `0.1.0` | Embedded in every C2PA manifest's claim_generator |
-| `GIT_SHA` / `IMAGE_TAG` | ingestion-api | _(empty)_ | Build metadata surfaced in `/health/deep`. Set by CI/deploy |
-| `LOG_LEVEL` | both | `INFO` | stdlib logging level |
-| `LOG_JSON` | both | `false` | Switch logs to single-line JSON for ingestion into Loki/CloudWatch/etc |
+## Signing credentials
 
-## Known limitations / next steps
+See [`credentials/README.md`](credentials/README.md) for supported algorithms, how to obtain test certs, and how to generate your own.
 
-- `Signer.from_info` is broken for ES256 in c2pa-python 0.32.3; we use
-  `Signer.from_callback` + `cryptography` in ingestion-api. Drop the
-  explicit `cryptography` dep when the upstream bug is fixed.
-- vigil-128 is a dummy embedder. Replace `_embed_bytes` and
-  `_detect_bytes` in `src/plugins/watermark/vigil-128/app.py` to wire in
-  real Vigil-128 DSP.
-- Fingerprint plugins: not implemented; see
-  `src/plugins/fingerprint/README.md` for the contract.
-- Ingestion-api stores binary artifacts on a Docker volume only; for
-  shared multi-host deployments, point `STORAGE_ROOT` at network-
-  attached storage or extend `repositories/artifacts.py` with an S3
-  backend.
-- The `/matches/byContent` and `/matches/byReference` endpoints in
-  resolution-api still return empty results — they don't yet call
-  back into the plugin containers to recompute bindings.
+Self-signed certs work for local development. Production deployments need certificates from a CA on a recognized [C2PA trust list](https://contentcredentials.org/trust-list).
+
+## License
+
+[MIT](LICENSE)

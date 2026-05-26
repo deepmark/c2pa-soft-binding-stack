@@ -7,10 +7,11 @@ services:
       - "${MONGO_PORT:-27017}:27017"
     volumes:
       - mongo-data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d:ro
 
   resolution-api:
     build:
-      context: ./src/resolution-api
+      context: ./apps/resolution-api
     container_name: resolution-api
     restart: unless-stopped
     depends_on:
@@ -19,16 +20,17 @@ services:
       - "${RESOLUTION_API_PORT:-8000}:8000"
     environment:
       MONGODB_URL: mongodb://mongo:27017
-      DATABASE_NAME: c2pa_soft_bindings
-      PLUGINS_CATALOG_PATH: /catalog/plugins.yaml
+      MONGODB_DATABASE: c2pa
+      MANIFESTS_COLLECTION: manifests
+      SOFT_BINDINGS_COLLECTION: soft_bindings
+      SUPPORTED_ALGORITHMS_COLLECTION: supported_algorithms
+      MANIFEST_BLOBS_BUCKET: manifest_blobs
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON: ${LOG_JSON:-false}
-    volumes:
-      - ./plugins.yaml:/catalog/plugins.yaml:ro
 
   ingestion-api:
     build:
-      context: ./src/ingestion-api
+      context: ./apps/ingestion-api
     container_name: ingestion-api
     restart: unless-stopped
     depends_on:
@@ -42,11 +44,11 @@ services:
       # deployment MONGODB_URL can point at a completely separate cluster
       # from resolution-api's; here we share a container in dev.
       MONGODB_URL: mongodb://mongo:27017
-      DATABASE_NAME: c2pa_ingestions
-      PLUGINS_CATALOG_PATH: /catalog/plugins.yaml
+      MONGODB_DATABASE: c2pa
+      INGESTIONS_COLLECTION: ingestions
+      SUPPORTED_ALGORITHMS_COLLECTION: supported_algorithms
       STORAGE_ROOT: /var/lib/ingestion-api/storage
       CREDENTIALS_DIR: /credentials
-      DEFAULT_AUDIO_ALG: ${DEFAULT_AUDIO_ALG:-me.deepmark.audio.aware.20}
       SIGNING_ALG: ${SIGNING_ALG:-ES256}
       TA_URL: ${TA_URL:-}
       # Resolution-api auto-push (default ON). Set
@@ -58,13 +60,12 @@ services:
       LOG_JSON: ${LOG_JSON:-false}
       PLUGIN_REQUEST_TIMEOUT_S: 300
     volumes:
-      - ./plugins.yaml:/catalog/plugins.yaml:ro
       - ./credentials:/credentials:ro
       - ingestion-storage:/var/lib/ingestion-api/storage
 
   watermark-aware-20:
     build:
-      context: ./src/plugins/watermark/aware
+      context: ./apps/plugins/watermark/aware
     container_name: watermark-aware-20
     restart: unless-stopped
     ports:

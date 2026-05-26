@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ingestion-api"
+version = "0.1.0"
+description = "Audio ingest pipeline: watermark + C2PA sign + persist + push to resolution-api."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "DeepMark" }]
+keywords = ["c2pa", "watermark", "ingest", "fastapi"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Framework :: FastAPI",
+]
+
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.32.0",
+    "motor==3.7.1",
+    "pydantic==2.9.2",
+    "pydantic-settings==2.6.0",
+    "python-multipart==0.0.12",
+    "httpx==0.27.0",
+    "c2pa-python==0.32.3",
+    # Signer.from_info is broken for ES256 in c2pa-python 0.32.3 — we drive
+    # signing through Signer.from_callback using cryptography directly.
+    "cryptography>=42",
+    # Header-only audio metadata reader. Used to verify watermark plugins
+    # don't silently change sample rate / channels on the bytes we sign.
+    "mutagen>=1.47",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+ingestion-api = "ingestion_api.__main__:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["B008", "B904"]
