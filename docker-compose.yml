@@ -46,7 +46,6 @@ services:
       PLUGINS_CATALOG_PATH: /catalog/plugins.yaml
       STORAGE_ROOT: /var/lib/ingestion-api/storage
       CREDENTIALS_DIR: /credentials
-      DEFAULT_AUDIO_ALG: ${DEFAULT_AUDIO_ALG:-me.deepmark.audio.aware.20}
       SIGNING_ALG: ${SIGNING_ALG:-ES256}
       TA_URL: ${TA_URL:-}
       # Resolution-api auto-push (default ON). Set

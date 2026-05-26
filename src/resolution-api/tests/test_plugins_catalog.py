@@ -2,7 +2,12 @@
 from pathlib import Path
 from textwrap import dedent
 
-from resolution_api.services.plugins_catalog import load_plugin_catalog
+from resolution_api.services.plugins_catalog import (
+    PluginNotFoundError,
+    load_plugin_catalog,
+    resolve,
+)
+import pytest
 
 
 def test_load_plugin_catalog_returns_empty_for_missing_file(tmp_path: Path):
@@ -13,11 +18,11 @@ def test_load_plugin_catalog_parses_well_formed_entries(tmp_path: Path):
     p = tmp_path / "plugins.yaml"
     p.write_text(dedent("""
         plugins:
-          - alg: me.deepmark.audio.vigil.128
+          - alg: me.deepmark.audio.aware.20
             type: watermark
-            bindingBits: 128
+            bindingBits: 20
             mediaTypes: ["audio/wav"]
-            url: http://watermark-vigil-128:8000
+            url: http://watermark-aware-20:9004
           - alg: org.example.fp.v1
             type: fingerprint
             bindingBits: 64
@@ -26,9 +31,9 @@ def test_load_plugin_catalog_parses_well_formed_entries(tmp_path: Path):
     entries = load_plugin_catalog(p)
     assert len(entries) == 2
     wm = next(e for e in entries if e.type == "watermark")
-    assert wm.alg == "me.deepmark.audio.vigil.128"
-    assert wm.binding_bits == 128
-    assert wm.url == "http://watermark-vigil-128:8000"
+    assert wm.alg == "me.deepmark.audio.aware.20"
+    assert wm.binding_bits == 20
+    assert wm.url == "http://watermark-aware-20:9004"
     assert "audio/wav" in wm.media_types
     fp = next(e for e in entries if e.type == "fingerprint")
     assert fp.alg == "org.example.fp.v1"
@@ -56,7 +61,7 @@ def test_load_plugin_catalog_skips_malformed_entries(tmp_path: Path):
         plugins:
           - alg: ok.alg
             type: watermark
-            bindingBits: 128
+            bindingBits: 20
           - {not_alg: nope}
           - alg: zero.bits
             type: watermark
@@ -67,4 +72,31 @@ def test_load_plugin_catalog_skips_malformed_entries(tmp_path: Path):
     entries = load_plugin_catalog(p)
     assert len(entries) == 1
     assert entries[0].alg == "ok.alg"
-    assert entries[0].binding_bits == 128
+    assert entries[0].binding_bits == 20
+
+
+def test_resolve_returns_matching_entry(tmp_path: Path):
+    p = tmp_path / "plugins.yaml"
+    p.write_text(dedent("""
+        plugins:
+          - alg: me.deepmark.audio.aware.20
+            type: watermark
+            bindingBits: 20
+            url: http://watermark-aware-20:9004
+    """))
+    catalog = load_plugin_catalog(p)
+    entry = resolve("me.deepmark.audio.aware.20", catalog=catalog)
+    assert entry.alg == "me.deepmark.audio.aware.20"
+
+
+def test_resolve_raises_for_unknown_alg(tmp_path: Path):
+    p = tmp_path / "plugins.yaml"
+    p.write_text(dedent("""
+        plugins:
+          - alg: me.deepmark.audio.aware.20
+            type: watermark
+            bindingBits: 20
+    """))
+    catalog = load_plugin_catalog(p)
+    with pytest.raises(PluginNotFoundError):
+        resolve("no.such.alg", catalog=catalog)

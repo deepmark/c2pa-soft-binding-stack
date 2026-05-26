@@ -1,7 +1,6 @@
 """Tests for fetch.py — GET /manifests/{id}, GET/POST /manifests/{id}/receipts."""
 from __future__ import annotations
 
-import io
 from unittest.mock import AsyncMock
 
 import pytest
@@ -32,24 +31,18 @@ class TestGetManifest:
         assert resp.headers["content-type"] == "application/c2pa"
         assert resp.content == b"C2PA-STORE-DATA"
 
-    async def test_success_active_manifest(self, client, mock_manifests_col, mock_fs):
+    async def test_return_active_manifest_not_implemented(self, client, mock_manifests_col):
         mock_manifests_col.find_one.return_value = {
             "_id": MANIFEST_ID,
             "manifestStoreFileId": "grid-store-1",
             "activeManifestFileId": "grid-active-1",
         }
-
-        async def fake_download(file_id, buffer):
-            buffer.write(b"ACTIVE_ONLY")
-
-        mock_fs.download_to_stream.side_effect = fake_download
-
         resp = await client.get(
             f"/manifests/{MANIFEST_ID}",
             params={"returnActiveManifest": True},
         )
-        assert resp.status_code == 200
-        assert resp.content == b"ACTIVE_ONLY"
+        assert resp.status_code == 501
+        assert "not yet implemented" in resp.json()["detail"]
 
     async def test_not_found(self, client, mock_manifests_col):
         mock_manifests_col.find_one.return_value = None
@@ -66,32 +59,22 @@ class TestGetManifest:
 
 
 # ---------------------------------------------------------------------------
-# GET /manifests/{manifestId}/receipts
+# GET /manifests/{manifestId}/receipts — 501 Not Implemented
 # ---------------------------------------------------------------------------
 
 class TestGetReceipt:
-    async def test_success(self, client, mock_manifests_col):
-        mock_manifests_col.find_one.return_value = {"_id": MANIFEST_ID}
+    async def test_returns_501(self, client):
         resp = await client.get(f"/manifests/{MANIFEST_ID}/receipts")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["verified"] is True
-        assert body["@type"] == "org.c2pa.manifest-receipt"
-        assert body["repository"]["manifestId"] == MANIFEST_ID
-
-    async def test_not_found(self, client, mock_manifests_col):
-        mock_manifests_col.find_one.return_value = None
-        resp = await client.get(f"/manifests/{MANIFEST_ID}/receipts")
-        assert resp.status_code == 404
+        assert resp.status_code == 501
+        assert "not yet implemented" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
-# POST /manifests/{manifestId}/receipts
+# POST /manifests/{manifestId}/receipts — 501 Not Implemented
 # ---------------------------------------------------------------------------
 
 class TestPostReceipt:
-    async def test_verify_matching_receipt(self, client, mock_manifests_col):
-        mock_manifests_col.find_one.return_value = {"_id": MANIFEST_ID}
+    async def test_returns_501(self, client):
         resp = await client.post(
             f"/manifests/{MANIFEST_ID}/receipts",
             json={
@@ -101,36 +84,5 @@ class TestPostReceipt:
                 "anchor": {"uri": "http://test/anchors/abc", "proof": {}},
             },
         )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["verified"] is True
-        assert body["error"] is None
-
-    async def test_verify_mismatched_manifest_id(self, client, mock_manifests_col):
-        mock_manifests_col.find_one.return_value = {"_id": MANIFEST_ID}
-        resp = await client.post(
-            f"/manifests/{MANIFEST_ID}/receipts",
-            json={
-                "@context": {"c2pa": "https://c2pa.org/ns/"},
-                "@type": "org.c2pa.manifest-receipt",
-                "repository": {"uri": "http://test/", "manifestId": "urn:c2pa:wrong"},
-                "anchor": {"uri": "http://test/anchors/abc", "proof": {}},
-            },
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["verified"] is False
-        assert body["error"] is not None
-
-    async def test_manifest_not_found(self, client, mock_manifests_col):
-        mock_manifests_col.find_one.return_value = None
-        resp = await client.post(
-            f"/manifests/{MANIFEST_ID}/receipts",
-            json={
-                "@context": {},
-                "@type": "org.c2pa.manifest-receipt",
-                "repository": {"manifestId": MANIFEST_ID},
-                "anchor": {},
-            },
-        )
-        assert resp.status_code == 404
+        assert resp.status_code == 501
+        assert "not yet implemented" in resp.json()["detail"]
