@@ -7,6 +7,7 @@ services:
       - "${MONGO_PORT:-27017}:27017"
     volumes:
       - mongo-data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d:ro
 
   resolution-api:
     build:
@@ -20,11 +21,8 @@ services:
     environment:
       MONGODB_URL: mongodb://mongo:27017
       DATABASE_NAME: c2pa_soft_bindings
-      PLUGINS_CATALOG_PATH: /catalog/plugins.yaml
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON: ${LOG_JSON:-false}
-    volumes:
-      - ./plugins.yaml:/catalog/plugins.yaml:ro
 
   ingestion-api:
     build:
