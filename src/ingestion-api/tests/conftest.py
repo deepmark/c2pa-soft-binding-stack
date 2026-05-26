@@ -12,14 +12,13 @@ import pytest
 
 # Required settings must be in the env BEFORE the ingestion_api
 # package imports (Settings() runs at module import). We point paths at
-# the dev checkout's repo root for catalog + credentials, and at a
-# tmp dir for storage so tests don't write under the repo.
+# the dev checkout's repo root for credentials, and at a tmp dir for
+# storage so tests don't write under the repo.
 #
 # MONGODB_URL + DATABASE_NAME must be set for Settings() to validate,
 # but the unit tests use InMemoryIngestionRecordRepository — no live
 # Mongo connection is ever opened from the test process.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-os.environ.setdefault("PLUGINS_CATALOG_PATH", str(_REPO_ROOT / "plugins.yaml"))
 os.environ.setdefault("CREDENTIALS_DIR", str(_REPO_ROOT / "credentials"))
 os.environ.setdefault(
     "STORAGE_ROOT", str(Path(tempfile.gettempdir()) / "ingestion-api-tests-storage")

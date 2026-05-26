@@ -1,8 +1,7 @@
-"""Tests for the YAML catalog loader + plugin dispatcher wrapper."""
+"""Tests for the plugin catalog loader + plugin dispatcher wrapper."""
 from __future__ import annotations
 
-from pathlib import Path
-from textwrap import dedent
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -15,7 +14,8 @@ from ingestion_api.adapters.dispatcher import (
 )
 from ingestion_api.contracts.plugin import PluginEntry
 from ingestion_api.core.errors import PluginNotFoundError
-from ingestion_api.core.plugin import load_plugin_catalog, resolve_plugin
+from ingestion_api.core.plugin import load_plugin_catalog_from_db, resolve_plugin
+from ingestion_api.repositories.database import MongoDB
 
 
 def _entry(**kw) -> PluginEntry:
@@ -29,80 +29,96 @@ def _entry(**kw) -> PluginEntry:
 
 
 # ---------------------------------------------------------------------------
-# Catalog loader
+# Catalog loader (async, MongoDB-backed)
 # ---------------------------------------------------------------------------
 
 
-def test_load_plugin_catalog_returns_empty_for_missing_file(tmp_path: Path):
-    assert load_plugin_catalog(tmp_path / "missing.yaml") == []
+@pytest.mark.asyncio
+async def test_load_plugin_catalog_from_db_returns_empty_when_not_connected():
+    with patch("ingestion_api.core.plugin.MongoDB") as mock_mongo:
+        mock_mongo.client = None
+        result = await load_plugin_catalog_from_db()
+    assert result == []
 
 
-def test_load_plugin_catalog_parses_well_formed_entries(tmp_path: Path):
-    p = tmp_path / "plugins.yaml"
-    p.write_text(dedent("""
-        plugins:
-          - alg: me.deepmark.audio.vigil.128
-            type: watermark
-            bindingBits: 128
-            mediaTypes: ["audio/wav"]
-            url: http://watermark-vigil-128:8000
-    """))
-    entries = load_plugin_catalog(p)
+@pytest.mark.asyncio
+async def test_load_plugin_catalog_from_db_parses_well_formed_entries():
+    mock_col = MagicMock()
+    mock_col.find.return_value.to_list = AsyncMock(return_value=[
+        {
+            "alg": "me.deepmark.audio.vigil.128",
+            "type": "watermark",
+            "bindingBits": 128,
+            "mediaTypes": ["audio/wav"],
+            "url": "http://watermark-vigil-128:8000",
+        },
+    ])
+    mock_client = MagicMock()
+    mock_client.__getitem__ = MagicMock(
+        return_value=MagicMock(__getitem__=MagicMock(return_value=mock_col))
+    )
+    with patch("ingestion_api.core.plugin.MongoDB") as mock_mongo:
+        mock_mongo.client = mock_client
+        entries = await load_plugin_catalog_from_db()
     assert len(entries) == 1
     assert entries[0].alg == "me.deepmark.audio.vigil.128"
     assert entries[0].binding_bits == 128
     assert entries[0].url == "http://watermark-vigil-128:8000"
 
 
-def test_load_plugin_catalog_accepts_non_byte_aligned_binding_bits(tmp_path: Path):
-    """bindingBits doesn't have to be a multiple of 8."""
-    p = tmp_path / "plugins.yaml"
-    p.write_text(dedent("""
-        plugins:
-          - alg: weird.width
-            type: watermark
-            bindingBits: 100
-            mediaTypes: ["audio/wav"]
-            url: http://x:8000
-    """))
-    entries = load_plugin_catalog(p)
-    assert len(entries) == 1
-    assert entries[0].binding_bits == 100
-
-
-def test_resolve_plugin_raises_for_unknown_alg(tmp_path: Path):
-    with pytest.raises(PluginNotFoundError):
-        resolve_plugin("nope", catalog=[])
-
-
-def test_load_plugin_catalog_skips_entries_with_bad_binding_bits(tmp_path: Path):
-    """bindingBits is required and must be positive."""
-    p = tmp_path / "plugins.yaml"
-    p.write_text(dedent("""
-        plugins:
-          - alg: ok.alg
-            type: watermark
-            bindingBits: 128
-            mediaTypes: ["audio/wav"]
-            url: http://ok:8000
-          - alg: missing.bits
-            type: watermark
-            mediaTypes: ["audio/wav"]
-            url: http://x:8000
-          - alg: zero.bits
-            type: watermark
-            bindingBits: 0
-            mediaTypes: ["audio/wav"]
-            url: http://x:8000
-          - alg: negative.bits
-            type: watermark
-            bindingBits: -8
-            mediaTypes: ["audio/wav"]
-            url: http://x:8000
-    """))
-    entries = load_plugin_catalog(p)
+@pytest.mark.asyncio
+async def test_load_plugin_catalog_from_db_skips_entries_with_bad_binding_bits():
+    mock_col = MagicMock()
+    mock_col.find.return_value.to_list = AsyncMock(return_value=[
+        {
+            "alg": "ok.alg",
+            "type": "watermark",
+            "bindingBits": 128,
+            "mediaTypes": ["audio/wav"],
+            "url": "http://ok:8000",
+        },
+        {
+            "alg": "missing.bits",
+            "type": "watermark",
+            "mediaTypes": ["audio/wav"],
+            "url": "http://x:8000",
+        },
+        {
+            "alg": "zero.bits",
+            "type": "watermark",
+            "bindingBits": 0,
+            "mediaTypes": ["audio/wav"],
+            "url": "http://x:8000",
+        },
+        {
+            "alg": "negative.bits",
+            "type": "watermark",
+            "bindingBits": -8,
+            "mediaTypes": ["audio/wav"],
+            "url": "http://x:8000",
+        },
+    ])
+    mock_client = MagicMock()
+    mock_client.__getitem__ = MagicMock(
+        return_value=MagicMock(__getitem__=MagicMock(return_value=mock_col))
+    )
+    with patch("ingestion_api.core.plugin.MongoDB") as mock_mongo:
+        mock_mongo.client = mock_client
+        entries = await load_plugin_catalog_from_db()
     assert [e.alg for e in entries] == ["ok.alg"]
     assert entries[0].binding_bits == 128
+
+
+async def test_resolve_plugin_raises_for_unknown_alg():
+    mock_client = MagicMock()
+    mock_db = MagicMock()
+    mock_col = MagicMock()
+    mock_col.find_one = AsyncMock(return_value=None)
+    mock_db.__getitem__ = lambda self, name: mock_col
+    mock_client.__getitem__ = lambda self, name: mock_db
+    with patch.object(MongoDB, "client", mock_client):
+        with pytest.raises(PluginNotFoundError):
+            await resolve_plugin("nope")
 
 
 # ---------------------------------------------------------------------------
