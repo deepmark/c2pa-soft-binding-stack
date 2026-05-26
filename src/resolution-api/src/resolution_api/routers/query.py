@@ -14,6 +14,7 @@ import httpcore
 import httpx
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 
+from resolution_api.core.config import settings
 from resolution_api.core.database import get_soft_bindings_collection
 from resolution_api.core.logging import get_logger
 from resolution_api.models import (
@@ -397,19 +398,28 @@ async def query_by_content(
                 detail=f"Invalid asset type: {file.content_type} is not supported",
             )
 
-        MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
-        content = await file.read()
-        if not content:
+        max_size = settings.max_upload_size_bytes
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = await file.read(1 << 20)  # 1 MiB
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_size:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Invalid request body: file exceeds maximum allowed size of {max_size} bytes",
+                )
+            chunks.append(chunk)
+
+        if total == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Invalid request body: uploaded file is empty",
             )
-        if len(content) > MAX_UPLOAD_SIZE:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid request body: file exceeds maximum allowed size of {MAX_UPLOAD_SIZE} bytes",
-            )
 
+        content = b"".join(chunks)
         return await _detect_from_bytes(content, alg=alg, maxResults=maxResults)
 
     except HTTPException:
@@ -462,12 +472,10 @@ async def query_by_reference(
                 detail="Invalid request body: assetLength must be greater than 0",
             )
 
-        # Set a maximum download size limit (e.g., 100MB) to prevent abuse
-        MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
-        if query.assetLength > MAX_DOWNLOAD_SIZE:
+        if query.assetLength > settings.max_download_size_bytes:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid request body: assetLength exceeds maximum allowed size of {MAX_DOWNLOAD_SIZE} bytes",
+                detail=f"Invalid request body: assetLength exceeds maximum allowed size of {settings.max_download_size_bytes} bytes",
             )
 
         # SSRF prevention: resolve hostname, reject internal/metadata IPs,
