@@ -6,7 +6,7 @@ on:
       - main
       - dev
     paths:
-      - "src/ingestion-api/**"
+      - "apps/ingestion-api/**"
       - ".github/workflows/build-ingestion-api.yml"
   
   pull_request:  
@@ -14,7 +14,7 @@ on:
       - main
       - dev
     paths:
-      - "src/ingestion-api/**"
+      - "apps/ingestion-api/**"
       - ".github/workflows/build-ingestion-api.yml"
 
 permissions:
@@ -51,8 +51,8 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "Pull Request detected - building image to validate Dockerfile"
             docker build -t ingestion-api:pr-test \
-              -f src/ingestion-api/Dockerfile \
-              src/ingestion-api
+              -f apps/ingestion-api/Dockerfile \
+              apps/ingestion-api
             echo "Build successful - Dockerfile is valid"
             exit 0
           fi
@@ -66,8 +66,8 @@ jobs:
             echo "Base image tag (SHA): $BASE_TAG"
             
             docker build -t $IMAGE_URI:$BASE_TAG \
-              -f src/ingestion-api/Dockerfile \
-              src/ingestion-api
+              -f apps/ingestion-api/Dockerfile \
+              apps/ingestion-api
             
               docker push $IMAGE_URI:$BASE_TAG
             
@@ -78,8 +78,8 @@ jobs:
           elif [ "$BRANCH_NAME" = "dev" ]; then
             echo "Building and pushing image tagged 'dev' for dev branch"
             docker build -t $IMAGE_URI:dev \
-              -f src/ingestion-api/Dockerfile \
-              src/ingestion-api
+              -f apps/ingestion-api/Dockerfile \
+              apps/ingestion-api
             docker push $IMAGE_URI:dev
             
           else
