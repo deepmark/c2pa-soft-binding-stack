@@ -9,7 +9,7 @@ soft-binding-resolution-api/
 ├── docker-compose.yml
 ├── mongo-init/                         <- seeds supported_algorithms on first boot
 ├── credentials/                        <- cert + key for C2PA signing (not committed)
-└── src/
+└── apps/
     ├── resolution-api/                 <- lookup + store: /matches, /manifests, /bindings
     ├── ingestion-api/                  <- orchestrator: upload -> embed -> sign -> store -> push
     └── plugins/
@@ -116,7 +116,7 @@ Swagger UI: `http://localhost:8000/docs`
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/ingest` | Ingest media: watermark + sign + store + push |
-| GET | `/ingestions` | List ingestions (cursor pagination) |
+| GET | `/ingestions` | List ingestions (cursor pagination, filterable by lifecycle and push status) |
 | GET | `/ingest/{id}` | Get ingestion record |
 | GET | `/ingest/{id}/asset` | Download signed asset |
 | GET | `/ingest/{id}/manifest` | Download raw manifest bytes |
@@ -143,7 +143,7 @@ Swagger UI: `http://localhost:8001/docs`
 | Variable | Description |
 |----------|-------------|
 | `MONGODB_URL` | MongoDB connection string |
-| `DATABASE_NAME` | Database name for ingestion records |
+| `MONGODB_DATABASE` | MongoDB database containing ingestion and plugin catalog collections |
 | `STORAGE_ROOT` | Path for signed asset + manifest storage |
 | `CREDENTIALS_DIR` | Directory containing `<alg>_certs.pem` + `<alg>_private.key` |
 
@@ -155,7 +155,8 @@ Swagger UI: `http://localhost:8001/docs`
 | `TA_URL` | _(empty)_ | RFC 3161 timestamp authority URL |
 | `RESOLUTION_PUSH_ENABLED` | `true` | Auto-push to resolution-api after signing |
 | `RESOLUTION_API_URL` | _(required when push enabled)_ | Resolution-api base URL |
-| `ALGORITHMS_DATABASE_NAME` | `c2pa_soft_bindings` | Database with the `supported_algorithms` collection |
+| `INGESTIONS_COLLECTION` | `ingestions` | Ingestion lifecycle records collection |
+| `SUPPORTED_ALGORITHMS_COLLECTION` | `supported_algorithms` | Shared plugin catalog collection |
 | `PLUGIN_REQUEST_TIMEOUT_S` | `60` | HTTP timeout for plugin calls |
 | `MAX_ALGS_PER_INGEST` | `8` | Max algorithms per ingest request |
 | `LOG_LEVEL` | `INFO` | Logging level |
@@ -166,12 +167,16 @@ Swagger UI: `http://localhost:8001/docs`
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MONGODB_URL` | `mongodb://localhost:27017` | MongoDB connection string |
-| `DATABASE_NAME` | `c2pa_soft_bindings` | Database name |
+| `MONGODB_DATABASE` | `c2pa` | MongoDB database name |
+| `MANIFESTS_COLLECTION` | `manifests` | Stored manifest metadata collection |
+| `SOFT_BINDINGS_COLLECTION` | `soft_bindings` | Binding lookup collection |
+| `SUPPORTED_ALGORITHMS_COLLECTION` | `supported_algorithms` | Shared plugin catalog collection |
+| `MANIFEST_BLOBS_BUCKET` | `manifest_blobs` | GridFS bucket for manifest bytes |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 ## Algorithm catalog
 
-Supported algorithms are stored in the `supported_algorithms` MongoDB collection (in the `c2pa_soft_bindings` database). Both services read from this collection. The `mongo-init/seed-algorithms.js` script seeds the default AWARE algorithm on first container boot.
+Supported algorithms are stored in the `c2pa.supported_algorithms` MongoDB collection by default. Both services read from this collection. The `mongo-init/seed-algorithms.js` script seeds the default AWARE algorithm on first container boot.
 
 To register a new algorithm, insert a document:
 
@@ -189,7 +194,7 @@ Both services pick up new algorithms immediately (no restart required).
 
 ## Adding a new plugin
 
-1. Create `src/plugins/<watermark|fingerprint>/<name>/` with `app.py`, `Dockerfile`, and `requirements.txt`.
+1. Create `apps/plugins/<watermark|fingerprint>/<name>/` with `app.py`, `Dockerfile`, and `requirements.txt`.
 2. Implement the plugin HTTP contract:
    - Watermark: `POST /embed`, `POST /detect`, `GET /info`, `GET /health`
    - Fingerprint: `POST /compute`, `GET /info`, `GET /health`
@@ -202,8 +207,8 @@ Binary endpoints use `Content-Type: application/octet-stream` for the body and `
 ## Tests
 
 ```bash
-cd src/resolution-api && pip install -e ".[dev]" && pytest
-cd src/ingestion-api && pip install -e ".[dev]" && pytest
+cd apps/resolution-api && pip install -e ".[dev]" && pytest
+cd apps/ingestion-api && pip install -e ".[dev]" && pytest
 ```
 
 Tests run with no external services (MongoDB and plugins are mocked). Ingestion-api tests that exercise C2PA signing require test credentials in `credentials/` (auto-skipped otherwise).

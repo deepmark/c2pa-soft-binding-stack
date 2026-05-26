@@ -1,4 +1,4 @@
-db = db.getSiblingDB("c2pa_soft_bindings");
+db = db.getSiblingDB("c2pa");
 
 db.supported_algorithms.createIndex({ alg: 1 }, { name: "alg_unique", unique: true });
 
