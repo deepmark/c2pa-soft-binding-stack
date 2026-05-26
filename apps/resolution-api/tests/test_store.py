@@ -3,9 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-import pytest
-
-
 ALG = "me.deepmark.audio.aware.20"
 
 

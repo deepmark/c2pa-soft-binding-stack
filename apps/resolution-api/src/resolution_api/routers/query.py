@@ -145,7 +145,7 @@ async def _validate_and_resolve_url(url_str: str) -> tuple[str, int, str]:
             detail="Invalid request body: referenceUrl hostname could not be resolved",
         )
 
-    for family, _, _, _, sockaddr in addrinfos:
+    for _family, _, _, _, sockaddr in addrinfos:
         ip = ipaddress.ip_address(sockaddr[0])
         if _is_blocked_ip(ip):
             raise HTTPException(
@@ -292,7 +292,7 @@ async def query_by_binding(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error")
         raise HTTPException(status_code=500, detail="Service failure")
 
@@ -358,7 +358,7 @@ async def query_by_large_binding(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error")
         raise HTTPException(status_code=500, detail="Service failure")
 
@@ -426,7 +426,7 @@ async def query_by_content(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error")
         raise HTTPException(status_code=500, detail="Service failure")
 
@@ -535,6 +535,6 @@ async def query_by_reference(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error")
         raise HTTPException(status_code=500, detail="Service failure")

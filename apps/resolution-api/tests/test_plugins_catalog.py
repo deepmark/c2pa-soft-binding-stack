@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from resolution_api.services.plugins_catalog import (
-    PluginEntry,
     PluginNotFoundError,
     load_all_plugins,
     resolve,

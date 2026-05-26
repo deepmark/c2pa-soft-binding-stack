@@ -1,11 +1,6 @@
 """Tests for fetch.py — GET /manifests/{id}, GET/POST /manifests/{id}/receipts."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-
-import pytest
-
-
 MANIFEST_ID = "urn:c2pa:test-manifest"
 
 

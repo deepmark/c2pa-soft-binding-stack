@@ -22,26 +22,13 @@ Edge concerns owned here:
 """
 from __future__ import annotations
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    Query,
-    Request,
-    UploadFile,
-)
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ingestion_api.contracts.ingestion import IngestionRequest
 from ingestion_api.core.config import settings
 from ingestion_api.core.credentials import MissingSigningMaterialError
-from ingestion_api.core.errors import (
-    IngestionError,
-    InvalidAlgRequestError,
-    UnsupportedMediaError,
-)
+from ingestion_api.core.errors import IngestionError, InvalidAlgRequestError, UnsupportedMediaError
 from ingestion_api.core.logging import get_logger
 from ingestion_api.models.enums import IngestionStatus, ResolutionPushStatus
 from ingestion_api.models.ingestion import IngestionRecord
@@ -51,10 +38,7 @@ from ingestion_api.models.responses import (
     ResolutionPushOutput,
 )
 from ingestion_api.repositories.artifacts import ArtifactStore
-from ingestion_api.repositories.ingestions import (
-    IngestionListPage,
-    IngestionRecordRepository,
-)
+from ingestion_api.repositories.ingestions import IngestionListPage, IngestionRecordRepository
 from ingestion_api.routers.dependencies import (
     get_artifact_store,
     get_ingestion_service,
@@ -80,8 +64,8 @@ _OCTET_STREAM = "application/octet-stream"
 def _response_base_url(request: Request) -> str:
     """Hybrid absolute-URL base.
 
-    ``settings.public_base_url`` wins when set 
-    (production: pin the canonical host regardless of forwarded headers). 
+    ``settings.public_base_url`` wins when set
+    (production: pin the canonical host regardless of forwarded headers).
     Otherwise fallback to ``request.base_url``, which has been rewritten by the
     ProxyHeadersMiddleware to honor X-Forwarded-Proto/Host.
     """
@@ -352,7 +336,7 @@ async def delete_ingestion(
 
     Resolution-api is intentionally NOT touched here.
 
-    Idempotent: succeeds with 204 even when only one of the two states exists. 
+    Idempotent: succeeds with 204 even when only one of the two states exists.
     Returns 404 only when there is genuinely nothing on either side to remove.
     """
     artifacts_existed = artifacts.delete(ingestionId)

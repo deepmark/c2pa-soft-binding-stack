@@ -66,7 +66,7 @@ def run() -> None:
     """Console-script entry point for ``resolution-api``."""
     uvicorn.run(
         "resolution_api.__main__:app",
-        host=os.environ.get("HOST", "0.0.0.0"),
+        host=os.environ.get("HOST", "0.0.0.0"),  # nosec B104 - container default
         port=int(os.environ.get("PORT", "8000")),
         reload=os.environ.get("RELOAD", "0") == "1",
     )

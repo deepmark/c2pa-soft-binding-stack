@@ -12,7 +12,7 @@ Stateless module-level functions (no class, no DI).
 This is a pipeline step, not an application service. The actual
 orchestration (plugin runner -> manifest builder -> repos -> push)
 lives in ``services.ingestion.IngestionService``.
-The IngestionService calls ``run_plugin_passes`` once per ingest and 
+The IngestionService calls ``run_plugin_passes`` once per ingest and
 ``capture_plugin_versions`` once per ingest for the persisted record.
 """
 from __future__ import annotations
@@ -20,10 +20,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ingestion_api.adapters.dispatcher import PluginDispatcher
-from ingestion_api.contracts.plugin import PluginEntry
-from ingestion_api.contracts.plugin import PluginPassOutput
-from ingestion_api.core.logging import get_logger
+from ingestion_api.contracts.plugin import PluginEntry, PluginPassOutput
 from ingestion_api.core.errors import IngestionError
+from ingestion_api.core.logging import get_logger
 from ingestion_api.models.enums import FailureStage, MediaType
 from ingestion_api.utils.media import read_audio_format
 
@@ -133,8 +132,8 @@ def _verify_format_preserved(
     implemented inspector the check is skipped with a loud warning so
     adding a new MIME doesn't silently turn the safeguard off.
 
-    Skipped silently when either side is unparseable. 
-    Real format mismatches (a plugin that mono-mixed a stereo input, 
+    Skipped silently when either side is unparseable.
+    Real format mismatches (a plugin that mono-mixed a stereo input,
     re-sampled to a different rate, etc.) raise ``IngestionError``.
     """
     if media_type is not MediaType.AUDIO:

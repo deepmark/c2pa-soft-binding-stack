@@ -1,5 +1,5 @@
 """
-Fetch route group 
+Fetch route group
 
 Retrieves C2PA Manifest Stores using provided identifiers, or verifies a
 supplied receipt.
@@ -86,7 +86,7 @@ async def get_manifest_by_id(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error")
         raise HTTPException(status_code=500, detail="Service failure")
 

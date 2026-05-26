@@ -11,16 +11,13 @@ from c2pa import Reader
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from resolution_api.core.logging import get_logger
 from resolution_api.core.database import (
     get_manifest_blobs_bucket,
     get_manifests_collection,
     get_soft_bindings_collection,
 )
-from resolution_api.models import (
-    BindingsRequest,
-    ManifestCreateResult,
-)
+from resolution_api.core.logging import get_logger
+from resolution_api.models import BindingsRequest, ManifestCreateResult
 
 logger = get_logger(__name__)
 
@@ -117,7 +114,7 @@ async def associate_manifest(binding: BindingsRequest):
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error")
         raise HTTPException(status_code=500, detail="Service failure")
 
@@ -186,7 +183,7 @@ async def update_associated_manifest(binding: BindingsRequest):
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error")
         raise HTTPException(status_code=500, detail="Service failure")
 
@@ -256,7 +253,7 @@ async def add_manifest(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error")
         raise HTTPException(status_code=500, detail="Service failure")
 
@@ -317,6 +314,6 @@ async def delete_manifest(manifestId: str):
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error")
         raise HTTPException(status_code=500, detail="Service failure")

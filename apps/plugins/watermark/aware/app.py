@@ -25,12 +25,11 @@ import librosa
 import numpy as np
 import soundfile as sf
 import uvicorn
+from aware.service import detect_watermark, embed_watermark
+from aware.utils.models import load
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
-
-from aware.service import embed_watermark, detect_watermark
-from aware.utils.models import load
 
 logger = logging.getLogger(__name__)
 

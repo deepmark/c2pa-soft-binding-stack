@@ -1,7 +1,7 @@
 """Plugin catalog + pipeline contracts.
 
 ``PluginEntry`` is the YAML-row shape produced by ``core.plugin``
-and consumed by the dispatcher / orchestrator / service. 
+and consumed by the dispatcher / orchestrator / service.
 
 ``PluginPassOutput`` is the per-alg output of a single plugin invocation.
 """

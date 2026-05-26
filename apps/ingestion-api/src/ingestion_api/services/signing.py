@@ -4,9 +4,9 @@ C2PA signer service.
 Builds the ``c2pa.Signer`` once at app startup (eager-validated so a
 missing-cert deploy fails fast instead of throwing 503s on first
 ingest), then transfers ownership to ``ManifestBuilderService``'s
-Context via ``release_signer()`` — the SDK's preferred pattern. 
-After release this service is a thin wrapper around ``SignerCredentials``: 
-it still surfaces the cert metadata that the ``IngestionRecord`` and 
+Context via ``release_signer()`` — the SDK's preferred pattern.
+After release this service is a thin wrapper around ``SignerCredentials``:
+it still surfaces the cert metadata that the ``IngestionRecord`` and
 ``/health/deep`` need (``cert_sha1``, ``signing_alg``, ``ta_url``, ``leaf_not_after``),
 but the FFI handle for the Signer lives in the manifest builder for
 the rest of the process lifetime.
@@ -43,11 +43,8 @@ from c2pa import C2paSigningAlg, Signer
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 
+from ingestion_api.core.credentials import MissingSigningMaterialError, SignerCredentials
 from ingestion_api.core.logging import get_logger
-from ingestion_api.core.credentials import (
-    MissingSigningMaterialError,
-    SignerCredentials,
-)
 
 logger = get_logger(__name__)
 

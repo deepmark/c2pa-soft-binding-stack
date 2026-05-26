@@ -5,10 +5,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, Request
 
-from ingestion_api.core.logging import (
-    REQUEST_ID_HEADER,
-    get_request_id,
-)
+from ingestion_api.core.logging import REQUEST_ID_HEADER, get_request_id
 from ingestion_api.middleware.request_id import RequestIDMiddleware
 
 

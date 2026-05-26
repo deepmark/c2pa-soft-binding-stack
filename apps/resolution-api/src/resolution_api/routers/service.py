@@ -41,6 +41,6 @@ async def get_supported_algorithms():
             SoftBindingAlgorithm(**doc) for doc in docs if doc.get("type") == "fingerprint"
         ]
         return SoftBindingAlgList(watermarks=watermarks, fingerprints=fingerprints)
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error")
         raise HTTPException(status_code=500, detail="Service failure")

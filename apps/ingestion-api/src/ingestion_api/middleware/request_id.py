@@ -22,11 +22,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ingestion_api.core.logging import (
-    REQUEST_ID_HEADER,
-    reset_request_id,
-    set_request_id,
-)
+from ingestion_api.core.logging import REQUEST_ID_HEADER, reset_request_id, set_request_id
 
 ASGIScope = dict[str, Any]
 ASGIMessage = dict[str, Any]
@@ -51,8 +47,9 @@ class RequestIDMiddleware:
             return
 
         rid = self._extract_or_generate(scope)
-        # Starlette/FastAPI lazy-init scope["state"] when ``request.state`` is first accessed; 
-        # pre-populate it so dependencies can read ``request.state.request_id`` without their own contextvar plumbing.
+        # Starlette/FastAPI lazy-init scope["state"] when
+        # ``request.state`` is first accessed; pre-populate it so
+        # dependencies can read ``request.state.request_id``.
         state = scope.setdefault("state", {})
         state["request_id"] = rid
 
@@ -83,6 +80,7 @@ class RequestIDMiddleware:
                 except UnicodeDecodeError:
                     decoded = ""
                 if decoded:
-                    # Cap to 128 chars to defang clients sending unbounded ids that would end up in our logs verbatim.
+                    # Cap to defang clients sending unbounded ids that
+                    # would end up in logs verbatim.
                     return decoded[:128]
         return uuid.uuid4().hex

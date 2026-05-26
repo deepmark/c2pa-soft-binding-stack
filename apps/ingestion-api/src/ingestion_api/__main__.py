@@ -43,10 +43,7 @@ from ingestion_api.core.logging import configure_logging, get_logger
 from ingestion_api.core.plugin import load_plugin_catalog_from_db  # used in startup check
 from ingestion_api.middleware.request_id import RequestIDMiddleware
 from ingestion_api.repositories.artifacts import ArtifactStore
-from ingestion_api.repositories.database import (
-    MongoDB,
-    get_ingestions_collection,
-)
+from ingestion_api.repositories.database import MongoDB, get_ingestions_collection
 from ingestion_api.repositories.ingestions import MongoIngestionRecordRepository
 from ingestion_api.routers import health, ingestion
 from ingestion_api.services.ingestion import IngestionService
@@ -94,7 +91,7 @@ async def lifespan(app: FastAPI):
 
     signing_service = SigningService()
     try:
-        # Eager parse of cert + key. 
+        # Eager parse of cert + key.
         # Missing or malformed signing material is a fatal config error.
         signing_service.validate()
     except MissingSigningMaterialError:
@@ -174,7 +171,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Middleware order matters. 
+# Middleware order matters.
 # ASGI middleware runs in reverse of add order, so this stack is (outer -> inner):
 #   RequestID -> ProxyHeaders -> app
 # Rationale:
@@ -208,7 +205,7 @@ async def root():
 def run() -> None:
     uvicorn.run(
         "ingestion_api.__main__:app",
-        host=os.environ.get("HOST", "0.0.0.0"),
+        host=os.environ.get("HOST", "0.0.0.0"),  # nosec B104 - container default
         port=int(os.environ.get("PORT", "8001")),
         reload=os.environ.get("RELOAD", "0") == "1",
     )

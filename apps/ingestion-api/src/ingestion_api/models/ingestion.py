@@ -103,7 +103,7 @@ class IngestionRecord(_IngestionCommon):
         description="SHA-1 fingerprint of the leaf signing cert (DER), 40-char hex",
     )
 
-    # Snapshot of plugin /info per alg at ingest time. 
+    # Snapshot of plugin /info per alg at ingest time.
     # Forensic value: months later you can tell which plugin version produced a binding.
     # Captured via a process-local cache to avoid an /info call per ingest.
     pluginVersions: dict[str, dict] | None = Field(

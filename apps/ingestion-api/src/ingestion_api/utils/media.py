@@ -137,12 +137,12 @@ def read_audio_format(audio_bytes: bytes) -> AudioFormat | None:
     """Parse sample rate + channels from an audio container header.
 
     Returns ``None`` if mutagen can't recognise the container or the
-    bytes are too short. 
-    
-    Callers that rely on this for safety checks should treat ``None`` as 
+    bytes are too short.
+
+    Callers that rely on this for safety checks should treat ``None`` as
     "skip the check, log a warning" rather than fail-closed.
 
-    Mutagen only reads the container header (a few KB), 
+    Mutagen only reads the container header (a few KB),
     so this is cheap to call on every plugin pass.
     """
     if not audio_bytes:

@@ -4,8 +4,6 @@ from __future__ import annotations
 import base64
 from unittest.mock import AsyncMock, patch
 
-import pytest
-
 from resolution_api.core.config import settings
 from resolution_api.services.plugins_catalog import PluginEntry
 

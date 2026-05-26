@@ -1,10 +1,6 @@
 """Tests for service.py — GET /services/supportedAlgorithms."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
-
-import pytest
-
 from tests.conftest import _FakeCursor
 
 

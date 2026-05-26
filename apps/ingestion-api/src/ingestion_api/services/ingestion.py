@@ -68,14 +68,9 @@ from ingestion_api.models.enums import FailureStage, IngestionStatus, MediaType
 from ingestion_api.models.ingestion import IngestionRecord
 from ingestion_api.models.responses import ResolutionPushOutput
 from ingestion_api.models.soft_binding import SoftBindingRecord, make_soft_binding
-from ingestion_api.pipeline.plugin_runner import (
-    capture_plugin_versions,
-    run_plugin_passes,
-)
+from ingestion_api.pipeline.plugin_runner import capture_plugin_versions, run_plugin_passes
 from ingestion_api.repositories.artifacts import ArtifactStore, IngestionArtifacts
-from ingestion_api.repositories.ingestions import (
-    IngestionRecordRepository,
-)
+from ingestion_api.repositories.ingestions import IngestionRecordRepository
 from ingestion_api.services.manifest import (
     BuiltManifest,
     ManifestBuilderService,
@@ -84,11 +79,7 @@ from ingestion_api.services.manifest import (
 from ingestion_api.services.signing import SigningService
 from ingestion_api.utils.hashing import sha256_hex
 from ingestion_api.utils.ids import new_ingestion_id
-from ingestion_api.utils.media import (
-    SUPPORTED_MIME_TYPES,
-    canonical_extension,
-    guess_media_format,
-)
+from ingestion_api.utils.media import SUPPORTED_MIME_TYPES, canonical_extension, guess_media_format
 
 logger = get_logger(__name__)
 
@@ -125,7 +116,7 @@ class IngestionService:
         self._resolution_client = resolution_client or ResolutionPushClient()
 
     async def ingest(self, payload: IngestionRequest) -> IngestionOutput:
-        
+
         guessed = guess_media_format(payload.filename, payload.content_type)
         if guessed is None:
             raise UnsupportedMediaError(

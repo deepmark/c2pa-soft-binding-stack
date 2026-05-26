@@ -80,8 +80,8 @@ from typing import Any
 
 from c2pa import Builder, Context, Reader, Signer
 
-from ingestion_api.core.config import settings
 from ingestion_api.contracts.manifest import SoftBindingSpec
+from ingestion_api.core.config import settings
 from ingestion_api.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -163,11 +163,12 @@ def soft_binding_label(index: int) -> str:
     First instance is ``c2pa.soft-binding``; subsequent instances are
     suffixed ``__1``, ``__2``, ... per C2PA assertion-labelling rules.
 
-        NB: this predicts the label the c2pa-rs Builder will assign. 
+        NB: this predicts the label the c2pa-rs Builder will assign.
         We DON'T pass these suffixed labels in on input. The Builder
-        auto-suffixes duplicate assertion type labels itself. 
-        Pre-suffixing produces double-suffixes (``__1__1``) and a hashedURI mismatch.
-        Use this helper when you need to *reference* a soft-binding assertion (e.g. ``relatedAssertions``).
+        auto-suffixes duplicate assertion type labels itself.
+        Pre-suffixing produces double-suffixes (``__1__1``) and a hashedURI
+        mismatch. Use this helper when you need to *reference* a soft-binding
+        assertion (e.g. ``relatedAssertions``).
     """
     return SOFT_BINDING_LABEL if index == 0 else f"{SOFT_BINDING_LABEL}__{index}"
 
@@ -220,7 +221,7 @@ class ManifestBuilderService:
         #
         # The Signer is consumed by Context.__init__ (it calls
         # ``signer._mark_consumed()``) — caller MUST hand over
-        # ownership (see SigningService.release_signer). 
+        # ownership (see SigningService.release_signer).
         self._builder_ctx = Context.from_dict({
             "builder": {
                 # EDIT intent: SDK adds the c2pa.opened action wired to
@@ -243,7 +244,7 @@ class ManifestBuilderService:
             "verify": _VERIFY_NO_NETWORK,
         }, signer=signer)
 
-    def __enter__(self) -> "ManifestBuilderService":
+    def __enter__(self) -> ManifestBuilderService:
         return self
 
     def __exit__(self, *exc: object) -> None:

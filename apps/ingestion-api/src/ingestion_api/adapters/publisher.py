@@ -1,25 +1,32 @@
 """
 Auto-push to the soft-binding resolution API.
 
-After signing, ingestion-api can post the manifest store + every soft-binding to resolution-api 
-so the just-ingested asset is immediately resolvable via ``GET /matches/byBinding``. 
+After signing, ingestion-api can post the manifest store + every soft-binding
+to resolution-api so the just-ingested asset is immediately resolvable via
+``GET /matches/byBinding``.
 
-Controlled by ``RESOLUTION_PUSH_ENABLED`` (default ``true``). 
-When enabled ``RESOLUTION_API_URL`` is required (config-time validator). 
-Set ``RESOLUTION_PUSH_ENABLED=false`` for standalone deployments that don't have a resolution-api downstream.
+Controlled by ``RESOLUTION_PUSH_ENABLED`` (default ``true``).
+When enabled ``RESOLUTION_API_URL`` is required (config-time validator).
+Set ``RESOLUTION_PUSH_ENABLED=false`` for standalone deployments that don't
+have a resolution-api downstream.
 
 Wire shape:
-1. ``POST {RESOLUTION_API_URL}/manifests`` with the raw manifest bytes as ``application/c2pa``. 
-   Resolution-api derives the manifestId deterministically from the bytes 
-   (same as ingestion-api's extraction), so the call is idempotent and the response payload is informational.
+1. ``POST {RESOLUTION_API_URL}/manifests`` with the raw manifest bytes as
+   ``application/c2pa``.
+   Resolution-api derives the manifestId deterministically from the bytes
+   (same as ingestion-api's extraction), so the call is idempotent and the
+   response payload is informational.
 
-2. ``POST {RESOLUTION_API_URL}/bindings`` with ``{alg, bindingValue, manifestId}`` - one call per binding.
+2. ``POST {RESOLUTION_API_URL}/bindings`` with
+   ``{alg, bindingValue, manifestId}`` - one call per binding.
 
 Failure mode: caller logs + records ``status=FAILED`` and an error message.
-The ingest request still succeeds, returning the artifacts so a retry/sync can reconcile later. 
+The ingest request still succeeds, returning the artifacts so a retry/sync can
+reconcile later.
 A single ``/bindings`` failure aborts the rest of the loop.
-Partial state is signalled via ``status=FAILED`` so the operator can re-push with the persisted manifest bytes.
-Re-pushes are idempotent server-side. 
+Partial state is signalled via ``status=FAILED`` so the operator can re-push
+with the persisted manifest bytes.
+Re-pushes are idempotent server-side.
 See resolution-api's ``/manifests`` and ``/bindings`` endpoints for more details.
 """
 from __future__ import annotations
@@ -153,9 +160,9 @@ class ResolutionPushClient:
 
     def _send_with_retry(self, method: str, url: str, **httpx_kwargs) -> httpx.Response:
         """
-        Issue a single HTTP request with bounded retries on transient failures. 
+        Issue a single HTTP request with bounded retries on transient failures.
         Transient = network/timeout errors and 5xx responses;
-        4xx surfaces immediately (won't recover by retrying). 
+        4xx surfaces immediately (won't recover by retrying).
         Sleeps with exponential backoff between attempts.
         """
         last_exc: Exception | None = None
@@ -176,7 +183,8 @@ class ResolutionPushClient:
             if remaining > 0:
                 backoff = self._retry_backoff_s * (2 ** attempt)
                 logger.warning(
-                    "Resolution-api %s %s transient failure (attempt %d/%d): %s — retrying in %.2fs",
+                    "Resolution-api %s %s transient failure "
+                    "(attempt %d/%d): %s — retrying in %.2fs",
                     method, url, attempt + 1, attempts, last_exc, backoff,
                 )
                 time.sleep(backoff)

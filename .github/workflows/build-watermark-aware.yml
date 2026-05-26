@@ -9,7 +9,7 @@ on:
       - "apps/plugins/watermark/aware/**"
       - ".github/workflows/build-watermark-aware.yml"
 
-  pull_request:  
+  pull_request:
     branches:
       - main
       - dev
@@ -47,7 +47,7 @@ jobs:
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_WATERMARK_AWARE }}
         run: |
           BRANCH_NAME=${GITHUB_REF_NAME}
-          
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "Pull Request detected - building image to validate Dockerfile"
             docker build -t watermark-aware:pr-test \
@@ -56,7 +56,7 @@ jobs:
             echo "Build successful - Dockerfile is valid"
             exit 0
           fi
-          
+
           IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY
 
           echo "Building image for branch: $BRANCH_NAME"

@@ -39,9 +39,9 @@ class SignerCredentials:
     def cert_sha1(self) -> str | None:
         """SHA-1 fingerprint of the leaf cert (DER) — standard X.509 fingerprint.
 
-        The leaf is the FIRST certificate in the chain PEM. 
-        Returns None if the chain file is missing or unparseable. 
-        validate() raises if the cert chain is missing or unparseable, 
+        The leaf is the FIRST certificate in the chain PEM.
+        Returns None if the chain file is missing or unparseable.
+        validate() raises if the cert chain is missing or unparseable,
         so a None here is forensic-only.
         """
         try:
@@ -50,7 +50,7 @@ class SignerCredentials:
             if not certs:
                 return None
             der = certs[0].public_bytes(serialization.Encoding.DER)
-            return hashlib.sha1(der).hexdigest()  # noqa: S324 - X.509 fingerprint format
+            return hashlib.sha1(der, usedforsecurity=False).hexdigest()
         except (OSError, ValueError):
             return None
 
@@ -74,7 +74,7 @@ class SignerCredentials:
         if the chain is missing / unparseable.
 
         Used by ``/health/deep`` to surface impending cert expiry to
-        ops dashboards. 
+        ops dashboards.
         This is forensic data, not a readiness gate. Never raises.
         """
         try:

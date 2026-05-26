@@ -9,8 +9,8 @@ Watermark plugin (``type: watermark``):
 - ``POST /embed``  body = raw media bytes (``application/octet-stream``);
   required ``X-Binding-Value`` request header carries the API-generated
   value the plugin must embed; ``X-Media-Type`` carries the source MIME
-  (e.g. ``audio/wav``). 
-  Response body = watermarked bytes; ``X-Binding-Value`` response header 
+  (e.g. ``audio/wav``).
+  Response body = watermarked bytes; ``X-Binding-Value`` response header
   echoes the embedded value (must equal the request header).
 - ``POST /detect`` body = raw media bytes -> JSON ``{bindingValue|null}``
 - ``GET  /health``
@@ -31,8 +31,8 @@ Header contract for binary endpoints (``/embed``, ``/detect``, ``/compute``):
 Binding values are minted by ingestion-api (not by plugins) using
 ``secrets.token_bytes`` sized to the plugin's declared ``bindingBits``.
 Bit widths that aren't byte-aligned are supported (the high bits of the
-first byte are zeroed). 
-The plugin must echo the value it embedded so we can detect a misbehaving 
+first byte are zeroed).
+The plugin must echo the value it embedded so we can detect a misbehaving
 plugins that ignore the header.
 
 Bytes are exchanged in raw HTTP bodies, so plugin containers can run on
@@ -96,8 +96,8 @@ class PluginDispatcher:
         self._owned_client = client is None
         self._client = client or httpx.Client(timeout=self._timeout)
         # Capture explicitly when constructed in async context, fall
-        # back to the contextvar otherwise. 
-        # Safe across thread-pool executor calls because the value is 
+        # back to the contextvar otherwise.
+        # Safe across thread-pool executor calls because the value is
         # held on the instance (not the contextvar).
         self._request_id = request_id if request_id is not None else get_request_id()
 
@@ -125,9 +125,9 @@ class PluginDispatcher:
     def info_cached(self) -> dict:
         """``/info`` result, cached per-process keyed on plugin URL.
 
-        Caching avoids one HTTP call per plugin per ingest. 
+        Caching avoids one HTTP call per plugin per ingest.
         Cache is wiped on process restart, so deploying a new
-        plugin version + a rolling restart of ingestion-api is 
+        plugin version + a rolling restart of ingestion-api is
         the only way to refresh it.
         """
         cached = _PLUGIN_INFO_CACHE.get(self._entry.url)
@@ -150,7 +150,7 @@ class PluginDispatcher:
         """Watermark plugin only. Returns the watermarked bytes + binding value.
 
         The binding value is minted here (not by the plugin). The plugin
-        embeds whatever value we hand it via ``X-Binding-Value``. 
+        embeds whatever value we hand it via ``X-Binding-Value``.
         We verify the echo to catch plugins that silently ignore the request header.
         """
         if self._entry.type != "watermark":

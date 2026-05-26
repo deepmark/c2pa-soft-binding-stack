@@ -28,11 +28,7 @@ from ingestion_api.adapters.dispatcher import (
 )
 from ingestion_api.contracts.ingestion import IngestionRequest
 from ingestion_api.contracts.plugin import PluginEntry
-from ingestion_api.core.errors import (
-    IngestionError,
-    InvalidAlgRequestError,
-    UnsupportedMediaError,
-)
+from ingestion_api.core.errors import IngestionError, InvalidAlgRequestError, UnsupportedMediaError
 from ingestion_api.core.errors import PluginNotFoundError as _PluginNotFoundError
 from ingestion_api.models.enums import (
     FailureStage,

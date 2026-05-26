@@ -1,9 +1,9 @@
 """
-Local filesystem store for ingest binary artifacts 
+Local filesystem store for ingest binary artifacts
 (the signed asset and the raw signed manifest bytes).
 
 We never persist the raw upload or any plugin-side watermarked intermediate.
-Plugin bytes flow over HTTP and stay in memory until the signing step. 
+Plugin bytes flow over HTTP and stay in memory until the signing step.
 This module only manages the *durable* binary set:
 
     <storage_root>/ingestions/<ingestionId>/

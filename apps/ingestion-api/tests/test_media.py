@@ -16,7 +16,6 @@ from ingestion_api.utils.media import (
     read_audio_format,
 )
 
-
 # ---------------------------------------------------------------------------
 # MIME registry — kept in lock-step with the C2PA Python SDK.
 # ---------------------------------------------------------------------------

@@ -133,9 +133,9 @@ async def health_deep(request: Request) -> JSONResponse:
     """
     Heavy diagnostic probe. NOT for orchestrator readiness checks.
     Each call concurrently probes every catalog plugin's ``/health``
-    plus resolution-api's ``/health`` (when push is enabled). 
-    
-    Cert expiry (``notAfter``) is exposed on the response but will not fail the status. 
+    plus resolution-api's ``/health`` (when push is enabled).
+
+    Cert expiry (``notAfter``) is exposed on the response but will not fail the status.
     Treat as informational and alert externally if nearing expiry.
     """
     mongo = await _check_mongo()

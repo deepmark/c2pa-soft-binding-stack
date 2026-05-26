@@ -11,11 +11,11 @@ import json
 from pathlib import Path
 
 import pytest
+from _helpers import stub_binding_value as compute_binding_value
 
 from ingestion_api.contracts.manifest import SoftBindingSpec
 from ingestion_api.services.manifest import ManifestBuilderService
 from ingestion_api.services.signing import SigningService
-from _helpers import stub_binding_value as compute_binding_value
 
 BINDING_ALG = "me.deepmark.audio.aware.20"
 

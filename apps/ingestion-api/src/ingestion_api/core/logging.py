@@ -1,7 +1,7 @@
 """
 Logging configuration.
 
-Single entry point ``configure_logging`` is called once on app startup. 
+Single entry point ``configure_logging`` is called once on app startup.
 Two modes:
 - plain (default): human-readable, single-line log records
 - json: one JSON document per line, suitable for log shippers
@@ -31,7 +31,7 @@ from ingestion_api.core.config import settings
 
 REQUEST_ID_HEADER = "X-Request-ID"
 
-# Populated per-request by ``RequestIDMiddleware``. 
+# Populated per-request by ``RequestIDMiddleware``.
 # Default is None so a log statement made outside of a request flow gets a placeholder.
 # Cap to 128 chars to defang clients sending unbounded ids that would end up in our logs verbatim.
 _request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)

@@ -9,11 +9,7 @@ No GridFS — the signed asset and manifest bytes stay on the local filesystem
 """
 from __future__ import annotations
 
-from motor.motor_asyncio import (
-    AsyncIOMotorClient,
-    AsyncIOMotorCollection,
-    AsyncIOMotorDatabase,
-)
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection, AsyncIOMotorDatabase
 from pymongo import ASCENDING, DESCENDING
 
 from ingestion_api.core.config import settings
@@ -57,7 +53,7 @@ class MongoDB:
 
     @staticmethod
     async def _ensure_ingestions_indexes(col: AsyncIOMotorCollection) -> None:
-        # Reconciliation worker will need to find FAILED pushes that haven't been retried recently. 
+        # Reconciliation worker will need to find FAILED pushes that haven't been retried recently.
         # Sort key is ``lastPushAttemptAt`` (not createdAt) because the reconciler
         # bumps that field on each retry, naturally drifting the record to the back of the queue.
         await col.create_index(
