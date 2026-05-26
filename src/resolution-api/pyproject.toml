@@ -41,7 +41,7 @@ dev = [
 
 [project.scripts]
 resolution-api = "resolution_api.__main__:run"
-resolution-init-db = "resolution_api.init_db:cli"
+resolution-init-db = "resolution_api.scripts.init_db:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
