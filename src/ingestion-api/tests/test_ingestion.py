@@ -61,7 +61,7 @@ def _mock_resolve_from_catalog(catalog: list[PluginEntry]):
         raise _PluginNotFoundError(f"alg={alg!r} not found")
     return _resolve
 
-BINDING_ALG = "me.deepmark.audio.vigil.128"
+BINDING_ALG = "me.deepmark.audio.aware.20"
 
 
 # ---------------------------------------------------------------------------

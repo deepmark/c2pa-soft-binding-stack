@@ -2,7 +2,7 @@
 ``models.py``)."""
 from typing import Any
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
 class AlgorithmRecord(BaseModel):
@@ -98,8 +98,7 @@ class ManifestReceipt(BaseModel):
     repository: dict = Field(..., description="Repository information")
     anchor: dict = Field(..., description="Anchor proof information")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class VerifiedManifestReceipt(ManifestReceipt):

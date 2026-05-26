@@ -14,7 +14,7 @@ def stub_binding_value(b: bytes) -> str:
 
     Tests only care that ``same bytes -> same string`` so they can
     assert round-trip equality through the pipeline. The real
-    vigil-128 plugin mints its value with ``secrets`` (random) and
+    watermark plugin mints its value with ``secrets`` (random) and
     echoes whatever the caller hands it; this helper has nothing to
     do with that — it's just a stable function over bytes.
     """

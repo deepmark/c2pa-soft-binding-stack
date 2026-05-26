@@ -20,7 +20,7 @@ from ingestion_api.repositories.database import MongoDB
 
 def _entry(**kw) -> PluginEntry:
     return PluginEntry(
-        alg=kw.get("alg", "me.deepmark.audio.vigil.128"),
+        alg=kw.get("alg", "me.deepmark.audio.aware.20"),
         type=kw.get("type", "watermark"),
         binding_bits=kw.get("binding_bits", 128),
         media_types=kw.get("media_types", ("audio/wav",)),
@@ -46,11 +46,11 @@ async def test_load_plugin_catalog_from_db_parses_well_formed_entries():
     mock_col = MagicMock()
     mock_col.find.return_value.to_list = AsyncMock(return_value=[
         {
-            "alg": "me.deepmark.audio.vigil.128",
+            "alg": "me.deepmark.audio.aware.20",
             "type": "watermark",
             "bindingBits": 128,
             "mediaTypes": ["audio/wav"],
-            "url": "http://watermark-vigil-128:8000",
+            "url": "http://watermark-aware-20:9004",
         },
     ])
     mock_client = MagicMock()
@@ -61,9 +61,9 @@ async def test_load_plugin_catalog_from_db_parses_well_formed_entries():
         mock_mongo.client = mock_client
         entries = await load_plugin_catalog_from_db()
     assert len(entries) == 1
-    assert entries[0].alg == "me.deepmark.audio.vigil.128"
+    assert entries[0].alg == "me.deepmark.audio.aware.20"
     assert entries[0].binding_bits == 128
-    assert entries[0].url == "http://watermark-vigil-128:8000"
+    assert entries[0].url == "http://watermark-aware-20:9004"
 
 
 @pytest.mark.asyncio

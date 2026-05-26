@@ -44,7 +44,7 @@ def test_happy_path():
 
     with _client(handler) as http:
         rc = ResolutionPushClient(base_url="http://soft-binding:8000", client=http)
-        result = rc.push(_req(("me.deepmark.audio.vigil.128", "ZmFrZQ==")))
+        result = rc.push(_req(("me.deepmark.audio.aware.20", "ZmFrZQ==")))
 
     assert result.status is ResolutionPushStatus.OK
     assert calls[0][0] == "http://soft-binding:8000/manifests"
@@ -72,14 +72,14 @@ def test_pushes_one_binding_per_pair():
         rc = ResolutionPushClient(base_url="http://soft-binding:8000", client=http)
         result = rc.push(
             _req(
-                ("me.deepmark.audio.vigil.128", "WM=="),
+                ("me.deepmark.audio.aware.20", "WM=="),
                 ("me.deepmark.audio.fp.chroma", "FP=="),
             ),
         )
 
     assert result.status is ResolutionPushStatus.OK
     assert [b["alg"] for b in binding_calls] == [
-        "me.deepmark.audio.vigil.128",
+        "me.deepmark.audio.aware.20",
         "me.deepmark.audio.fp.chroma",
     ]
     assert all(b["manifestId"] == MID for b in binding_calls)

@@ -9,7 +9,7 @@ description = "Audio ingest pipeline: watermark + C2PA sign + persist + push to 
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Kosta" }]
+authors = [{ name = "DeepMark" }]
 keywords = ["c2pa", "watermark", "ingest", "fastapi"]
 classifiers = [
     "Programming Language :: Python :: 3",
