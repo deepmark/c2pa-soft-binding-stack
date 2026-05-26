@@ -74,7 +74,6 @@ class BindingsRequest(BaseModel):
     )
     bindingValue: str = Field(
         ...,
-        max_length=10000,
         description="A soft binding value to be associated with a C2PA Manifest Store",
     )
     manifestId: str = Field(
