@@ -32,6 +32,10 @@ class Settings(BaseSettings):
         description="Absolute path to the shared plugins.yaml catalog.",
     )
 
+    # Limits
+    max_download_size_bytes: int = 100 * 1024 * 1024  # 100 MB — /matches/byReference
+    max_upload_size_bytes: int = 100 * 1024 * 1024    # 100 MB — /matches/byContent
+
     # Logging
     log_level: str = "INFO"
     log_json: bool = False
