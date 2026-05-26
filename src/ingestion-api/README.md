@@ -1,52 +1,96 @@
 # ingestion-api
 
-Audio ingest pipeline: takes an upload, POSTs the audio bytes to a
-watermark plugin over HTTP, builds + signs a C2PA manifest, persists
-artifacts, and (optionally) auto-pushes the manifest store + binding
-to `resolution-api`.
+Audio ingestion pipeline — accepts media uploads, applies watermark soft-bindings via plugin containers, builds and signs C2PA manifests, persists artifacts, and auto-pushes to resolution-api.
 
-For the full picture (compose stack, plugins, resolution-api) see the
-[top-level README](../../README.md).
+For the full stack (compose, resolution-api, plugins) see the [top-level README](../../README.md).
 
 ## Run
 
 ```bash
 pip install -e ".[dev]"
-ingestion-api                # uvicorn on port 8001
+ingestion-api              # uvicorn on port 8001
 ```
 
-`POST /ingest` requires:
-- a watermark plugin reachable at the `url` in `<repo>/plugins.yaml`
-  (default: `http://watermark-vigil-128:8000` from inside the docker
-  network),
-- an ES256 cert chain + private key under `<repo>/credentials/`,
-- a reachable resolution-api at `RESOLUTION_API_URL` (or
-  `RESOLUTION_PUSH_ENABLED=false` to opt out of auto-push entirely).
+Requires:
+- MongoDB running at `MONGODB_URL`
+- Signing credentials in `CREDENTIALS_DIR` (see [`credentials/README.md`](../../credentials/README.md))
+- A watermark plugin reachable (URL comes from `supported_algorithms` collection)
+- `RESOLUTION_API_URL` set (or `RESOLUTION_PUSH_ENABLED=false` to skip auto-push)
+
+Swagger UI: `http://localhost:8001/docs`
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/ingest` | Ingest media: watermark + sign + store + push |
+| GET | `/ingestions` | List ingestions (cursor pagination, filterable by push status) |
+| GET | `/ingest/{id}` | Get ingestion record |
+| GET | `/ingest/{id}/asset` | Download signed asset |
+| HEAD | `/ingest/{id}/asset` | Check signed asset existence |
+| GET | `/ingest/{id}/manifest` | Download raw manifest bytes |
+| HEAD | `/ingest/{id}/manifest` | Check manifest existence |
+| DELETE | `/ingest/{id}` | Delete ingestion (artifacts + record, local only) |
+| GET | `/health` | Liveness probe |
+| GET | `/ready` | Readiness probe (MongoDB + credentials + signing) |
+| GET | `/health/deep` | Full diagnostics (plugins + resolution-api + cert expiry) |
+
+## Ingest request
+
+```bash
+curl -X POST http://localhost:8001/ingest \
+  -F "file=@audio.wav;type=audio/wav" \
+  -F "algs=me.deepmark.audio.aware.20" \
+  -F "title=Optional title"
+```
+
+- `file` — media asset (supported: `audio/wav`, `audio/mpeg`, `audio/flac`, `audio/mp4`)
+- `algs` — algorithm IDs to apply (repeat for multiple: `-F "algs=a" -F "algs=b"`)
+- `title` — optional manifest title
 
 ## Config
 
-Settings live in `src/ingestion_api/core/config.py`. Common overrides:
+Settings: `src/ingestion_api/core/config.py`. Override via env vars or `.env`.
 
-Soft-binding algs are now passed per request via the `algs` form field
-on `POST /ingest` (repeated form fields, e.g.
-`-F 'algs=me.deepmark.audio.vigil.128'`). The catalog
-(`plugins.yaml`) is the source of truth for which algs this
-deployment can serve; there is no service-wide default.
+### Required
 
-| Var | Default | What |
-| --- | --- | --- |
-| `MONGODB_URL` | **required** | Ingestion-api's own Mongo cluster |
-| `DATABASE_NAME` | **required** | Database for the `ingestions` collection |
-| `PLUGINS_CATALOG_PATH` | **required** | Shared catalog (compose mounts `/catalog/plugins.yaml`) |
-| `STORAGE_ROOT` | **required** | Local artifact store directory |
-| `CREDENTIALS_DIR` | **required** | ES256 cert + key root |
+| Variable | Description |
+|----------|-------------|
+| `MONGODB_URL` | MongoDB connection string |
+| `DATABASE_NAME` | Database for the `ingestions` collection |
+| `STORAGE_ROOT` | Directory for signed assets + manifest bytes |
+| `CREDENTIALS_DIR` | Directory containing `<alg>_certs.pem` + `<alg>_private.key` |
+
+### Optional
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ALGORITHMS_DATABASE_NAME` | `c2pa_soft_bindings` | DB with the `supported_algorithms` collection |
 | `SIGNING_ALG` | `ES256` | C2PA signing algorithm |
-| `TA_URL` | _(unset)_ | RFC 3161 timestamp authority |
-| `RESOLUTION_PUSH_ENABLED` | `true` | Auto-push to resolution-api after sign |
-| `RESOLUTION_API_URL` | _(required when push enabled)_ | Auto-push target |
-| `RESOLUTION_MAX_RETRIES` | `1` | Per-HTTP-call retries on transient failure (5xx, timeout, network). 4xx never retries. |
-| `RESOLUTION_RETRY_BACKOFF_S` | `0.5` | Initial backoff between retries (doubles each attempt) |
-| `LOG_LEVEL` / `LOG_JSON` | `INFO` / `false` | Logging |
+| `TA_URL` | _(empty)_ | RFC 3161 timestamp authority |
+| `RESOLUTION_PUSH_ENABLED` | `true` | Auto-push to resolution-api |
+| `RESOLUTION_API_URL` | _(required when push enabled)_ | Resolution-api base URL |
+| `RESOLUTION_MAX_RETRIES` | `1` | Retries on transient failure (5xx/timeout) |
+| `RESOLUTION_RETRY_BACKOFF_S` | `0.5` | Initial backoff (doubles each retry) |
+| `RESOLUTION_REQUEST_TIMEOUT_S` | `10.0` | HTTP timeout for push calls |
+| `PLUGIN_REQUEST_TIMEOUT_S` | `60.0` | HTTP timeout for plugin calls |
+| `MAX_ALGS_PER_INGEST` | `8` | Max algorithms per request |
+| `MAX_TITLE_LENGTH` | `128` | Max title characters |
+| `PUBLIC_BASE_URL` | _(empty)_ | Pin absolute URLs in responses (otherwise uses request host) |
+| `FORWARDED_ALLOW_IPS` | `*` | Trusted proxy CIDRs for X-Forwarded-* |
+| `LOG_LEVEL` | `INFO` | Logging level |
+| `LOG_JSON` | `false` | JSON-formatted log output |
+
+## MongoDB collections
+
+In the `c2pa_ingestions` database:
+
+| Collection | Purpose |
+|------------|---------|
+| `ingestions` | One doc per successful ingest (metadata, push status) |
+| `failed_ingestions` | Pipeline failures captured for ops/forensics |
+
+Algorithm catalog is read from `c2pa_soft_bindings.supported_algorithms` (shared with resolution-api, configurable via `ALGORITHMS_DATABASE_NAME`).
 
 ## Tests
 
@@ -54,7 +98,4 @@ deployment can serve; there is no service-wide default.
 pytest -q
 ```
 
-Tests use `httpx.MockTransport` to stub the plugin and the
-resolution-api. Real C2PA signing is exercised end-to-end against the
-ES256 test cert chain — drop one in `<repo>/credentials/` (see the
-[top-level README](../../README.md)) or those tests will skip.
+Tests use mocked plugins and resolution-api (no live services needed). C2PA signing tests require `credentials/es256_certs.pem` + `es256_private.key` — auto-skipped when not present.
