@@ -1,102 +1,118 @@
-"""Tests for the plugins.yaml loader."""
-from pathlib import Path
-from textwrap import dedent
+"""Tests for the MongoDB-backed plugin catalog."""
+from __future__ import annotations
 
-from resolution_api.services.plugins_catalog import (
-    PluginNotFoundError,
-    load_plugin_catalog,
-    resolve,
-)
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
-
-def test_load_plugin_catalog_returns_empty_for_missing_file(tmp_path: Path):
-    assert load_plugin_catalog(tmp_path / "missing.yaml") == []
-
-
-def test_load_plugin_catalog_parses_well_formed_entries(tmp_path: Path):
-    p = tmp_path / "plugins.yaml"
-    p.write_text(dedent("""
-        plugins:
-          - alg: me.deepmark.audio.aware.20
-            type: watermark
-            bindingBits: 20
-            mediaTypes: ["audio/wav"]
-            url: http://watermark-aware-20:9004
-          - alg: org.example.fp.v1
-            type: fingerprint
-            bindingBits: 64
-            mediaTypes: ["audio/mpeg"]
-    """))
-    entries = load_plugin_catalog(p)
-    assert len(entries) == 2
-    wm = next(e for e in entries if e.type == "watermark")
-    assert wm.alg == "me.deepmark.audio.aware.20"
-    assert wm.binding_bits == 20
-    assert wm.url == "http://watermark-aware-20:9004"
-    assert "audio/wav" in wm.media_types
-    fp = next(e for e in entries if e.type == "fingerprint")
-    assert fp.alg == "org.example.fp.v1"
-    assert fp.url is None
+from resolution_api.services.plugins_catalog import (
+    PluginEntry,
+    PluginNotFoundError,
+    load_all_plugins,
+    resolve,
+)
 
 
-def test_load_plugin_catalog_accepts_non_byte_aligned_binding_bits(tmp_path: Path):
-    """bindingBits doesn't have to be a multiple of 8."""
-    p = tmp_path / "plugins.yaml"
-    p.write_text(dedent("""
-        plugins:
-          - alg: weird.width
-            type: watermark
-            bindingBits: 100
-            mediaTypes: ["audio/wav"]
-    """))
-    entries = load_plugin_catalog(p)
-    assert len(entries) == 1
-    assert entries[0].binding_bits == 100
+class _FakeCursor:
+    def __init__(self, docs):
+        self._docs = docs
+
+    async def to_list(self, length=None):
+        if length is not None:
+            return self._docs[:length]
+        return list(self._docs)
 
 
-def test_load_plugin_catalog_skips_malformed_entries(tmp_path: Path):
-    p = tmp_path / "plugins.yaml"
-    p.write_text(dedent("""
-        plugins:
-          - alg: ok.alg
-            type: watermark
-            bindingBits: 20
-          - {not_alg: nope}
-          - alg: zero.bits
-            type: watermark
-            bindingBits: 0
-          - alg: missing.bits
-            type: watermark
-    """))
-    entries = load_plugin_catalog(p)
-    assert len(entries) == 1
-    assert entries[0].alg == "ok.alg"
-    assert entries[0].binding_bits == 20
+def _make_col(docs, find_one_result=None):
+    col = AsyncMock()
+    col.find_one = AsyncMock(return_value=find_one_result)
+    col.find = lambda *a, **kw: _FakeCursor(docs)
+    return col
 
 
-def test_resolve_returns_matching_entry(tmp_path: Path):
-    p = tmp_path / "plugins.yaml"
-    p.write_text(dedent("""
-        plugins:
-          - alg: me.deepmark.audio.aware.20
-            type: watermark
-            bindingBits: 20
-            url: http://watermark-aware-20:9004
-    """))
-    catalog = load_plugin_catalog(p)
-    entry = resolve("me.deepmark.audio.aware.20", catalog=catalog)
-    assert entry.alg == "me.deepmark.audio.aware.20"
+class TestResolve:
+    async def test_returns_entry_for_known_alg(self):
+        doc = {
+            "alg": "me.deepmark.audio.aware.20",
+            "type": "watermark",
+            "bindingBits": 20,
+            "mediaTypes": ["audio/wav"],
+            "url": "http://watermark-aware-20:9004",
+        }
+        col = _make_col([], find_one_result=doc)
+        with patch(
+            "resolution_api.services.plugins_catalog.get_supported_algorithms_collection",
+            return_value=col,
+        ):
+            entry = await resolve("me.deepmark.audio.aware.20")
+        assert entry.alg == "me.deepmark.audio.aware.20"
+        assert entry.type == "watermark"
+        assert entry.binding_bits == 20
+        assert entry.url == "http://watermark-aware-20:9004"
+        assert "audio/wav" in entry.media_types
+
+    async def test_raises_for_unknown_alg(self):
+        col = _make_col([], find_one_result=None)
+        with patch(
+            "resolution_api.services.plugins_catalog.get_supported_algorithms_collection",
+            return_value=col,
+        ):
+            with pytest.raises(PluginNotFoundError):
+                await resolve("no.such.alg")
+
+    async def test_handles_missing_optional_fields(self):
+        doc = {
+            "alg": "me.deepmark.audio.aware.20",
+            "type": "watermark",
+        }
+        col = _make_col([], find_one_result=doc)
+        with patch(
+            "resolution_api.services.plugins_catalog.get_supported_algorithms_collection",
+            return_value=col,
+        ):
+            entry = await resolve("me.deepmark.audio.aware.20")
+        assert entry.binding_bits == 0
+        assert entry.media_types == ()
+        assert entry.url is None
 
 
-def test_resolve_raises_for_unknown_alg(tmp_path: Path):
-    p = tmp_path / "plugins.yaml"
-    p.write_text(dedent("""
-        plugins:
-          - alg: me.deepmark.audio.aware.20
-            type: watermark
-            bindingBits: 20
-    """))
-    catalog = load_plugin_catalog(p)
-    with pytest.raises(PluginNotFoundError):
-        resolve("no.such.alg", catalog=catalog)
+class TestLoadAllPlugins:
+    async def test_returns_all_entries(self):
+        docs = [
+            {
+                "alg": "me.deepmark.audio.aware.20",
+                "type": "watermark",
+                "bindingBits": 20,
+                "mediaTypes": ["audio/wav"],
+                "url": "http://watermark-aware-20:9004",
+            },
+            {
+                "alg": "org.example.audiofp.v1",
+                "type": "fingerprint",
+                "bindingBits": 64,
+                "mediaTypes": ["audio/mpeg"],
+            },
+        ]
+        col = _make_col(docs)
+        with patch(
+            "resolution_api.services.plugins_catalog.get_supported_algorithms_collection",
+            return_value=col,
+        ):
+            entries = await load_all_plugins()
+        assert len(entries) == 2
+        wm = next(e for e in entries if e.type == "watermark")
+        assert wm.alg == "me.deepmark.audio.aware.20"
+        assert wm.binding_bits == 20
+        assert wm.url == "http://watermark-aware-20:9004"
+        fp = next(e for e in entries if e.type == "fingerprint")
+        assert fp.alg == "org.example.audiofp.v1"
+        assert fp.url is None
+
+    async def test_returns_empty_list_when_no_docs(self):
+        col = _make_col([])
+        with patch(
+            "resolution_api.services.plugins_catalog.get_supported_algorithms_collection",
+            return_value=col,
+        ):
+            entries = await load_all_plugins()
+        assert entries == []

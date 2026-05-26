@@ -161,7 +161,8 @@ class TestPostByContent:
         )
         with (
             patch(
-                "resolution_api.routers.query.load_plugin_catalog",
+                "resolution_api.routers.query.load_all_plugins",
+                new_callable=AsyncMock,
                 return_value=[entry],
             ),
             patch(
@@ -182,7 +183,11 @@ class TestPostByContent:
     async def test_no_watermark_detected(self, client, mock_bindings_col):
         entry = PluginEntry(alg=ALG, type="watermark", url="http://fake:9004")
         with (
-            patch("resolution_api.routers.query.load_plugin_catalog", return_value=[entry]),
+            patch(
+                "resolution_api.routers.query.load_all_plugins",
+                new_callable=AsyncMock,
+                return_value=[entry],
+            ),
             patch("resolution_api.routers.query.AsyncPluginClient") as MockClient,
         ):
             instance = AsyncMock()
@@ -199,10 +204,8 @@ class TestPostByContent:
     async def test_no_content_type_header(self, client):
         resp = await client.post(
             "/matches/byContent",
-            # Force content-type to empty string via explicit header
             files={"file": ("test.wav", b"\x00\x01", "")},
         )
-        # Empty string doesn't start with "audio/" so gets 415
         assert resp.status_code == 415
 
     async def test_plugin_unavailable_with_explicit_alg(self, client):
@@ -210,7 +213,11 @@ class TestPostByContent:
 
         entry = PluginEntry(alg=ALG, type="watermark", url="http://fake:9004")
         with (
-            patch("resolution_api.routers.query.resolve", return_value=entry),
+            patch(
+                "resolution_api.routers.query.resolve",
+                new_callable=AsyncMock,
+                return_value=entry,
+            ),
             patch("resolution_api.routers.query.AsyncPluginClient") as MockClient,
         ):
             instance = AsyncMock()

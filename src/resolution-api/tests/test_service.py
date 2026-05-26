@@ -1,23 +1,21 @@
 """Tests for service.py — GET /services/supportedAlgorithms."""
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from resolution_api.services.plugins_catalog import PluginEntry
+from tests.conftest import _FakeCursor
 
 
 class TestGetSupportedAlgorithms:
-    async def test_returns_watermarks_and_fingerprints(self, client):
-        catalog = [
-            PluginEntry(alg="me.deepmark.audio.aware.20", type="watermark"),
-            PluginEntry(alg="org.example.audiofp.v1", type="fingerprint"),
+    async def test_returns_watermarks_and_fingerprints(self, client, mock_algorithms_col):
+        docs = [
+            {"alg": "me.deepmark.audio.aware.20", "type": "watermark", "bindingBits": 20, "mediaTypes": ["audio/wav"]},
+            {"alg": "org.example.audiofp.v1", "type": "fingerprint", "bindingBits": 64, "mediaTypes": ["audio/mpeg"]},
         ]
-        with patch(
-            "resolution_api.routers.service.load_plugin_catalog", return_value=catalog,
-        ):
-            resp = await client.get("/services/supportedAlgorithms")
+        mock_algorithms_col.find = lambda *a, **kw: _FakeCursor(docs)
+        resp = await client.get("/services/supportedAlgorithms")
         assert resp.status_code == 200
         body = resp.json()
         assert len(body["watermarks"]) == 1
@@ -25,33 +23,30 @@ class TestGetSupportedAlgorithms:
         assert len(body["fingerprints"]) == 1
         assert body["fingerprints"][0]["alg"] == "org.example.audiofp.v1"
 
-    async def test_empty_catalog(self, client):
-        with patch(
-            "resolution_api.routers.service.load_plugin_catalog", return_value=[],
-        ):
-            resp = await client.get("/services/supportedAlgorithms")
+    async def test_empty_catalog(self, client, mock_algorithms_col):
+        mock_algorithms_col.find = lambda *a, **kw: _FakeCursor([])
+        resp = await client.get("/services/supportedAlgorithms")
         assert resp.status_code == 200
         body = resp.json()
         assert body["watermarks"] == []
         assert body["fingerprints"] == []
 
-    async def test_watermarks_only(self, client):
-        catalog = [
-            PluginEntry(alg="wm1", type="watermark"),
-            PluginEntry(alg="wm2", type="watermark"),
+    async def test_watermarks_only(self, client, mock_algorithms_col):
+        docs = [
+            {"alg": "wm1", "type": "watermark", "bindingBits": 20, "mediaTypes": ["audio/wav"]},
+            {"alg": "wm2", "type": "watermark", "bindingBits": 32, "mediaTypes": ["audio/wav"]},
         ]
-        with patch(
-            "resolution_api.routers.service.load_plugin_catalog", return_value=catalog,
-        ):
-            resp = await client.get("/services/supportedAlgorithms")
+        mock_algorithms_col.find = lambda *a, **kw: _FakeCursor(docs)
+        resp = await client.get("/services/supportedAlgorithms")
         body = resp.json()
         assert len(body["watermarks"]) == 2
         assert body["fingerprints"] == []
 
-    async def test_catalog_load_error(self, client):
-        with patch(
-            "resolution_api.routers.service.load_plugin_catalog",
-            side_effect=Exception("YAML parse error"),
-        ):
-            resp = await client.get("/services/supportedAlgorithms")
+    async def test_catalog_load_error(self, client, mock_algorithms_col):
+        class _ErrorCursor:
+            async def to_list(self, length=None):
+                raise Exception("DB error")
+
+        mock_algorithms_col.find = lambda *a, **kw: _ErrorCursor()
+        resp = await client.get("/services/supportedAlgorithms")
         assert resp.status_code == 500
