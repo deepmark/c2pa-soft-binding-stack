@@ -4,6 +4,7 @@ Query route group
 Searches for matching manifests using a soft binding. The soft binding value
 is either provided by the caller, or is computed from an asset.
 """
+import asyncio
 import base64
 import ipaddress
 import socket
@@ -130,7 +131,8 @@ async def _validate_and_resolve_url(url_str: str) -> tuple[str, int, str]:
         )
 
     try:
-        addrinfos = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
+        loop = asyncio.get_running_loop()
+        addrinfos = await loop.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror:
         raise HTTPException(
             status_code=400,
