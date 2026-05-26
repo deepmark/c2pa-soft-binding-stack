@@ -27,13 +27,13 @@ repos:
     hooks:
       - id: ruff-ingestion-api
         name: ruff ingestion-api
-        entry: bash -c 'cd apps/ingestion-api && uv run ruff check "${@/#apps\/ingestion-api\//}"' --
+        entry: bash -c 'cd apps/ingestion-api && uv run --extra dev ruff check "${@/#apps\/ingestion-api\//}"' --
         language: system
         files: ^apps/ingestion-api/.*\.py$
 
       - id: ruff-resolution-api
         name: ruff resolution-api
-        entry: bash -c 'cd apps/resolution-api && uv run ruff check "${@/#apps\/resolution-api\//}"' --
+        entry: bash -c 'cd apps/resolution-api && uv run --extra dev ruff check "${@/#apps\/resolution-api\//}"' --
         language: system
         files: ^apps/resolution-api/.*\.py$
 
