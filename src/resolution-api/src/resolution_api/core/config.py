@@ -8,9 +8,6 @@ sign manifests or run the ingest pipeline (that lives in
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,11 +23,10 @@ class Settings(BaseSettings):
         "Web service API endpoint for matching soft bindings to C2PA Manifests."
     )
 
-    # Plugin catalog (shared YAML mounted into the container).
-    plugins_catalog_path: Path = Field(
-        ...,
-        description="Absolute path to the shared plugins.yaml catalog.",
-    )
+
+    # Limits
+    max_download_size_bytes: int = 100 * 1024 * 1024  # 100 MB — /matches/byReference
+    max_upload_size_bytes: int = 100 * 1024 * 1024    # 100 MB — /matches/byContent
 
     # Logging
     log_level: str = "INFO"

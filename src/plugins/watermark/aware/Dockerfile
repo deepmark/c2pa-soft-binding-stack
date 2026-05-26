@@ -19,13 +19,13 @@ RUN pip install --timeout=300 \
     --extra-index-url https://download.pytorch.org/whl/cpu
 
 ARG AWARE_VERSION=v1.0.0
-RUN git clone https://github.com/deepmarkpy/aware.git aware \
+RUN git clone https://github.com/deepmark/aware.git aware \
  && cd aware && git checkout ${AWARE_VERSION} \
  && pip install --timeout=300 --no-deps -e . \
  && pip install --timeout=300 \
     numpy==1.26.4 librosa==0.9.2 soundfile==0.12.1 pydantic==2.5.0 \
     matplotlib==3.7.2 scikit-learn==1.5.0 numba==0.59.0 resampy==0.4.2 \
-    tqdm==4.66.1 pesq==0.0.4 pyyaml==6.0.1 pystoi==0.4.1 webrtcvad==2.0.10
+    tqdm==4.66.1 pyyaml==6.0.1 webrtcvad==2.0.10
 
 # Service-specific deps
 COPY requirements.txt .

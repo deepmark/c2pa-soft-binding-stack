@@ -7,6 +7,7 @@ services:
       - "${MONGO_PORT:-27017}:27017"
     volumes:
       - mongo-data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d:ro
 
   resolution-api:
     build:
@@ -20,11 +21,8 @@ services:
     environment:
       MONGODB_URL: mongodb://mongo:27017
       DATABASE_NAME: c2pa_soft_bindings
-      PLUGINS_CATALOG_PATH: /catalog/plugins.yaml
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON: ${LOG_JSON:-false}
-    volumes:
-      - ./plugins.yaml:/catalog/plugins.yaml:ro
 
   ingestion-api:
     build:
@@ -43,10 +41,9 @@ services:
       # from resolution-api's; here we share a container in dev.
       MONGODB_URL: mongodb://mongo:27017
       DATABASE_NAME: c2pa_ingestions
-      PLUGINS_CATALOG_PATH: /catalog/plugins.yaml
+      ALGORITHMS_DATABASE_NAME: c2pa_soft_bindings
       STORAGE_ROOT: /var/lib/ingestion-api/storage
       CREDENTIALS_DIR: /credentials
-      DEFAULT_AUDIO_ALG: ${DEFAULT_AUDIO_ALG:-me.deepmark.audio.aware.20}
       SIGNING_ALG: ${SIGNING_ALG:-ES256}
       TA_URL: ${TA_URL:-}
       # Resolution-api auto-push (default ON). Set
@@ -58,7 +55,6 @@ services:
       LOG_JSON: ${LOG_JSON:-false}
       PLUGIN_REQUEST_TIMEOUT_S: 300
     volumes:
-      - ./plugins.yaml:/catalog/plugins.yaml:ro
       - ./credentials:/credentials:ro
       - ingestion-storage:/var/lib/ingestion-api/storage
 

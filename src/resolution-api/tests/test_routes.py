@@ -1,5 +1,5 @@
-"""Smoke tests that don't require MongoDB — verify the app boots and exposes
-the routes the C2PA Decoupled spec defines, plus health endpoints."""
+"""Smoke tests — verify the app boots and exposes the routes the C2PA
+Decoupled spec defines, plus health endpoints."""
 from resolution_api.__main__ import app
 
 

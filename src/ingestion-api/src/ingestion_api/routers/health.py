@@ -35,7 +35,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ingestion_api.contracts.plugin import PluginEntry
-from ingestion_api.core.plugin import load_plugin_catalog
+from ingestion_api.core.plugin import load_plugin_catalog_from_db
 from ingestion_api.core.config import settings
 from ingestion_api.repositories.database import MongoDB
 from ingestion_api.core.logging import get_logger
@@ -145,11 +145,7 @@ async def health_deep(request: Request) -> JSONResponse:
     )
     signing_loaded = _signing_loaded(request)
     cert_info = _cert_info(request)
-    catalog = getattr(request.app.state, "plugin_catalog", None)
-    if catalog is None:
-        # Fallback for tests / standalone router mounts that don't run
-        # the full lifespan; production always has it on app.state.
-        catalog = load_plugin_catalog()
+    catalog = await load_plugin_catalog_from_db()
 
     async with httpx.AsyncClient(timeout=settings.health_deep_probe_timeout_s) as client:
         plugin_task = asyncio.create_task(_probe_plugins(client, catalog))
@@ -182,8 +178,9 @@ async def health_deep(request: Request) -> JSONResponse:
             "ta_url": settings.ta_url,
         },
         "catalog": {
-            "path": str(settings.plugins_catalog_path),
-            "entries": len(catalog),
+            "source": "mongodb",
+            "database": settings.algorithms_database_name,
+            "count": len(catalog),
         },
         "plugins": plugins_report,
         "resolution_api": resolution,
@@ -274,7 +271,7 @@ async def _probe_plugins(
                 "alg": entry.alg,
                 "ok": False,
                 "url": None,
-                "error": f"alg {entry.alg!r} has no URL in plugins.yaml",
+                "error": f"alg {entry.alg!r} has no URL in supported_algorithms",
             }
         url = entry.url.rstrip("/") + "/health"
         try:

@@ -20,7 +20,7 @@ class _SoftBindingBase(BaseModel):
         ...,
         description=(
             "Encoded binding value (string; encoding is plugin-specific — "
-            "e.g. base64 for vigil-128)"
+            "e.g. base64 for aware-20)"
         ),
     )
 

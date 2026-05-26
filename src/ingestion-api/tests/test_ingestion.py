@@ -48,7 +48,20 @@ from ingestion_api.services.signing import SigningService
 from ingestion_api.utils.hashing import sha256_hex
 from _helpers import stub_binding_value as _binding_value
 
-BINDING_ALG = "me.deepmark.audio.vigil.128"
+from unittest.mock import patch, AsyncMock
+from ingestion_api.core.errors import PluginNotFoundError as _PluginNotFoundError
+
+
+def _mock_resolve_from_catalog(catalog: list[PluginEntry]):
+    """Return an async mock of resolve_plugin that looks up from a list."""
+    async def _resolve(alg: str):
+        for entry in catalog:
+            if entry.alg == alg:
+                return entry
+        raise _PluginNotFoundError(f"alg={alg!r} not found")
+    return _resolve
+
+BINDING_ALG = "me.deepmark.audio.aware.20"
 
 
 # ---------------------------------------------------------------------------
@@ -187,9 +200,13 @@ def ingestion_service(
     failed_records: InMemoryFailedIngestionRepository,
     stub_resolution: _StubResolutionClient,
     patched_plugin: PluginEntry,
+    monkeypatch,
 ) -> IngestionService:
+    monkeypatch.setattr(
+        "ingestion_api.services.ingestion.resolve_plugin",
+        _mock_resolve_from_catalog([patched_plugin]),
+    )
     return IngestionService(
-        plugin_catalog=[patched_plugin],
         signing_service=signing_service,
         manifest_builder=manifest_builder,
         artifacts=artifacts,
@@ -315,26 +332,29 @@ def test_ingest_records_failed_push(
         def close(self):
             pass
 
-    svc = IngestionService(
-        plugin_catalog=[patched_plugin],
-        signing_service=signing_service,
-        manifest_builder=manifest_builder,
-        artifacts=artifacts,
-        records=records,
-        failed_records=failed_records,
-        resolution_client=_FailingResolution(),
-    )
+    with patch(
+        "ingestion_api.services.ingestion.resolve_plugin",
+        side_effect=_mock_resolve_from_catalog([patched_plugin]),
+    ):
+        svc = IngestionService(
+            signing_service=signing_service,
+            manifest_builder=manifest_builder,
+            artifacts=artifacts,
+            records=records,
+            failed_records=failed_records,
+            resolution_client=_FailingResolution(),
+        )
 
-    result = asyncio.run(
-        svc.ingest(
-            IngestionRequest(
-                filename="sample.wav",
-                content_type="audio/wav",
-                data=sample_wav_bytes,
-                algs=[BINDING_ALG],
+        result = asyncio.run(
+            svc.ingest(
+                IngestionRequest(
+                    filename="sample.wav",
+                    content_type="audio/wav",
+                    data=sample_wav_bytes,
+                    algs=[BINDING_ALG],
+                )
             )
         )
-    )
     assert result.record.resolutionPushStatus is ResolutionPushStatus.FAILED
     assert result.record.resolutionPushError == "boom"
     assert result.record.resolutionPushAttempts == 1
@@ -379,9 +399,12 @@ def test_pipeline_failure_persists_failed_ingestion(
             return {"version": "broken"}
 
     monkeypatch.setattr(pipeline_module, "PluginDispatcher", _BrokenPluginDispatcher)
+    monkeypatch.setattr(
+        "ingestion_api.services.ingestion.resolve_plugin",
+        _mock_resolve_from_catalog([entry]),
+    )
 
     svc = IngestionService(
-        plugin_catalog=[entry],
         signing_service=signing_service,
         manifest_builder=manifest_builder,
         artifacts=artifacts,
@@ -471,9 +494,12 @@ def test_pipeline_rejects_plugin_that_changes_audio_format(
 
     from ingestion_api.pipeline import plugin_runner as pipeline_module
     monkeypatch.setattr(pipeline_module, "PluginDispatcher", _ResamplingPlugin)
+    monkeypatch.setattr(
+        "ingestion_api.services.ingestion.resolve_plugin",
+        _mock_resolve_from_catalog([entry]),
+    )
 
     svc = IngestionService(
-        plugin_catalog=[entry],
         signing_service=signing_service,
         manifest_builder=manifest_builder,
         artifacts=artifacts,
@@ -543,10 +569,14 @@ def test_ingest_rejects_unknown_alg(
     failed_records: InMemoryFailedIngestionRepository,
     stub_resolution: _StubResolutionClient,
     sample_wav_bytes: bytes,
+    monkeypatch,
 ):
-    """Caller asks for an alg not in the catalog -> 400 (no record persisted)."""
+    """Caller asks for an alg not in the DB -> 400 (no record persisted)."""
+    monkeypatch.setattr(
+        "ingestion_api.services.ingestion.resolve_plugin",
+        _mock_resolve_from_catalog([]),
+    )
     svc = IngestionService(
-        plugin_catalog=[],  # empty catalog -> every alg is "unknown"
         signing_service=signing_service,
         manifest_builder=manifest_builder,
         artifacts=artifacts,
@@ -580,6 +610,7 @@ def test_ingest_rejects_alg_incompatible_with_mime(
     failed_records: InMemoryFailedIngestionRepository,
     stub_resolution: _StubResolutionClient,
     sample_wav_bytes: bytes,
+    monkeypatch,
 ):
     """Caller asks for an alg that exists but doesn't list audio/wav in mediaTypes."""
     video_only_entry = PluginEntry(
@@ -590,8 +621,11 @@ def test_ingest_rejects_alg_incompatible_with_mime(
         url="http://stubbed:9000",
     )
 
+    monkeypatch.setattr(
+        "ingestion_api.services.ingestion.resolve_plugin",
+        _mock_resolve_from_catalog([video_only_entry]),
+    )
     svc = IngestionService(
-        plugin_catalog=[video_only_entry],
         signing_service=signing_service,
         manifest_builder=manifest_builder,
         artifacts=artifacts,
@@ -727,9 +761,12 @@ def test_ingest_parent_ingredient_uses_upload_not_plugin_output(
 
     from ingestion_api.pipeline import plugin_runner as pipeline_module
     monkeypatch.setattr(pipeline_module, "PluginDispatcher", _MutatingPlugin)
+    monkeypatch.setattr(
+        "ingestion_api.services.ingestion.resolve_plugin",
+        _mock_resolve_from_catalog([entry]),
+    )
 
     svc = IngestionService(
-        plugin_catalog=[entry],
         signing_service=signing_service,
         manifest_builder=capturing_builder,
         artifacts=artifacts,
@@ -787,9 +824,12 @@ def test_ingest_with_watermark_plus_fingerprint(
     ]
     from ingestion_api.pipeline import plugin_runner as pipeline_module
     monkeypatch.setattr(pipeline_module, "PluginDispatcher", _StubPluginDispatcher)
+    monkeypatch.setattr(
+        "ingestion_api.services.ingestion.resolve_plugin",
+        _mock_resolve_from_catalog(catalog),
+    )
 
     svc = IngestionService(
-        plugin_catalog=catalog,
         signing_service=signing_service,
         manifest_builder=manifest_builder,
         artifacts=artifacts,

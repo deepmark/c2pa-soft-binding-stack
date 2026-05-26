@@ -1,9 +1,10 @@
 """
 Plugin catalog loader.
 
-Catalog source of truth is the shared ``plugins.yaml`` mounted at
-``settings.plugins_catalog_path``. Each entry maps a soft-binding
-algorithm identifier (``alg``) to the plugin that implements it:
+Catalog source of truth is the ``supported_algorithms`` collection in
+MongoDB (database configured via ``settings.algorithms_database_name``).
+Each entry maps a soft-binding algorithm identifier (``alg``) to the
+plugin that implements it:
 
 - its type (``watermark`` or ``fingerprint``),
 - its binding value width in bits,
@@ -12,66 +13,81 @@ algorithm identifier (``alg``) to the plugin that implements it:
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-import yaml
-
 from ingestion_api.contracts.plugin import PluginEntry
 from ingestion_api.core.config import settings
 from ingestion_api.core.errors import PluginNotFoundError
 from ingestion_api.core.logging import get_logger
+from ingestion_api.repositories.database import MongoDB
 
 logger = get_logger(__name__)
 
 
-def load_plugin_catalog(path: Path | None = None) -> list[PluginEntry]:
-    """Read + validate the YAML catalog. Returns an empty list if the file
-    is missing or malformed (each malformed row is skipped with a warning).
+async def load_plugin_catalog_from_db() -> list[PluginEntry]:
+    """Read the supported_algorithms collection and return PluginEntry list.
+
+    Returns an empty list if the collection is empty or unreachable.
     """
-    catalog_path = path or settings.plugins_catalog_path
-    if not catalog_path.is_file():
-        logger.warning("Plugin catalog not found at %s", catalog_path)
+    if MongoDB.client is None:
+        logger.warning("MongoDB not connected; cannot load plugin catalog")
         return []
 
-    raw = yaml.safe_load(catalog_path.read_text("utf-8")) or {}
+    col = MongoDB.client[settings.algorithms_database_name]["supported_algorithms"]
+    docs = await col.find({}).to_list(length=100)
     out: list[PluginEntry] = []
-    for i, entry in enumerate(raw.get("plugins") or []):
+    for doc in docs:
         try:
-            binding_bits = int(entry["bindingBits"])
+            binding_bits = int(doc["bindingBits"])
             if binding_bits <= 0:
                 raise ValueError(
                     f"bindingBits must be positive, got {binding_bits}",
                 )
             out.append(
                 PluginEntry(
-                    alg=str(entry["alg"]),
-                    type=entry["type"],
+                    alg=str(doc["alg"]),
+                    type=doc["type"],
                     binding_bits=binding_bits,
-                    media_types=tuple(entry.get("mediaTypes") or ()),
-                    url=entry.get("url"),
+                    media_types=tuple(doc.get("mediaTypes") or ()),
+                    url=doc.get("url"),
                 )
             )
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning(
-                "Skipping malformed plugin entry #%d in %s: %s", i, catalog_path, exc,
+                "Skipping malformed algorithm entry (alg=%s): %s",
+                doc.get("alg", "?"),
+                exc,
             )
     return out
 
 
-def resolve_plugin(
-    alg: str, *, catalog: list[PluginEntry] | None = None,
-) -> PluginEntry:
+async def resolve_plugin(alg: str) -> PluginEntry:
     """Find a plugin by alg id; raises ``PluginNotFoundError`` if missing.
 
-    ``catalog`` should be supplied by the caller (loaded once at startup
-    and threaded through DI). When omitted, a fresh on-disk load is
-    performed.
+    Queries the supported_algorithms collection directly each time,
+    so newly-registered algorithms are available immediately without
+    a service restart.
     """
-    entries = catalog if catalog is not None else load_plugin_catalog()
-    for entry in entries:
-        if entry.alg == alg:
-            return entry
-    raise PluginNotFoundError(
-        f"alg={alg!r} not found in catalog {settings.plugins_catalog_path}. "
-        f"Known algorithms: {[e.alg for e in entries]}"
+    if MongoDB.client is None:
+        raise PluginNotFoundError(
+            f"alg={alg!r} cannot be resolved: MongoDB not connected"
+        )
+
+    col = MongoDB.client[settings.algorithms_database_name]["supported_algorithms"]
+    doc = await col.find_one({"alg": alg})
+    if not doc:
+        raise PluginNotFoundError(
+            f"alg={alg!r} not found in supported_algorithms collection"
+        )
+
+    binding_bits = int(doc["bindingBits"])
+    if binding_bits <= 0:
+        raise PluginNotFoundError(
+            f"alg={alg!r} has invalid bindingBits={binding_bits}"
+        )
+
+    return PluginEntry(
+        alg=str(doc["alg"]),
+        type=doc["type"],
+        binding_bits=binding_bits,
+        media_types=tuple(doc.get("mediaTypes") or ()),
+        url=doc.get("url"),
     )

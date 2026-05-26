@@ -10,6 +10,8 @@ The supported-algorithms list is no longer seeded here — it's read from
 """
 import asyncio
 import base64
+import os
+import sys
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from pymongo import ASCENDING
@@ -31,6 +33,12 @@ SAMPLE_MANIFESTS = [
 
 
 async def init_database() -> None:
+    if os.environ.get("ALLOW_DESTRUCTIVE_INIT", "").lower() != "true":
+        print("ERROR: This script wipes all data in the target database.")
+        print(f"  Target: {settings.mongodb_url} / {settings.database_name}")
+        print("  Set ALLOW_DESTRUCTIVE_INIT=true to proceed.")
+        sys.exit(1)
+
     client = AsyncIOMotorClient(settings.mongodb_url, uuidRepresentation="standard")
     db = client[settings.database_name]
     fs = AsyncIOMotorGridFSBucket(db, bucket_name="manifest_blobs")

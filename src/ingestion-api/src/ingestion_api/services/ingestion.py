@@ -5,9 +5,8 @@ End-to-end pipeline:
 
     upload bytes + caller-supplied alg list
         -> guess MediaType + MIME from upload
-        -> resolve every requested alg against the in-memory plugin
-           catalog (loaded once at startup) and verify it declares
-           the upload's MIME in its ``mediaTypes``
+        -> resolve every requested alg from MongoDB and verify it
+           declares the upload's MIME in its ``mediaTypes``
         -> for each alg in order, POST to its plugin container:
            - watermark plugins: /embed -> watermarked bytes + bindingValue
              (later passes see the mutated bytes)
@@ -114,7 +113,6 @@ class IngestionService:
     def __init__(
         self,
         *,
-        plugin_catalog: Sequence[PluginEntry],
         signing_service: SigningService,
         manifest_builder: ManifestBuilderService,
         artifacts: ArtifactStore,
@@ -122,7 +120,6 @@ class IngestionService:
         failed_records: FailedIngestionRepository | None = None,
         resolution_client: ResolutionPushClient | None = None,
     ) -> None:
-        self._plugin_catalog = list(plugin_catalog)
         self._signing_service = signing_service
         self._manifest_builder = manifest_builder
         self._artifacts = artifacts
@@ -149,7 +146,7 @@ class IngestionService:
         # Resolve and MIME-check the requested algs up front so a bad
         # request doesn't allocate disk / a record / an ingestion id.
         try:
-            entries = self._resolve_plugins(payload.algs, mime_type)
+            entries = await self._resolve_plugins(payload.algs, mime_type)
         except InvalidAlgRequestError:
             raise
         except IngestionError as exc:
@@ -193,11 +190,14 @@ class IngestionService:
             self._artifacts.cleanup(artifacts)
             raise
 
-    def _resolve_plugins(
+    async def _resolve_plugins(
         self, algs: Sequence[str], mime_type: str,
     ) -> list[PluginEntry]:
-        """Resolve every requested alg from a single catalog snapshot
-        and validate it supports the upload's MIME.
+        """Resolve every requested alg from the database and validate
+        it supports the upload's MIME.
+
+        Queries MongoDB directly each time so newly-registered
+        algorithms are available without a service restart.
 
         Raises ``InvalidAlgRequestError`` listing every offending alg
         in one message — better UX than raising on the first bad one.
@@ -208,7 +208,7 @@ class IngestionService:
 
         for alg in algs:
             try:
-                entry = resolve_plugin(alg, catalog=self._plugin_catalog)
+                entry = await resolve_plugin(alg)
             except PluginNotFoundError:
                 unknown.append(alg)
                 continue

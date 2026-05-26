@@ -6,25 +6,37 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 
+ALG = "me.deepmark.audio.aware.20"
+
+
 # ---------------------------------------------------------------------------
-# POST /bindings
+# POST /bindings (upsert — idempotent)
 # ---------------------------------------------------------------------------
 
 class TestPostBindings:
     async def test_success(self, client, mock_manifests_col, mock_bindings_col):
         mock_manifests_col.find_one.return_value = {"_id": "urn:c2pa:m1"}
         resp = await client.post("/bindings", json={
-            "alg": "me.deepmark.audio.aware.20",
+            "alg": ALG,
             "bindingValue": "abc123",
             "manifestId": "urn:c2pa:m1",
         })
         assert resp.status_code == 204
-        mock_bindings_col.insert_one.assert_awaited_once()
+        mock_bindings_col.update_one.assert_awaited_once()
+
+    async def test_idempotent_rebind(self, client, mock_manifests_col, mock_bindings_col):
+        mock_manifests_col.find_one.return_value = {"_id": "urn:c2pa:m1"}
+        resp = await client.post("/bindings", json={
+            "alg": ALG,
+            "bindingValue": "abc123",
+            "manifestId": "urn:c2pa:m1",
+        })
+        assert resp.status_code == 204
 
     async def test_manifest_not_found(self, client, mock_manifests_col):
         mock_manifests_col.find_one.return_value = None
         resp = await client.post("/bindings", json={
-            "alg": "me.deepmark.audio.aware.20",
+            "alg": ALG,
             "bindingValue": "abc123",
             "manifestId": "urn:c2pa:missing",
         })
@@ -40,7 +52,7 @@ class TestPostBindings:
 
     async def test_empty_binding_value(self, client):
         resp = await client.post("/bindings", json={
-            "alg": "me.deepmark.audio.aware.20",
+            "alg": ALG,
             "bindingValue": "",
             "manifestId": "urn:c2pa:m1",
         })
@@ -48,11 +60,27 @@ class TestPostBindings:
 
     async def test_empty_manifest_id(self, client):
         resp = await client.post("/bindings", json={
-            "alg": "me.deepmark.audio.aware.20",
+            "alg": ALG,
             "bindingValue": "abc123",
             "manifestId": " ",
         })
         assert resp.status_code == 400
+
+    async def test_alg_max_length_exceeded(self, client):
+        resp = await client.post("/bindings", json={
+            "alg": "a" * 257,
+            "bindingValue": "abc123",
+            "manifestId": "urn:c2pa:m1",
+        })
+        assert resp.status_code == 422
+
+    async def test_manifest_id_max_length_exceeded(self, client):
+        resp = await client.post("/bindings", json={
+            "alg": ALG,
+            "bindingValue": "abc123",
+            "manifestId": "x" * 513,
+        })
+        assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +94,7 @@ class TestPutBindings:
         update_result.matched_count = 1
         mock_bindings_col.update_one.return_value = update_result
         resp = await client.put("/bindings", json={
-            "alg": "me.deepmark.audio.aware.20",
+            "alg": ALG,
             "bindingValue": "abc123",
             "manifestId": "urn:c2pa:m2",
         })
@@ -75,7 +103,7 @@ class TestPutBindings:
     async def test_manifest_not_found(self, client, mock_manifests_col):
         mock_manifests_col.find_one.return_value = None
         resp = await client.put("/bindings", json={
-            "alg": "me.deepmark.audio.aware.20",
+            "alg": ALG,
             "bindingValue": "abc123",
             "manifestId": "urn:c2pa:missing",
         })
@@ -87,7 +115,7 @@ class TestPutBindings:
         update_result.matched_count = 0
         mock_bindings_col.update_one.return_value = update_result
         resp = await client.put("/bindings", json={
-            "alg": "me.deepmark.audio.aware.20",
+            "alg": ALG,
             "bindingValue": "no-such-binding",
             "manifestId": "urn:c2pa:m2",
         })

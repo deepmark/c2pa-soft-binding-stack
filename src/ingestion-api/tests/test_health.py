@@ -9,13 +9,11 @@ Strategy:
 - Patch ``httpx.AsyncClient`` (in the health router's namespace) to
   return a client backed by ``MockTransport`` so plugin + resolution
   probes don't go anywhere real.
-- Fake ``plugins.yaml`` via ``settings.plugins_catalog_path`` so
-  ``load_plugin_catalog()`` returns a deterministic plugin list.
+- Patch ``load_plugin_catalog_from_db`` for deterministic catalog.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from textwrap import dedent
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -50,7 +48,9 @@ class _StubSigningService:
         self.credentials = _StubCredentials(not_after=not_after)
 
 
-def _build_app(signing_service: _StubSigningService | None = None) -> FastAPI:
+def _build_app(
+    signing_service: _StubSigningService | None = None,
+) -> FastAPI:
     app = FastAPI()
     app.include_router(health_router)
     if signing_service is not None:
@@ -91,21 +91,26 @@ def _patch_credentials_present(
     monkeypatch.setattr(settings, "credentials_dir", creds_dir)
 
 
-def _patch_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path, urls: list[str]) -> None:
-    """Write a deterministic plugins.yaml and re-point the catalog path."""
-    p = tmp_path / "plugins.yaml"
-    entries = "\n".join(
-        dedent(f"""\
-            - alg: alg.{i}
-              type: watermark
-              bindingBits: 128
-              mediaTypes: ["audio/wav"]
-              url: {url}
-        """)
+def _make_catalog(urls: list[str]) -> list:
+    """Build a deterministic in-memory plugin catalog."""
+    from ingestion_api.contracts.plugin import PluginEntry
+    return [
+        PluginEntry(
+            alg=f"alg.{i}",
+            type="watermark",
+            binding_bits=128,
+            media_types=("audio/wav",),
+            url=url,
+        )
         for i, url in enumerate(urls)
-    )
-    p.write_text(f"plugins:\n{entries}")
-    monkeypatch.setattr(settings, "plugins_catalog_path", p)
+    ]
+
+
+def _patch_catalog(monkeypatch: pytest.MonkeyPatch, catalog: list) -> None:
+    """Patch load_plugin_catalog_from_db to return a fixed catalog."""
+    async def _fake():
+        return catalog
+    monkeypatch.setattr(health_module, "load_plugin_catalog_from_db", _fake)
 
 
 def _patch_async_client(
@@ -255,7 +260,7 @@ async def test_deep_ok_when_plugins_and_resolution_healthy(
 ):
     _patch_mongo_ok(monkeypatch)
     _patch_credentials_present(monkeypatch, tmp_path, present=True)
-    _patch_catalog(monkeypatch, tmp_path, ["http://plugin-a:8000", "http://plugin-b:8000"])
+    catalog = _make_catalog(["http://plugin-a:8000", "http://plugin-b:8000"])
     monkeypatch.setattr(settings, "resolution_push_enabled", True)
     monkeypatch.setattr(settings, "resolution_api_url", "http://resolution:8001")
 
@@ -266,9 +271,12 @@ async def test_deep_ok_when_plugins_and_resolution_healthy(
         return httpx.Response(404)
 
     _patch_async_client(monkeypatch, handler)
+    _patch_catalog(monkeypatch, catalog)
 
     not_after = datetime.now(timezone.utc) + timedelta(days=42)
-    app = _build_app(_StubSigningService(is_loaded=True, not_after=not_after))
+    app = _build_app(
+        _StubSigningService(is_loaded=True, not_after=not_after),
+    )
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
@@ -294,7 +302,7 @@ async def test_deep_503_when_a_plugin_is_unhealthy(
 ):
     _patch_mongo_ok(monkeypatch)
     _patch_credentials_present(monkeypatch, tmp_path, present=True)
-    _patch_catalog(monkeypatch, tmp_path, ["http://plugin-a:8000", "http://plugin-b:8000"])
+    catalog = _make_catalog(["http://plugin-a:8000", "http://plugin-b:8000"])
     monkeypatch.setattr(settings, "resolution_push_enabled", False)
     monkeypatch.setattr(settings, "resolution_api_url", "")
 
@@ -305,6 +313,7 @@ async def test_deep_503_when_a_plugin_is_unhealthy(
         return httpx.Response(500, text="kaboom")
 
     _patch_async_client(monkeypatch, handler)
+    _patch_catalog(monkeypatch, catalog)
 
     app = _build_app(_StubSigningService(is_loaded=True))
     transport = httpx.ASGITransport(app=app)
@@ -328,11 +337,11 @@ async def test_deep_resolution_skipped_does_not_gate_overall(
 ):
     _patch_mongo_ok(monkeypatch)
     _patch_credentials_present(monkeypatch, tmp_path, present=True)
-    _patch_catalog(monkeypatch, tmp_path, [])  # no plugins
     monkeypatch.setattr(settings, "resolution_push_enabled", False)
     monkeypatch.setattr(settings, "resolution_api_url", "")
 
     _patch_async_client(monkeypatch, lambda r: httpx.Response(404))
+    _patch_catalog(monkeypatch, [])
 
     app = _build_app(_StubSigningService(is_loaded=True))
     transport = httpx.ASGITransport(app=app)
@@ -343,7 +352,7 @@ async def test_deep_resolution_skipped_does_not_gate_overall(
     body = r.json()
     assert body["resolution_api"]["status"] == "skipped"
     assert body["resolution_api"]["push_enabled"] is False
-    assert body["catalog"]["entries"] == 0
+    assert body["catalog"]["count"] == 0
 
 
 @pytest.mark.asyncio
@@ -352,11 +361,11 @@ async def test_deep_503_when_resolution_unreachable(
 ):
     _patch_mongo_ok(monkeypatch)
     _patch_credentials_present(monkeypatch, tmp_path, present=True)
-    _patch_catalog(monkeypatch, tmp_path, [])
     monkeypatch.setattr(settings, "resolution_push_enabled", True)
     monkeypatch.setattr(settings, "resolution_api_url", "http://resolution:8001")
 
     _patch_async_client(monkeypatch, lambda r: httpx.Response(500))
+    _patch_catalog(monkeypatch, [])
 
     app = _build_app(_StubSigningService(is_loaded=True))
     transport = httpx.ASGITransport(app=app)
@@ -375,13 +384,16 @@ async def test_deep_surfaces_expired_cert_without_failing(
     """Cert expiry is informational — never gates readiness even when expired."""
     _patch_mongo_ok(monkeypatch)
     _patch_credentials_present(monkeypatch, tmp_path, present=True)
-    _patch_catalog(monkeypatch, tmp_path, [])
     monkeypatch.setattr(settings, "resolution_push_enabled", False)
     monkeypatch.setattr(settings, "resolution_api_url", "")
     _patch_async_client(monkeypatch, lambda r: httpx.Response(404))
 
+    _patch_catalog(monkeypatch, [])
+
     not_after = datetime.now(timezone.utc) - timedelta(days=5)  # expired
-    app = _build_app(_StubSigningService(is_loaded=True, not_after=not_after))
+    app = _build_app(
+        _StubSigningService(is_loaded=True, not_after=not_after),
+    )
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
@@ -400,11 +412,11 @@ async def test_deep_handles_missing_signing_service_state(
     """Boot-time race: app.state.signing_service not yet set."""
     _patch_mongo_ok(monkeypatch)
     _patch_credentials_present(monkeypatch, tmp_path, present=True)
-    _patch_catalog(monkeypatch, tmp_path, [])
     monkeypatch.setattr(settings, "resolution_push_enabled", False)
     monkeypatch.setattr(settings, "resolution_api_url", "")
     _patch_async_client(monkeypatch, lambda r: httpx.Response(404))
 
+    _patch_catalog(monkeypatch, [])
     app = _build_app(signing_service=None)  # nothing on app.state
 
     transport = httpx.ASGITransport(app=app)

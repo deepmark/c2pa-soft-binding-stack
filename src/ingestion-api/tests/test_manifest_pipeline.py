@@ -17,7 +17,7 @@ from ingestion_api.services.manifest import ManifestBuilderService
 from ingestion_api.services.signing import SigningService
 from _helpers import stub_binding_value as compute_binding_value
 
-BINDING_ALG = "me.deepmark.audio.vigil.128"
+BINDING_ALG = "me.deepmark.audio.aware.20"
 
 
 def watermark_spec(value: str, alg: str = BINDING_ALG) -> SoftBindingSpec:

@@ -2,13 +2,21 @@
 ``models.py``)."""
 from typing import Any
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+
+
+class AlgorithmRecord(BaseModel):
+    """Full algorithm record as stored in the supported_algorithms collection."""
+    alg: str = Field(..., description="Unique algorithm identifier (primary key)")
+    type: str = Field(..., description="Algorithm type (e.g. 'watermark', 'fingerprint')")
+    bindingBits: int = Field(..., description="Number of bits in the binding value")
+    mediaTypes: list[str] = Field(..., description="Supported IANA media types")
+    url: str = Field(..., description="Internal plugin service URL")
 
 
 class SoftBindingAlgorithm(BaseModel):
-    """Soft binding algorithm definition"""
+    """Public algorithm info returned to API clients"""
     alg: str = Field(..., description="Unique identifier of the algorithm")
-
 
 class SoftBindingAlgList(BaseModel):
     """List of supported soft binding algorithms"""
@@ -69,6 +77,7 @@ class BindingsRequest(BaseModel):
     """
     alg: str = Field(
         ...,
+        max_length=256,
         description="Soft binding algorithm identifier (extension over spec)",
     )
     bindingValue: str = Field(
@@ -77,6 +86,7 @@ class BindingsRequest(BaseModel):
     )
     manifestId: str = Field(
         ...,
+        max_length=512,
         description="Identifier of the active C2PA Manifest of a C2PA Manifest Store",
     )
 
@@ -88,8 +98,7 @@ class ManifestReceipt(BaseModel):
     repository: dict = Field(..., description="Repository information")
     anchor: dict = Field(..., description="Anchor proof information")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class VerifiedManifestReceipt(ManifestReceipt):

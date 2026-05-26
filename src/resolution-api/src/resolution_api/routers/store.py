@@ -11,6 +11,7 @@ from c2pa import Reader
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
+from resolution_api.core.logging import get_logger
 from resolution_api.core.database import (
     get_manifest_blobs_bucket,
     get_manifests_collection,
@@ -20,6 +21,10 @@ from resolution_api.models import (
     BindingsRequest,
     ManifestCreateResult,
 )
+
+logger = get_logger(__name__)
+
+router = APIRouter(tags=["store"])
 
 
 def _extract_manifest_id(manifest_data: bytes) -> str:
@@ -52,8 +57,6 @@ def _extract_manifest_id(manifest_data: bytes) -> str:
             detail="Manifest store has no active_manifest label",
         )
     return active_manifest_id
-
-router = APIRouter(tags=["store"])
 
 
 @router.post(
@@ -103,23 +106,20 @@ async def associate_manifest(binding: BindingsRequest):
                 detail="C2PA Manifest id not found",
             )
 
-        # Create or update the soft binding association. Upsert keyed
-        # on the (alg, value, manifestId) compound — same composite key
-        # as the unique index — so retries are idempotent (a re-push
-        # of the same triple is a no-op, not a dup-key error).
         soft_bindings_col = get_soft_bindings_collection()
-        await soft_bindings_col.insert_one({
-            "alg": binding.alg,
-            "value": binding.bindingValue,
-            "manifestId": binding.manifestId,
-        })
+        await soft_bindings_col.update_one(
+            {"alg": binding.alg, "value": binding.bindingValue, "manifestId": binding.manifestId},
+            {"$setOnInsert": {"alg": binding.alg, "value": binding.bindingValue, "manifestId": binding.manifestId}},
+            upsert=True,
+        )
 
         return Response(status_code=204)
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Service failure: {str(e)}")
+        logger.exception("Unexpected error")
+        raise HTTPException(status_code=500, detail="Service failure")
 
 
 @router.put(
@@ -187,7 +187,8 @@ async def update_associated_manifest(binding: BindingsRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Service failure: {str(e)}")
+        logger.exception("Unexpected error")
+        raise HTTPException(status_code=500, detail="Service failure")
 
 
 @router.post(
@@ -256,7 +257,8 @@ async def add_manifest(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Service failure: {str(e)}")
+        logger.exception("Unexpected error")
+        raise HTTPException(status_code=500, detail="Service failure")
 
 
 @router.delete(
@@ -316,4 +318,5 @@ async def delete_manifest(manifestId: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Service failure: {str(e)}")
+        logger.exception("Unexpected error")
+        raise HTTPException(status_code=500, detail="Service failure")

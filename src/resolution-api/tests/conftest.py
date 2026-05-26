@@ -1,25 +1,10 @@
 """Shared pytest fixtures + env bootstrap for resolution-api tests."""
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-os.environ.setdefault("PLUGINS_CATALOG_PATH", str(_REPO_ROOT / "plugins.yaml"))
-
-
-@pytest.fixture()
-def mock_manifests_col():
-    col = AsyncMock()
-    col.find_one = AsyncMock(return_value=None)
-    col.insert_one = AsyncMock()
-    col.delete_one = AsyncMock()
-    col.delete_many = AsyncMock()
-    return col
 
 
 class _FakeCursor:
@@ -35,6 +20,16 @@ class _FakeCursor:
 
 
 @pytest.fixture()
+def mock_manifests_col():
+    col = AsyncMock()
+    col.find_one = AsyncMock(return_value=None)
+    col.insert_one = AsyncMock()
+    col.delete_one = AsyncMock()
+    col.delete_many = AsyncMock()
+    return col
+
+
+@pytest.fixture()
 def mock_bindings_col():
     col = AsyncMock()
     col.find_one = AsyncMock(return_value=None)
@@ -42,6 +37,15 @@ def mock_bindings_col():
     col.update_one = AsyncMock()
     col.delete_many = AsyncMock()
     col.find = lambda *a, **kw: _FakeCursor([])
+    return col
+
+
+@pytest.fixture()
+def mock_algorithms_col():
+    col = AsyncMock()
+    col.find_one = AsyncMock(return_value=None)
+    col.find = lambda *a, **kw: _FakeCursor([])
+    col.count_documents = AsyncMock(return_value=0)
     return col
 
 
@@ -55,7 +59,7 @@ def mock_fs():
 
 
 @pytest.fixture()
-async def client(mock_manifests_col, mock_bindings_col, mock_fs):
+async def client(mock_manifests_col, mock_bindings_col, mock_algorithms_col, mock_fs):
     with (
         patch("resolution_api.core.database.MongoDB.connect", new_callable=AsyncMock),
         patch("resolution_api.core.database.MongoDB.close", new_callable=AsyncMock),
@@ -82,6 +86,14 @@ async def client(mock_manifests_col, mock_bindings_col, mock_fs):
         patch(
             "resolution_api.routers.query.get_soft_bindings_collection",
             return_value=mock_bindings_col,
+        ),
+        patch(
+            "resolution_api.routers.service.get_supported_algorithms_collection",
+            return_value=mock_algorithms_col,
+        ),
+        patch(
+            "resolution_api.routers.health.get_supported_algorithms_collection",
+            return_value=mock_algorithms_col,
         ),
         patch(
             "resolution_api.core.database.MongoDB.client",

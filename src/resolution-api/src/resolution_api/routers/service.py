@@ -2,16 +2,16 @@
 Service route group.
 
 Exposes repository capabilities, primarily the list of supported soft
-binding algorithms.
-
-Source of truth is the shared ``plugins.yaml`` catalog mounted into
-the container — same file that ingestion-api uses for plugin routing,
-so what's listed here is exactly what's wired up end-to-end.
+binding algorithms. Source of truth is the ``supported_algorithms``
+MongoDB collection.
 """
 from fastapi import APIRouter, HTTPException
 
+from resolution_api.core.database import get_supported_algorithms_collection
+from resolution_api.core.logging import get_logger
 from resolution_api.models import SoftBindingAlgList, SoftBindingAlgorithm
-from resolution_api.services.plugins_catalog import load_plugin_catalog
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["service"])
 
@@ -32,13 +32,15 @@ async def get_supported_algorithms():
     for the cross-org canonical registry.
     """
     try:
-        entries = load_plugin_catalog()
+        col = get_supported_algorithms_collection()
+        docs = await col.find({}, {"_id": 0, "url": 0}).to_list(length=100)
         watermarks = [
-            SoftBindingAlgorithm(alg=e.alg) for e in entries if e.type == "watermark"
+            SoftBindingAlgorithm(**doc) for doc in docs if doc.get("type") == "watermark"
         ]
         fingerprints = [
-            SoftBindingAlgorithm(alg=e.alg) for e in entries if e.type == "fingerprint"
+            SoftBindingAlgorithm(**doc) for doc in docs if doc.get("type") == "fingerprint"
         ]
         return SoftBindingAlgList(watermarks=watermarks, fingerprints=fingerprints)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Service failure: {str(e)}")
+        logger.exception("Unexpected error")
+        raise HTTPException(status_code=500, detail="Service failure")
