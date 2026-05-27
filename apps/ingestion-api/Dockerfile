@@ -7,8 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install deps first — cached until pyproject.toml changes
-COPY pyproject.toml ./
+# Install deps first — cached until package metadata changes
+COPY pyproject.toml README.md ./
 RUN pip install --upgrade pip \
  && mkdir -p src/ingestion_api \
  && touch src/ingestion_api/__init__.py \
@@ -41,6 +41,6 @@ USER appuser
 EXPOSE 8001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/ready')" || exit 1
+    CMD python -c "import os, urllib.request; port = os.environ.get('PORT', '8001'); urllib.request.urlopen(f'http://localhost:{port}/health')" || exit 1
 
-CMD ["uvicorn", "ingestion_api.__main__:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["sh", "-c", "uvicorn ingestion_api.__main__:app --host ${HOST:-0.0.0.0} --port ${PORT:-8001}"]
