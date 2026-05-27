@@ -21,6 +21,29 @@ SIGNING_ALG=ES256                                    # see table above
 TA_URL=https://your-rfc3161-tsa.example/timestamp    # optional, RFC 3161 TSA
 ```
 
+## Container startup automation
+
+The ingestion-api Docker image has an entrypoint that fetches these
+files before the app starts when they are missing:
+
+```
+CREDENTIALS_DIR=/var/lib/ingestion-api/credentials
+SIGNING_ALG=ES256
+FETCH_SIGNING_CREDENTIALS=true
+```
+
+By default the entrypoint runs the equivalent of:
+
+```
+curl -fsSLo ${CREDENTIALS_DIR}/es256_certs.pem \
+  https://raw.githubusercontent.com/contentauth/c2pa-python/main/tests/fixtures/es256_certs.pem
+curl -fsSLo ${CREDENTIALS_DIR}/es256_private.key \
+  https://raw.githubusercontent.com/contentauth/c2pa-python/main/tests/fixtures/es256_private.key
+```
+
+Override `SIGNING_CREDENTIALS_BASE_URL` to fetch the same file names
+from another location.
+
 ## Where to get test certs
 
 The C2PA project ships ready-made test certs for each supported algorithm.

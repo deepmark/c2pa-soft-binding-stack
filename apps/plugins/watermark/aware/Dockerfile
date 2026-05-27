@@ -62,6 +62,6 @@ USER appuser
 EXPOSE ${APP_PORT}
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${APP_PORT}/health')" || exit 1
+    CMD python -c "import os, urllib.request; port = os.environ.get('PORT') or os.environ.get('APP_PORT', '9004'); urllib.request.urlopen(f'http://localhost:{port}/health')" || exit 1
 
-CMD ["sh", "-c", "uvicorn app:app --host=$HOST --port=$APP_PORT"]
+CMD ["sh", "-c", "uvicorn app:app --host=${HOST:-0.0.0.0} --port=${PORT:-${APP_PORT:-9004}}"]

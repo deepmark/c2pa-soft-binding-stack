@@ -69,6 +69,8 @@ Settings: `src/ingestion_api/core/config.py`. Override via env vars or `.env`.
 | `SUPPORTED_ALGORITHMS_COLLECTION` | `supported_algorithms` | Shared plugin catalog collection |
 | `SIGNING_ALG` | `ES256` | C2PA signing algorithm |
 | `TA_URL` | _(empty)_ | RFC 3161 timestamp authority |
+| `FETCH_SIGNING_CREDENTIALS` | `true` | Download signing credentials at container startup when files are missing |
+| `SIGNING_CREDENTIALS_BASE_URL` | C2PA fixture URL | Base URL for `<alg>_certs.pem` and `<alg>_private.key` |
 | `RESOLUTION_PUSH_ENABLED` | `true` | Auto-push to resolution-api |
 | `RESOLUTION_API_URL` | _(required when push enabled)_ | Resolution-api base URL |
 | `RESOLUTION_MAX_RETRIES` | `1` | Retries on transient failure (5xx/timeout) |
@@ -91,6 +93,23 @@ In the `c2pa` database by default:
 | `ingestions` | One doc per ingest lifecycle state: pending, succeeded, or failed |
 
 Algorithm catalog is read from `c2pa.supported_algorithms` by default and is shared with resolution-api.
+
+## Signing credentials in containers
+
+The Docker image fetches the expected files into `CREDENTIALS_DIR`
+before the API starts when they are missing. By default it downloads
+the public C2PA fixtures described in `credentials/README.md`:
+
+```
+curl -fsSLo ${CREDENTIALS_DIR}/es256_certs.pem \
+  https://raw.githubusercontent.com/contentauth/c2pa-python/main/tests/fixtures/es256_certs.pem
+curl -fsSLo ${CREDENTIALS_DIR}/es256_private.key \
+  https://raw.githubusercontent.com/contentauth/c2pa-python/main/tests/fixtures/es256_private.key
+```
+
+Set `SIGNING_CREDENTIALS_BASE_URL` to fetch the same file names from a
+different host. Set `FETCH_SIGNING_CREDENTIALS=false` to disable startup
+fetching and require the files to already exist.
 
 ## Tests
 
