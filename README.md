@@ -153,6 +153,8 @@ Swagger UI: `http://localhost:8001/docs`
 |----------|---------|-------------|
 | `SIGNING_ALG` | `ES256` | C2PA signing algorithm |
 | `TA_URL` | _(empty)_ | RFC 3161 timestamp authority URL |
+| `FETCH_SIGNING_CREDENTIALS` | `true` | Download signing credentials at ingestion startup when files are missing |
+| `SIGNING_CREDENTIALS_BASE_URL` | C2PA fixture URL | Base URL for `<alg>_certs.pem` and `<alg>_private.key` |
 | `RESOLUTION_PUSH_ENABLED` | `true` | Auto-push to resolution-api after signing |
 | `RESOLUTION_API_URL` | _(required when push enabled)_ | Resolution-api base URL |
 | `INGESTIONS_COLLECTION` | `ingestions` | Ingestion lifecycle records collection |
