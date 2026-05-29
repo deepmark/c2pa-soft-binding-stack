@@ -137,7 +137,7 @@ async def ingest_media(
         ...,
         description=(
             "Media asset to ingest. MIME / extension must match a supported "
-            "type (audio/wav, audio/mpeg, audio/flac, audio/mp4 today)."
+            "type (audio/wav, audio/flac — lossy formats temporarily disabled)."
         ),
     ),
     algs: list[str] = Form(
