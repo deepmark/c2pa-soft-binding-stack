@@ -33,12 +33,9 @@ logger = get_logger(__name__)
 # Accepted MIME -> (media_type, canonical_mime, canonical_ext_without_dot).
 #
 # Lossless audio only (WAV + FLAC). Lossy formats are intentionally
-# disabled: the watermark plugin re-encodes its output as WAV regardless
-# of the input container, which produces a sign-time mismatch when the
-# input was lossy (orchestrator hands c2pa.Builder.sign WAV bytes
-# labelled ``audio/mpeg`` etc., and c2pa-rs surfaces this as an
-# encoding/unsupported error). Re-enable the lossy entries below only
-# once the plugin can preserve the input container end-to-end.
+# disabled as the watermark plugin re-encodes them as WAV / FLAC regardless
+# of the input container, which produces a sign-time mismatch.
+# Re-enable the lossy entries below once the plugin can preserve the input container end-to-end.
 #
 # We also accept common aliases (audio/wave, audio/x-wav, audio/x-flac);
 # ``guess_media_format`` always returns the canonical form so
