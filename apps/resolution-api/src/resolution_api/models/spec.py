@@ -5,18 +5,12 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
-class AlgorithmRecord(BaseModel):
-    """Full algorithm record as stored in the supported_algorithms collection."""
-    alg: str = Field(..., description="Unique algorithm identifier (primary key)")
-    type: str = Field(..., description="Algorithm type (e.g. 'watermark', 'fingerprint')")
-    bindingBits: int = Field(..., description="Number of bits in the binding value")
-    mediaTypes: list[str] = Field(..., description="Supported IANA media types")
-    url: str = Field(..., description="Internal plugin service URL")
-
-
 class SoftBindingAlgorithm(BaseModel):
     """Public algorithm info returned to API clients"""
     alg: str = Field(..., description="Unique identifier of the algorithm")
+    type: str = Field(..., description="Algorithm type (e.g. 'watermark', 'fingerprint')")
+    bindingBits: int = Field(..., description="Number of bits in the binding value")
+    mediaTypes: list[str] = Field(..., description="Supported IANA media types")
 
 class SoftBindingAlgList(BaseModel):
     """List of supported soft binding algorithms"""
