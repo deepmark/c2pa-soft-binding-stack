@@ -50,7 +50,7 @@ SUPPORTED_MIME_TYPES: dict[str, tuple[MediaType, str, str]] = {
     "audio/x-wav":  (MediaType.AUDIO, "audio/wav",  "wav"),
     "audio/flac":   (MediaType.AUDIO, "audio/flac", "flac"),
     "audio/x-flac": (MediaType.AUDIO, "audio/flac", "flac"),
-    # Lossy audio MIMEs — disabled until the watermark plugin preserves 
+    # Lossy audio MIMEs — disabled until the watermark plugin preserves
     # all the input containers instead of transcoding to WAV or FLAC.
     # "audio/mpeg":   (MediaType.AUDIO, "audio/mpeg", "mp3"),
     # "audio/mp3":    (MediaType.AUDIO, "audio/mpeg", "mp3"),
