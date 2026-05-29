@@ -11,6 +11,7 @@ from ingestion_api.utils.media import (
     SUPPORTED_MIME_TYPES,
     AudioFormat,
     canonical_extension,
+    container_matches_mime,
     guess_media_format,
     is_supported,
     read_audio_format,
@@ -21,20 +22,22 @@ from ingestion_api.utils.media import (
 # ---------------------------------------------------------------------------
 
 
-def test_supported_mimes_match_c2pa_audio_set():
-    """The C2PA SDK signs audio/wav, audio/mpeg, audio/flac, audio/mp4.
+def test_supported_mimes_match_lossless_audio_set():
+    """Only lossless audio is supported today (WAV + FLAC).
+
+    Lossy formats (mpeg/mp4) were temporarily disabled in the registry
+    because the watermark plugin can't preserve their container; until
+    that lands, they're commented out in ``SUPPORTED_MIME_TYPES``.
 
     Each accepted MIME entry is ``(media_type, canonical_mime, ext)`` —
-    the canonical column collapses aliases to the four C2PA names.
+    the canonical column collapses aliases.
     """
     canonical = {
         (mt, cm) for mt, cm, _ in SUPPORTED_MIME_TYPES.values()
     }
     assert canonical == {
         (MediaType.AUDIO, "audio/wav"),
-        (MediaType.AUDIO, "audio/mpeg"),
         (MediaType.AUDIO, "audio/flac"),
-        (MediaType.AUDIO, "audio/mp4"),
     }
 
 
@@ -44,9 +47,13 @@ def test_audio_ogg_is_no_longer_supported():
     assert not is_supported("clip.ogg", "audio/ogg")
 
 
-def test_audio_mp4_resolves_to_m4a_extension():
-    assert canonical_extension("audio/mp4") == ".m4a"
-    assert is_supported("clip.m4a", "audio/mp4")
+def test_lossy_audio_mimes_are_temporarily_unsupported():
+    """Lossy audio MIMEs are commented out in the registry until the
+    watermark plugin preserves their container end-to-end."""
+    for mime in ("audio/mpeg", "audio/mp3", "audio/mp4"):
+        assert mime not in SUPPORTED_MIME_TYPES
+    assert not is_supported("clip.mp3", "audio/mpeg")
+    assert not is_supported("clip.m4a", "audio/mp4")
 
 
 def test_guess_media_format_prefers_explicit_content_type():
@@ -68,7 +75,6 @@ def test_guess_media_format_returns_none_for_unsupported():
         ("audio/wave", "audio/wav"),
         ("audio/x-wav", "audio/wav"),
         ("AUDIO/X-WAV; charset=binary", "audio/wav"),
-        ("audio/mp3", "audio/mpeg"),
         ("audio/x-flac", "audio/flac"),
     ],
 )
@@ -82,8 +88,8 @@ def test_canonical_extension_accepts_aliases():
     """Accepts either canonical or alias; both yield the canonical ext."""
     assert canonical_extension("audio/wav") == ".wav"
     assert canonical_extension("audio/x-wav") == ".wav"
-    assert canonical_extension("audio/mp3") == ".mp3"
-    assert canonical_extension("audio/mpeg") == ".mp3"
+    assert canonical_extension("audio/flac") == ".flac"
+    assert canonical_extension("audio/x-flac") == ".flac"
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +133,7 @@ def test_audio_format_equality_ignores_bit_depth():
     assert a == b
 
 
-@pytest.mark.parametrize("alias", ["audio/wave", "audio/x-wav", "audio/mp3", "audio/x-flac"])
+@pytest.mark.parametrize("alias", ["audio/wave", "audio/x-wav", "audio/x-flac"])
 def test_aliases_are_supported(alias: str):
     """All accepted aliases resolve as supported audio MIMEs.
     (Canonicalization of the returned MIME is asserted separately.)"""
@@ -135,3 +141,32 @@ def test_aliases_are_supported(alias: str):
     fmt = guess_media_format(None, alias)
     assert fmt is not None
     assert fmt[0] is MediaType.AUDIO
+
+
+# ---------------------------------------------------------------------------
+# container_matches_mime — defensive sniff before sign.
+# ---------------------------------------------------------------------------
+
+
+def test_container_matches_mime_accepts_wav_for_audio_wav():
+    assert container_matches_mime(b"RIFF\x00\x00\x00\x00WAVEfmt ", "audio/wav")
+
+
+def test_container_matches_mime_accepts_flac_for_audio_flac():
+    assert container_matches_mime(b"fLaC\x00\x00\x00\x22", "audio/flac")
+
+
+def test_container_matches_mime_rejects_wav_when_flac_claimed():
+    """Plugin transcoded a flac upload to WAV — must surface as a mismatch."""
+    assert not container_matches_mime(b"RIFF\x00\x00\x00\x00WAVE", "audio/flac")
+
+
+def test_container_matches_mime_rejects_flac_when_wav_claimed():
+    assert not container_matches_mime(b"fLaC\x00\x00\x00\x22", "audio/wav")
+
+
+def test_container_matches_mime_passes_through_unregistered_mime():
+    """Unregistered MIMEs return True so we don't accidentally fail-closed
+    for media families we just haven't enrolled yet (image, video)."""
+    assert container_matches_mime(b"\xff\xd8\xff\xe0", "image/jpeg")
+    assert container_matches_mime(b"\x00\x00\x00\x18ftyp", "video/mp4")

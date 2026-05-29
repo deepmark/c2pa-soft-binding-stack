@@ -79,7 +79,12 @@ from ingestion_api.services.manifest import (
 from ingestion_api.services.signing import SigningService
 from ingestion_api.utils.hashing import sha256_hex
 from ingestion_api.utils.ids import new_ingestion_id
-from ingestion_api.utils.media import SUPPORTED_MIME_TYPES, canonical_extension, guess_media_format
+from ingestion_api.utils.media import (
+    SUPPORTED_MIME_TYPES,
+    canonical_extension,
+    container_matches_mime,
+    guess_media_format,
+)
 
 logger = get_logger(__name__)
 
@@ -319,6 +324,23 @@ class IngestionService:
         if not passes[-1].output_bytes:
             raise IngestionError(
                 "Plugin chain produced an empty payload",
+                stage=FailureStage.PLUGIN_PASS,
+            )
+
+        # Defensive container check: if a plugin transcodes (e.g. emits
+        # WAV bytes for an audio/flac upload) the c2pa Builder fails at
+        # sign time with an opaque encoding/unsupported error, because
+        # we hand it ``mime_type`` and bytes that disagree. Catching the
+        # mismatch here surfaces a PLUGIN_PASS failure so ops/forensics
+        # see "plugin returned wrong container" rather than a c2pa-rs
+        # internal at MANIFEST_SIGN.
+        final_bytes = passes[-1].output_bytes
+        if not container_matches_mime(final_bytes, mime_type):
+            raise IngestionError(
+                f"Plugin chain output does not match expected container "
+                f"({mime_type!r}); leading bytes: {final_bytes[:8]!r}. "
+                "The plugin likely transcoded the asset to a different "
+                "format — only container-preserving plugins are supported.",
                 stage=FailureStage.PLUGIN_PASS,
             )
         return passes

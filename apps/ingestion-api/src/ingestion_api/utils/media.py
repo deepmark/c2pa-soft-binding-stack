@@ -32,24 +32,32 @@ logger = get_logger(__name__)
 
 # Accepted MIME -> (media_type, canonical_mime, canonical_ext_without_dot).
 #
-# Canonical MIMEs are the C2PA Python SDK supported list:
-# audio/wav, audio/mpeg, audio/flac, audio/mp4.
-# We also accept common aliases (audio/wave, audio/x-wav, audio/mp3,
-# audio/x-flac) but ``guess_media_format`` always returns the canonical
-# form so downstream code (catalog matching, plugin headers, manifest
+# Lossless audio only (WAV + FLAC). Lossy formats are intentionally
+# disabled: the watermark plugin re-encodes its output as WAV regardless
+# of the input container, which produces a sign-time mismatch when the
+# input was lossy (orchestrator hands c2pa.Builder.sign WAV bytes
+# labelled ``audio/mpeg`` etc., and c2pa-rs surfaces this as an
+# encoding/unsupported error). Re-enable the lossy entries below only
+# once the plugin can preserve the input container end-to-end.
+#
+# We also accept common aliases (audio/wave, audio/x-wav, audio/x-flac);
+# ``guess_media_format`` always returns the canonical form so
+# downstream code (catalog matching, plugin headers, manifest
 # signing, persisted records, response bodies) only ever sees one MIME
 # string per format.
 
 SUPPORTED_MIME_TYPES: dict[str, tuple[MediaType, str, str]] = {
-    # Audio
+    # Audio (lossless only — see module note above)
     "audio/wav":    (MediaType.AUDIO, "audio/wav",  "wav"),
     "audio/wave":   (MediaType.AUDIO, "audio/wav",  "wav"),
     "audio/x-wav":  (MediaType.AUDIO, "audio/wav",  "wav"),
-    "audio/mpeg":   (MediaType.AUDIO, "audio/mpeg", "mp3"),
-    "audio/mp3":    (MediaType.AUDIO, "audio/mpeg", "mp3"),
     "audio/flac":   (MediaType.AUDIO, "audio/flac", "flac"),
     "audio/x-flac": (MediaType.AUDIO, "audio/flac", "flac"),
-    "audio/mp4":    (MediaType.AUDIO, "audio/mp4",  "m4a"),
+    # Lossy audio MIMEs — disabled until the watermark plugin preserves 
+    # all the input containers instead of transcoding to WAV or FLAC.
+    # "audio/mpeg":   (MediaType.AUDIO, "audio/mpeg", "mp3"),
+    # "audio/mp3":    (MediaType.AUDIO, "audio/mpeg", "mp3"),
+    # "audio/mp4":    (MediaType.AUDIO, "audio/mp4",  "m4a"),
     # Image and video MIMEs the C2PA SDK supports, kept commented out
     # until a plugin and an end-to-end test land for that media family.
     #
@@ -169,3 +177,33 @@ def _normalise_mime(mime: str | None) -> str | None:
     if not mime:
         return None
     return mime.lower().split(";", 1)[0].strip()
+
+
+# Leading magic bytes per canonical container MIME. Used by
+# ``container_matches_mime`` to detect a transcoded byte stream before
+# we hand it to the C2PA Builder (which would otherwise raise an opaque
+# encoding / unsupported error if the bytes and the claimed MIME
+# disagree). Only registered for MIMEs whose container has a stable,
+# fixed-offset magic signature.
+_CONTAINER_MAGIC_SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    "audio/wav":  (b"RIFF",),
+    "audio/flac": (b"fLaC",),
+}
+
+
+def container_matches_mime(payload: bytes, canonical_mime: str) -> bool:
+    """Verify ``payload`` carries the container implied by ``canonical_mime``.
+
+    Inspects the first few bytes against the registered magic-byte
+    signature for the MIME. Returns ``True`` for unregistered MIMEs so
+    the check is non-blocking for formats we haven't enrolled yet:
+    callers get fail-closed behaviour only for the containers we know
+    how to identify.
+
+    Cheap (a single ``startswith``); safe to call on every plugin pass
+    output before sign.
+    """
+    magics = _CONTAINER_MAGIC_SIGNATURES.get(canonical_mime)
+    if magics is None:
+        return True
+    return any(payload.startswith(m) for m in magics)
