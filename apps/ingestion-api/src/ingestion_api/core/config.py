@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     # ``max_algs_per_ingest`` must be at least 1 (zero would 400 every ingest).
     max_algs_per_ingest: int = Field(default=8, ge=1)
     max_title_length: int = Field(default=128, ge=0)
+    max_upload_size_bytes: int = Field(default=10 * 1024 * 1024, ge=0)  # 10 MB
 
     # Public base URL used when building absolute URLs in IngestionResponse
     # (outputAssetUrl, manifestUrl). When unset, the app falls back to

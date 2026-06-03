@@ -33,8 +33,8 @@ class Settings(BaseSettings):
 
 
     # Limits
-    max_download_size_bytes: int = 100 * 1024 * 1024  # 100 MB — /matches/byReference
-    max_upload_size_bytes: int = 100 * 1024 * 1024    # 100 MB — /matches/byContent
+    max_download_size_bytes: int = 10 * 1024 * 1024  # 10 MB — /matches/byReference
+    max_upload_size_bytes: int = 10 * 1024 * 1024    # 10 MB — /matches/byContent
 
     # Logging
     log_level: str = "INFO"

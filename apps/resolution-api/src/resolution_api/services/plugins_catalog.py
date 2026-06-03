@@ -79,7 +79,7 @@ class AsyncPluginClient:
         self,
         entry: PluginEntry,
         *,
-        timeout_s: float = 60.0,
+        timeout_s: float = 120.0,
     ) -> None:
         if not entry.url:
             raise PluginUnavailableError(
