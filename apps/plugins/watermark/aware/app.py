@@ -40,13 +40,20 @@ MEDIA_TYPES = (
     "audio/wav",
     "audio/wave",
     "audio/x-wav",
-    "audio/mpeg",
     "audio/flac",
     "audio/x-flac",
-    "audio/ogg",
 )
 TARGET_SR = 16000
 BINDING_VALUE_HEADER = "X-Binding-Value"
+MEDIA_TYPE_HEADER = "X-Media-Type"
+
+_MIME_TO_SF_FORMAT: dict[str, dict[str, str]] = {
+    "audio/wav": {"format": "WAV", "subtype": "FLOAT"},
+    "audio/wave": {"format": "WAV", "subtype": "FLOAT"},
+    "audio/x-wav": {"format": "WAV", "subtype": "FLOAT"},
+    "audio/flac": {"format": "FLAC", "subtype": "PCM_24"},
+    "audio/x-flac": {"format": "FLAC", "subtype": "PCM_24"},
+}
 
 try:
     logger.info("Loading AWARE models...")
@@ -69,13 +76,21 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 
 def _decode_audio(raw: bytes) -> tuple[np.ndarray, int]:
-    audio, sr = librosa.load(io.BytesIO(raw), sr=TARGET_SR, mono=True)
+    audio, sr = sf.read(io.BytesIO(raw), dtype="float32", always_2d=False)
+    if audio.ndim == 2:
+        audio = audio[:, 0]
     return audio, sr
 
 
-def _encode_audio(audio: np.ndarray, sr: int) -> bytes:
+def _resample(audio: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
+    if sr_in == sr_out:
+        return audio
+    return librosa.resample(audio, orig_sr=sr_in, target_sr=sr_out)
+
+
+def _encode_audio(audio: np.ndarray, sr: int, sf_params: dict[str, str]) -> bytes:
     buf = io.BytesIO()
-    sf.write(buf, audio, sr, format="WAV", subtype="FLOAT")
+    sf.write(buf, audio, sr, **sf_params)
     return buf.getvalue()
 
 
@@ -134,6 +149,14 @@ def health() -> dict:
     },
 )
 async def embed_endpoint(request: Request) -> Response:
+    mime_type = request.headers.get(MEDIA_TYPE_HEADER)
+    if not mime_type or mime_type not in _MIME_TO_SF_FORMAT:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported media type: {mime_type!r}. Supported: {list(_MIME_TO_SF_FORMAT.keys())}",
+        )
+    sf_params = _MIME_TO_SF_FORMAT[mime_type]
+
     data = await request.body()
     if not data:
         raise HTTPException(status_code=400, detail="Empty request body")
@@ -146,11 +169,13 @@ async def embed_endpoint(request: Request) -> Response:
     else:
         watermark_data = np.random.randint(0, 2, size=VALUE_BITS, dtype=np.int32)
 
-    watermarked = embed_watermark(audio, sr, watermark_data, embedder)
+    audio_16k = _resample(audio, sr, TARGET_SR)
+    watermarked_16k = embed_watermark(audio_16k, TARGET_SR, watermark_data, embedder)
+    watermarked = _resample(watermarked_16k, TARGET_SR, sr)
     watermarked = np.nan_to_num(watermarked, nan=0.0, posinf=0.0, neginf=0.0)
 
     value = override or _bits_to_binding_value(watermark_data)
-    watermarked_bytes = _encode_audio(watermarked, sr)
+    watermarked_bytes = _encode_audio(watermarked, sr, sf_params)
 
     return Response(
         content=watermarked_bytes,
@@ -171,7 +196,8 @@ async def detect_endpoint(request: Request) -> DetectResponse:
         raise HTTPException(status_code=400, detail="Empty request body")
 
     audio, sr = _decode_audio(data)
-    detected, confidence = detect_watermark(audio, sr, detector)
+    audio_16k = _resample(audio, sr, TARGET_SR)
+    detected, confidence = detect_watermark(audio_16k, TARGET_SR, detector)
 
     if detected is not None and confidence > 0.5:
         detected = np.nan_to_num(detected, nan=0.0, posinf=1.0, neginf=0.0)

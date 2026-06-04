@@ -198,6 +198,11 @@ async def ingest_media(
     data = await _read_upload_file_with_limit(file)
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload")
+    if len(data) > settings.max_upload_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds maximum allowed size of {settings.max_upload_size_bytes} bytes",
+        )
 
     payload = IngestionRequest(
         filename=file.filename or "upload.bin",
