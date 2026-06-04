@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     max_title_length: int = Field(default=128, ge=0)
     max_upload_size_bytes: int = Field(default=10 * 1024 * 1024, ge=0)  # 10 MB
 
+
     # Public base URL used when building absolute URLs in IngestionResponse
     # (outputAssetUrl, manifestUrl). When unset, the app falls back to
     # request.base_url (rewritten by the proxy-headers middleware so

@@ -54,6 +54,7 @@ router = APIRouter(tags=["ingest"])
 # matches what the resolution-api push uses on the wire and what c2pa-rs expects on inspection.
 _MANIFEST_MEDIA_TYPE = "application/c2pa"
 _OCTET_STREAM = "application/octet-stream"
+_UPLOAD_READ_CHUNK_SIZE = 1 << 20
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +113,23 @@ def _build_response(
 def _signed_asset_media_type(path) -> str:
     """Infer served MIME from the deterministic signed artifact extension."""
     return SUPPORTED_EXTENSIONS.get(path.suffix.lower(), _OCTET_STREAM)
+
+
+async def _read_upload_file_with_limit(file: UploadFile) -> bytes:
+    max_size = settings.max_upload_size_bytes
+    total = 0
+    data = bytearray()
+
+    while chunk := await file.read(_UPLOAD_READ_CHUNK_SIZE):
+        total += len(chunk)
+        if total > max_size:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Upload exceeds maximum allowed size of {max_size} bytes",
+            )
+        data.extend(chunk)
+
+    return bytes(data)
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +195,7 @@ async def ingest_media(
             ),
         )
 
-    data = await file.read()
+    data = await _read_upload_file_with_limit(file)
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload")
     if len(data) > settings.max_upload_size_bytes:
