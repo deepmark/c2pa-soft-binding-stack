@@ -44,7 +44,7 @@ curl -X POST http://localhost:8001/ingest \
   -F "title=Optional title"
 ```
 
-- `file` — media asset (supported: `audio/wav`, `audio/flac`; lossy formats like MP3 / M4A are temporarily disabled)
+- `file` — media asset (supported: `audio/wav`, `audio/flac`)
 - `algs` — algorithm IDs to apply (repeat for multiple: `-F "algs=a" -F "algs=b"`)
 - `title` — optional manifest title
 
