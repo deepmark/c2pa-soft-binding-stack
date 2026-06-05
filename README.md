@@ -4,7 +4,7 @@ Multi-service implementation of the [C2PA Soft Binding Resolution API spec (v2.4
 
 **Supported media formats:** `.wav` and `.flac` audio. Lossy formats (MP3, M4A) are temporarily disabled.
 
-⚠️ **This repository is for testing and experimentation only.** It is not intended for production use and should not be used to issue real C2PA manifests or perform real soft-binding ingestion / resolution. All routes are unauthenticated — do not upload sensitive data.
+⚠️ **This repository is for testing and experimentation only.** It is not intended for production use and should not be used to issue real C2PA manifests or perform real soft-binding ingestion / resolution. All routes are unauthenticated - do not upload sensitive data.
 
 A hosted demo instance is available at:
  - Ingestion API: https://ingestion-api.deepmark.me
