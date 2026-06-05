@@ -2,6 +2,14 @@
 
 Multi-service implementation of the [C2PA Soft Binding Resolution API spec (v2.4)](https://spec.c2pa.org/specifications/specifications/2.4/softbinding/Decoupled.html) with an audio ingestion pipeline that watermarks media, builds signed C2PA manifests, and publishes them to a resolution service for later lookup.
 
+**Supported media formats:** `.wav` and `.flac` audio.
+
+Hosted demo instances are available at:
+ - Ingestion API: https://ingestion-api.deepmark.me
+ - Resolution API: https://resolution-api.deepmark.me
+
+⚠️ **These APIs are for testing and experimentation only.** They are not intended for production use and should not be used to issue real C2PA manifests or perform real soft-binding ingestion / resolution. All routes are unauthenticated - do not upload sensitive data.
+
 ## Architecture
 
 ```
