@@ -1,0 +1,2 @@
+# Blank context lines in this unified diff contain a required leading space.
+apps/ingestion-api/native/related-assertions.patch whitespace=-blank-at-eol

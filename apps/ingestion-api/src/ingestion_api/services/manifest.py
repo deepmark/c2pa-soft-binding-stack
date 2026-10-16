@@ -78,7 +78,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from c2pa import Builder, Context, Reader, Signer
+from c2pa import Builder, Context, Reader, Signer, sdk_version
 
 from ingestion_api.contracts.manifest import SoftBindingSpec
 from ingestion_api.core.config import settings
@@ -87,11 +87,10 @@ from ingestion_api.core.logging import get_logger
 logger = get_logger(__name__)
 
 SOFT_BINDING_LABEL = "c2pa.soft-binding"
-# JUMBF URI prefix for self-references to assertions in this manifest.
-# C2PA action v2 ``parameters.relatedAssertions`` requires hashed JUMBF
-# URIs (``self#jumbf=c2pa.assertions/<label>``); the builder fills in
-# the hash at sign time.
-_ASSERTION_JUMBF_PREFIX = "self#jumbf=c2pa.assertions/"
+# The upstream Builder cannot resolve relatedAssertions. Our pinned native
+# patch resolves labels using the actual salted assertion hashes before signing.
+# Reject an unpatched library, which would silently retain the temporary field.
+_REFERENCE_SDK_VERSION = "0.91.0+deepmark.1"
 
 # Verify settings shared by Reader (post-sign) and Builder (during
 # ingredient validation). Common rationale:
@@ -207,6 +206,12 @@ class ManifestBuilderService:
         claim_generator_name: str | None = None,
         claim_generator_version: str | None = None,
     ) -> None:
+        if sdk_version() != _REFERENCE_SDK_VERSION:
+            raise RuntimeError(
+                f"C2PA signing requires native SDK {_REFERENCE_SDK_VERSION}; "
+                "build it with native/build-c2pa.sh and set C2PA_LIBRARY_NAME "
+                "to the resulting library (see the ingestion README)."
+            )
         self._claim_generator_name = claim_generator_name or settings.claim_generator_name
         self._claim_generator_version = (
             claim_generator_version or settings.claim_generator_version
@@ -232,7 +237,7 @@ class ManifestBuilderService:
                 # post-watermark output — the auto-parent would point
                 # the ingredient at our own output, not the upload.
                 # See: https://opensource.contentauthenticity.org/docs/c2pa-python/docs/intents
-                "intent": {"Edit": None},
+                "intent": "edit",
                 # This is currently an audio-only ingest — no thumbnail to generate.
                 "thumbnail": {"enabled": False},
             },
@@ -397,6 +402,9 @@ class ManifestBuilderService:
         if actions:
             assertions.append({
                 "label": "c2pa.actions.v2",
+                # EDIT inserts c2pa.opened here. C2PA 2.4 section 18.15.2
+                # requires this inception assertion in created_assertions.
+                "created": True,
                 "data": {"actions": actions},
             })
 
@@ -419,13 +427,9 @@ class ManifestBuilderService:
     def _watermark_action(
         self, algs: Sequence[str], related_labels: Sequence[str],
     ) -> dict[str, Any]:
-        # Per C2PA actions v2: relatedAssertions belongs inside
-        # ``parameters`` and is an array of hashed JUMBF URIs. We supply
-        # the URL only ({"url": "self#jumbf=c2pa.assertions/<label>"});
-        # the Builder resolves and fills in alg/hash at sign time.
-        related_uris = [
-            {"url": f"{_ASSERTION_JUMBF_PREFIX}{label}"} for label in related_labels
-        ]
+        # This is input to our native Builder patch, not the final assertion.
+        # The SDK replaces these labels with relatedAssertions containing the
+        # HashedUris returned when it adds the actual salted JUMBF assertions.
         return {
             "action": "c2pa.watermarked.bound",
             "softwareAgent": {
@@ -436,7 +440,7 @@ class ManifestBuilderService:
                 "description": (
                     f"Bound soft-binding watermark embedded ({', '.join(algs)})"
                 ),
-                "relatedAssertions": related_uris,
+                "relatedAssertionLabels": list(related_labels),
             },
         }
 

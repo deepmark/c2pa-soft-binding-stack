@@ -1,19 +1,22 @@
 """
 Integration test for the manifest builder + signing service.
 
-These tests don't need Mongo (they exercise the SDK directly), but they
-DO need the ES256 test cert chain + private key under ``credentials/``.
-They're skipped automatically when the certs aren't present.
+These tests use fresh temporary signing credentials and the pinned native SDK.
+They exercise finished signed artifacts without Mongo or external services.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 from _helpers import stub_binding_value as compute_binding_value
+from _manifest_helpers import make_test_credentials, raw_assertions, raw_claim
+from c2pa import Context, Reader
 
 from ingestion_api.contracts.manifest import SoftBindingSpec
+from ingestion_api.core.credentials import SignerCredentials
 from ingestion_api.services.manifest import ManifestBuilderService
 from ingestion_api.services.signing import SigningService
 
@@ -25,24 +28,39 @@ def watermark_spec(value: str, alg: str = BINDING_ALG) -> SoftBindingSpec:
         alg=alg, kind="watermark", value=value, related_to_watermark_action=True,
     )
 
-requires_credentials = pytest.mark.skipif(
-    True,
-    reason="overridden by fixture below",
-)
+@pytest.fixture(scope="session")
+def signing_credentials(tmp_path_factory: pytest.TempPathFactory) -> SignerCredentials:
+    return make_test_credentials(tmp_path_factory.mktemp("manifest-signing"))
 
 
 @pytest.fixture
-def signing_service(credentials_present: bool) -> SigningService:
-    if not credentials_present:
-        pytest.skip("credentials/es256_certs.pem + es256_private.key not present")
-    return SigningService()
+def signing_service(signing_credentials: SignerCredentials) -> SigningService:
+    return SigningService(signing_credentials)
+
+
+def _read_verified(path: Path) -> dict:
+    # Keep structural, signature and hard-binding verification enabled.
+    with Context.from_dict({"verify": {
+        "verify_after_reading": True,
+        "remote_manifest_fetch": False,
+        "ocsp_fetch": False,
+    }}) as context, Reader(str(path), context=context) as reader:
+        return json.loads(reader.json())
+
+
+def _assert_valid_signature_and_binding(report: dict) -> None:
+    status = report["validation_results"]["activeManifest"]
+    successes = {item["code"] for item in status["success"]}
+    assert {"claimSignature.validated", "assertion.dataHash.match"} <= successes
+    failures = {item["code"] for item in status.get("failure", [])}
+    # The fresh local CA is not a production trust anchor. This exception
+    # does not permit malformed assertions or any cryptographic failure.
+    assert failures <= {"signingCredential.untrusted"}, status
 
 
 def _read_active_manifest(path: Path) -> dict:
     """Read the signed asset and return the active manifest JSON."""
-    from c2pa import Reader
-    with Reader(str(path)) as r:
-        full = json.loads(r.json())
+    full = _read_verified(path)
     label = full["active_manifest"]
     return full["manifests"][label]
 
@@ -395,3 +413,136 @@ def test_pre_existing_embedded_manifest_is_chained(
     assert parent_ing["active_manifest"] in full["manifests"], (
         f"parent's active_manifest {parent_ing['active_manifest']!r} not in the store"
     )
+
+
+@pytest.mark.parametrize("extension", ["wav", "flac"])
+@pytest.mark.parametrize("binding_kinds", [
+    ("watermark",),
+    ("fingerprint", "watermark", "watermark"),
+    ("fingerprint",),
+])
+def test_finished_artifact_references_have_exact_hashes(
+    extension: str,
+    binding_kinds: tuple[str, ...],
+    fixtures_dir: Path,
+    tmp_path: Path,
+    signing_service: SigningService,
+):
+    source = (fixtures_dir / f"sample.{extension}").read_bytes()
+    # Preserve the public Vigil algorithm and its encoded 106-bit binding.
+    bindings = [SoftBindingSpec(
+        alg="me.deepmark.audio.vigil.128" if kind == "watermark" else "org.example.fingerprint",
+        kind=kind,
+        value="JCQkJCQkJCQkJCQkJIA=",
+        related_to_watermark_action=(kind == "watermark"),
+    ) for kind in binding_kinds]
+    dest = tmp_path / f"signed.{extension}"
+    with ManifestBuilderService(signer=signing_service.release_signer()) as builder:
+        result = builder.build_and_sign(
+            source_bytes=source, parent_bytes=source, dest_path=dest,
+            mime_type=f"audio/{extension}", soft_bindings=bindings,
+        )
+
+    report = _read_verified(dest)
+    _assert_valid_signature_and_binding(report)
+    label = report["active_manifest"]
+    assertions = raw_assertions(result.manifest_bytes, label)
+    claim = raw_claim(result.manifest_bytes, label)
+    assert "self#jumbf=c2pa.assertions/c2pa.actions.v2" in {
+        ref["url"] for ref in claim["created_assertions"]
+    }
+    final_labels = ["c2pa.soft-binding"] + [
+        f"c2pa.soft-binding__{i}" for i in range(1, len(bindings))
+    ]
+    for final_label, spec in zip(final_labels, bindings, strict=True):
+        data = assertions[final_label][1]
+        assert data["alg"] == spec.alg
+        assert data["blocks"] == [{"scope": {}, "value": spec.value}]
+
+    actions = next(data["actions"] for key, (_, data) in assertions.items()
+                   if key.startswith("c2pa.actions"))
+    assert actions[0]["action"] == "c2pa.opened"
+    assert actions[0]["parameters"]["ingredients"]
+    bound = [a for a in actions if a["action"] == "c2pa.watermarked.bound"]
+    expected = [label for label, kind in zip(final_labels, binding_kinds, strict=True)
+                if kind == "watermark"]
+    assert len(bound) == bool(expected)
+    if not expected:
+        return
+
+    params = bound[0]["parameters"]
+    assert "relatedAssertionLabels" not in params
+    refs = params["relatedAssertions"]
+    assert [ref["url"] for ref in refs] == [
+        f"self#jumbf=c2pa.assertions/{label}" for label in expected
+    ]
+    for ref, target in zip(refs, expected, strict=True):
+        # Hash original serialized JUMBF bytes, including the final duplicate
+        # label and random salt. Hashing JSON or CBOR alone would fail here.
+        digest = hashlib.new(ref.get("alg", claim["alg"]), assertions[target][0]).digest()
+        assert ref["hash"] == digest
+
+
+@pytest.mark.parametrize("extension", ["wav", "flac"])
+def test_signed_audio_tampering_fails_integrity(
+    extension: str,
+    fixtures_dir: Path,
+    tmp_path: Path,
+    signing_service: SigningService,
+):
+    source = (fixtures_dir / f"sample.{extension}").read_bytes()
+    signed = tmp_path / f"signed.{extension}"
+    with ManifestBuilderService(signer=signing_service.release_signer()) as builder:
+        builder.build_and_sign(
+            source_bytes=source, parent_bytes=source, dest_path=signed,
+            mime_type=f"audio/{extension}",
+            soft_bindings=[watermark_spec("JCQkJCQkJCQkJCQkJIA=", "me.deepmark.audio.vigil.128")],
+        )
+    _assert_valid_signature_and_binding(_read_verified(signed))
+    data = bytearray(signed.read_bytes())
+    if extension == "wav":
+        offset = 12
+        while data[offset:offset + 4] != b"data":
+            size = int.from_bytes(data[offset + 4:offset + 8], "little")
+            offset += 8 + size + size % 2
+            assert offset + 8 < len(data), "WAV data chunk missing"
+        offset += 8
+    else:
+        # The SDK stores the FLAC manifest in a leading ID3 tag. Skip that
+        # and all FLAC metadata blocks to alter encoded audio only.
+        offset = 0
+        if data[:3] == b"ID3":
+            tag_size = 0
+            for byte in data[6:10]:
+                assert byte < 128, "invalid ID3 synchsafe size"
+                tag_size = (tag_size << 7) | byte
+            offset = 10 + tag_size
+        assert data[offset:offset + 4] == b"fLaC"
+        offset += 4
+        while True:
+            last = data[offset] & 0x80
+            size = int.from_bytes(data[offset + 1:offset + 4], "big")
+            offset += 4 + size
+            assert offset < len(data), "FLAC audio frames missing"
+            if last:
+                break
+        offset += (len(data) - offset) // 2
+    data[offset] ^= 1
+    tampered = tmp_path / f"tampered.{extension}"
+    tampered.write_bytes(data)
+    status = _read_verified(tampered)["validation_results"]["activeManifest"]
+    failures = {item["code"] for item in status["failure"]}
+    assert "assertion.dataHash.mismatch" in failures, status
+    assert "claimSignature.validated" in {item["code"] for item in status["success"]}
+
+
+def test_unpatched_native_sdk_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, signing_service: SigningService,
+):
+    monkeypatch.setattr("ingestion_api.services.manifest.sdk_version", lambda: "0.91.0")
+    signer = signing_service.release_signer()
+    try:
+        with pytest.raises(RuntimeError, match="requires native SDK"):
+            ManifestBuilderService(signer=signer)
+    finally:
+        signer.close()

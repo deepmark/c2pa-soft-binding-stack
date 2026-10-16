@@ -832,9 +832,8 @@ def test_ingest_with_watermark_plus_fingerprint(
         (FP_ALG, result.record.softBindings[1].bindingValue),
     ]
 
-    # Signed manifest has two soft-binding assertions, suffixed per
-    # C2PA labelling rules. The Builder auto-suffixes the second; we
-    # just verify both labels and both algs are present.
+    # The Reader exposes the base label and a separate instance number.
+    # The final JUMBF suffixes are checked by the manifest artifact tests.
     from c2pa import Reader
     with Reader(str(result.signed_asset_path)) as r:
         full = json.loads(r.json())
@@ -843,10 +842,12 @@ def test_ingest_with_watermark_plus_fingerprint(
     sb_assertions = [
         a for a in active["assertions"] if a["label"].startswith("c2pa.soft-binding")
     ]
-    sb_by_label = {a["label"]: a["data"]["alg"] for a in sb_assertions}
-    assert sb_by_label == {
-        "c2pa.soft-binding": BINDING_ALG,
-        "c2pa.soft-binding__1": FP_ALG,
+    sb_by_instance = {
+        (a["label"], a.get("instance", 0)): a["data"]["alg"] for a in sb_assertions
+    }
+    assert sb_by_instance == {
+        ("c2pa.soft-binding", 0): BINDING_ALG,
+        ("c2pa.soft-binding", 1): FP_ALG,
     }
     # Manifest validates cleanly (no hashedURI mismatch from the suffix
     # — regression guard for a real bug we hit during this refactor).
