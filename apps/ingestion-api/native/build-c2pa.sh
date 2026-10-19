@@ -32,7 +32,7 @@ cp -- "$C2PA_NATIVE_DIR/Cargo.lock" "$C2PA_SOURCE_DIR/Cargo.lock"
 
 CARGO_TARGET_DIR="$C2PA_BUILD_DIR/target" cargo +1.96.0 build \
   --manifest-path "$C2PA_SOURCE_DIR/Cargo.toml" \
-  --locked --release -p c2pa-c-ffi --features file_io --jobs "${C2PA_BUILD_JOBS:-4}"
+  --locked --release -p c2pa-c-ffi --jobs "${C2PA_BUILD_JOBS:-4}"
 install -m 0755 "$C2PA_BUILD_DIR/target/release/libc2pa_c.so" \
   "$C2PA_OUTPUT_DIR/libc2pa_c.so"
 printf 'Built native SDK 0.91.0+deepmark.1: %s/libc2pa_c.so\n' "$C2PA_OUTPUT_DIR"

@@ -408,8 +408,8 @@ class ManifestBuilderService:
                 "data": {"actions": actions},
             })
 
-        for i, spec in enumerate(soft_bindings):
-            assertions.append(self._soft_binding_assertion(spec, index=i))
+        for spec in soft_bindings:
+            assertions.append(self._soft_binding_assertion(spec))
 
         manifest: dict[str, Any] = {
             "claim_generator_info": [
@@ -444,15 +444,10 @@ class ManifestBuilderService:
             },
         }
 
-    def _soft_binding_assertion(
-        self, spec: SoftBindingSpec, *, index: int,
-    ) -> dict[str, Any]:
+    def _soft_binding_assertion(self, spec: SoftBindingSpec) -> dict[str, Any]:
         # Always pass the base type label; the Builder auto-suffixes
         # duplicates to ``c2pa.soft-binding__1``, ``__2``, ... in the
-        # signed manifest. ``index`` is unused on input but kept in the
-        # signature for callers that want to know the eventual JUMBF
-        # label (use ``soft_binding_label(index)``).
-        del index
+        # signed manifest. Use soft_binding_label() for references.
         return {
             "label": SOFT_BINDING_LABEL,
             "data": {

@@ -174,7 +174,6 @@ def test_manifest_id_can_be_read_back(
         soft_bindings=[watermark_spec(binding)],
     )
 
-    from c2pa import Reader
     with Reader(str(dest)) as r:
         full = json.loads(r.json())
     label = full["active_manifest"]
@@ -390,7 +389,6 @@ def test_pre_existing_embedded_manifest_is_chained(
         title="child.wav",
     )
 
-    from c2pa import Reader
     with Reader(str(child_dest)) as r:
         full = json.loads(r.json())
     # Manifest store now contains BOTH manifests (the parent + child),

@@ -216,12 +216,15 @@ Binary endpoints use `Content-Type: application/octet-stream` for the body and `
 
 ## Tests
 
+For ingestion-api, first build and select the patched native SDK using the
+[local setup instructions](apps/ingestion-api/README.md#run).
+
 ```bash
 cd apps/resolution-api && pip install -e ".[dev]" && pytest
 cd apps/ingestion-api && pip install -e ".[dev]" && pytest
 ```
 
-Tests run with no external services (MongoDB and plugins are mocked). Ingestion-api tests that exercise C2PA signing require test credentials in `credentials/` (auto-skipped otherwise).
+Tests run with no external services (MongoDB and plugins are mocked). Manifest tests generate temporary signing credentials; ingestion orchestrator signing tests still require test credentials in `credentials/` and skip when absent.
 
 ## Signing credentials
 

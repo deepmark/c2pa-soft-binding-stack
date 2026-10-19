@@ -86,7 +86,6 @@ def make_test_credentials(directory: Path) -> SignerCredentials:
         serialization.NoEncryption(),
     ))
     key_path.chmod(0o600)
-    (directory / "root.pem").write_bytes(root.public_bytes(serialization.Encoding.PEM))
     return SignerCredentials(cert_path, key_path, ta_url=None)
 
 
