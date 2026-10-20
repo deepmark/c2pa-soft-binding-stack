@@ -21,6 +21,8 @@ repos:
       - id: check-docstring-first
       - id: end-of-file-fixer
       - id: trailing-whitespace
+        # Unified-diff context lines must retain their leading space.
+        exclude: ^apps/ingestion-api/native/related-assertions\.patch$
       - id: check-merge-conflict
 
   - repo: local

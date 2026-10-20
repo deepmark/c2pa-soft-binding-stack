@@ -1,3 +1,12 @@
+# ---------- native C2PA reference support ----------
+FROM rust:1.96.0-bookworm AS c2pa-native
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl patch pkg-config libssl-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY native /native
+RUN bash /native/build-c2pa.sh /build /opt/c2pa
+
 # ---------- build stage ----------
 FROM python:3.12-slim AS builder
 
@@ -24,7 +33,8 @@ FROM python:3.12-slim
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    C2PA_LIBRARY_NAME=/opt/c2pa/libc2pa_c.so
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
@@ -36,9 +46,11 @@ RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuse
 
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=c2pa-native /opt/c2pa /opt/c2pa
 COPY docker-entrypoint.sh /usr/local/bin/ingestion-entrypoint
 
 RUN chmod 0755 /usr/local/bin/ingestion-entrypoint
+RUN python -c "import c2pa; assert c2pa.sdk_version() == '0.91.0+deepmark.1', c2pa.sdk_version()"
 
 # Volume will be owned by appuser via the init container / entrypoint fix
 VOLUME /var/lib/ingestion-api/storage

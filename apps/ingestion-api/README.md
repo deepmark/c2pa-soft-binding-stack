@@ -6,10 +6,18 @@ For the full stack (compose, resolution-api, plugins) see the [top-level README]
 
 ## Run
 
+The Dockerfile builds the required patched C2PA SDK (`0.91.0+deepmark.1`) automatically. For local Linux development, install Rust 1.96.0, a C compiler, OpenSSL development headers, `pkg-config`, `curl`, and `patch`, then build the dependency before starting Python:
+
 ```bash
 pip install -e ".[dev]"
+rustup toolchain install 1.96.0 --profile minimal
+C2PA_BUILD_DIR="$(mktemp -d)"
+bash native/build-c2pa.sh "$C2PA_BUILD_DIR" "$C2PA_BUILD_DIR/lib"
+export C2PA_LIBRARY_NAME="$C2PA_BUILD_DIR/lib/libc2pa_c.so"
 ingestion-api              # uvicorn on port 8001
 ```
+
+The pinned patch in `native/` resolves assertion references using SDK-generated hashes before signing. The service rejects an unpatched library; keep `C2PA_LIBRARY_NAME` set when running locally.
 
 Requires:
 - MongoDB running at `MONGODB_URL`
@@ -117,4 +125,4 @@ fetching and require the files to already exist.
 pytest -q
 ```
 
-Tests use mocked plugins and resolution-api (no live services needed). C2PA signing tests require `credentials/es256_certs.pem` + `es256_private.key` — auto-skipped when not present.
+Set `C2PA_LIBRARY_NAME` as above before running the tests. Tests use mocked plugins and resolution-api (no live services needed). Manifest tests generate temporary ES256 certificates and validate completed WAV and FLAC assets, exact salted assertion hashes, duplicate labels, parent provenance, and audio tampering. The temporary certificate authority is untrusted; signature and asset-binding failures remain test failures. Existing ingestion orchestrator tests still require `credentials/es256_certs.pem` + `es256_private.key` and skip when those files are absent.

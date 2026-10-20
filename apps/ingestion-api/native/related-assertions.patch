@@ -1,0 +1,281 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 329e089..890c3e6 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -11,7 +11,7 @@ members = [
+ 
+ # members in this workspace can share this version setting
+ [workspace.package]
+-version = "0.91.0"
++version = "0.91.0+deepmark.1"
+ 
+ [workspace.dependencies]
+ c2pa = { path = "sdk", version = "0.91.0", default-features = false }
+diff --git a/sdk/src/builder.rs b/sdk/src/builder.rs
+index a92c2f0..16d0c03 100644
+--- a/sdk/src/builder.rs
++++ b/sdk/src/builder.rs
+@@ -1617,7 +1617,61 @@ impl Builder {
+         Builder::new().with_archive(stream)
+     }
+ 
+-    // Convert a Manifest into a Claim
++    /// Resolve the Builder-only `parameters.relatedAssertionLabels` input to
++    /// actual hashed references before the actions assertion is serialized.
++    /// Labels are the final assertion labels, including duplicate suffixes.
++    fn resolve_related_assertion_labels(
++        action: &mut Action,
++        assertion_map: &HashMap<String, HashedUri>,
++    ) -> Result<()> {
++        let Some(value) = action.remove_parameter("relatedAssertionLabels") else {
++            return Ok(());
++        };
++        let related_labels: Vec<String> = c2pa_cbor::value::from_value(value).map_err(|_| {
++            Error::BadParam(
++                "relatedAssertionLabels must be an array of assertion labels".to_string(),
++            )
++        })?;
++        if related_labels.is_empty() {
++            return Err(Error::BadParam(
++                "relatedAssertionLabels must not be empty".to_string(),
++            ));
++        }
++        let mut seen = HashSet::new();
++        let mut related_uris = Vec::with_capacity(related_labels.len());
++        for label in related_labels {
++            if label.is_empty() || !seen.insert(label.clone()) {
++                return Err(Error::BadParam(format!(
++                    "relatedAssertionLabels contains an empty or duplicate label: {label}"
++                )));
++            }
++            // Ingredient/action relationships use other fields; hard bindings
++            // can change later during signing and are not stable targets here.
++            let base_label = parse_label(&label).0;
++            if base_label.starts_with(Actions::LABEL)
++                || base_label.starts_with(labels::INGREDIENT)
++                || labels::HASH_LABELS.contains(&base_label)
++            {
++                return Err(Error::BadParam(format!(
++                    "Unsupported relatedAssertionLabels target: {label}"
++                )));
++            }
++            related_uris.push(assertion_map.get(&label).cloned().ok_or_else(|| {
++                Error::BadParam(format!("relatedAssertionLabels target not found: {label}"))
++            })?);
++        }
++        // Preserve supplied hashed references. Set the typed field rather than
++        // adding a common parameter with the same serialized name.
++        action
++            .parameters
++            .get_or_insert_default()
++            .related_assertions
++            .get_or_insert_default()
++            .extend(related_uris);
++        Ok(())
++    }
++
++    // Convert a Manifest into a Claim.
+     fn to_claim(&self) -> Result<Claim> {
+         // utility function to add created or gathered assertions
+         fn add_assertion(
+@@ -1775,10 +1829,21 @@ impl Builder {
+         // holds the inception action, and a gathered-list assertion). Only the first one may
+         // carry an inception, so clear this once we have seen an actions assertion.
+         let mut allow_inception = true;
+-        // add any additional assertions
+-        for manifest_assertion in &definition.assertions {
++        // Add non-action assertions first, preserving their order, so references in
++        // actions use the SDK-assigned labels, salts, and hashes. Keep the relative
++        // order of actions assertions (and their created/gathered attribution).
++        let is_actions = |assertion: &&AssertionDefinition| {
++            parse_label(assertion.label()).0.starts_with(Actions::LABEL)
++        };
++        let ordered_assertions = definition
++            .assertions
++            .iter()
++            .filter(|a| !is_actions(a))
++            .chain(definition.assertions.iter().filter(is_actions));
++        let mut assertion_map: HashMap<String, HashedUri> = HashMap::new();
++        for manifest_assertion in ordered_assertions {
+             let (match_label, version, _instance) = parse_label(manifest_assertion.label());
+-            match match_label {
++            let uri = match match_label {
+                 l if l.starts_with(Actions::LABEL) => {
+                     found_actions = true;
+ 
+@@ -1869,6 +1934,9 @@ impl Builder {
+                         allow_inception,
+                     )?;
+                     allow_inception = false;
++                    for action in actions.actions_mut() {
++                        Self::resolve_related_assertion_labels(action, &assertion_map)?;
++                    }
+ 
+                     add_assertion(&mut claim, &actions, manifest_assertion.created())
+                 }
+@@ -1913,11 +1981,19 @@ impl Builder {
+                     ),
+                 },
+             }?;
++            if !match_label.starts_with(Actions::LABEL) {
++                let label = crate::jumbf::labels::assertion_label_from_uri(&uri.url())
++                    .ok_or_else(|| Error::BadParam("Invalid assertion URI".to_string()))?;
++                assertion_map.insert(label, uri);
++            }
+         }
+ 
+         if !found_actions {
+             let mut actions = Actions::new();
+             self.add_actions_assertion_settings(&ingredient_map, &mut actions, true)?;
++            for action in actions.actions_mut() {
++                Self::resolve_related_assertion_labels(action, &assertion_map)?;
++            }
+ 
+             if !actions.actions().is_empty() {
+                 // Per spec, only the actions assertion carrying the manifest's inception
+@@ -11529,6 +11605,145 @@ mod tests {
+         assert_send(future);
+     }
+ 
++    #[test]
++    fn test_related_assertion_labels_resolve_final_hashes() -> Result<()> {
++        let builder = Builder::from_context(test_context()).with_definition(
++            json!({
++                "assertions": [
++                    {
++                        "label": "c2pa.actions.v2", "created": true,
++                        "data": {"actions": [
++                            {"action": "c2pa.created", "digitalSourceType": "http://c2pa.org/digitalsourcetype/empty"},
++                            {"action": "c2pa.watermarked.bound", "parameters": {
++                                "relatedAssertionLabels": ["c2pa.soft-binding__1", "c2pa.soft-binding__2"]
++                            }}
++                        ]}
++                    },
++                    {"label": "c2pa.soft-binding", "data": {"alg": "org.test.fingerprint", "blocks": [{"scope": {}, "value": "fp"}]}},
++                    {"label": "c2pa.soft-binding", "data": {"alg": "org.test.watermark", "blocks": [{"scope": {}, "value": "wm1"}]}},
++                    {"label": "c2pa.soft-binding", "data": {"alg": "org.test.watermark", "blocks": [{"scope": {}, "value": "wm2"}]}},
++                    {"label": "c2pa.actions.v2", "data": {"actions": [{"action": "c2pa.color_adjustments"}]}}
++                ]
++            }).to_string(),
++        )?;
++        let claim = builder.to_claim()?;
++        assert_eq!(claim.created_action_assertions().len(), 1);
++        assert_eq!(claim.gathered_action_assertions().len(), 1);
++        let actions = Actions::from_assertion(claim.created_action_assertions()[0].assertion())?;
++        assert_eq!(actions.actions()[0].action(), c2pa_action::CREATED);
++        let action = actions
++            .actions()
++            .iter()
++            .find(|a| a.action() == "c2pa.watermarked.bound")
++            .unwrap();
++        assert!(action
++            .get_parameter::<Vec<String>>("relatedAssertionLabels")
++            .is_none());
++        let references = action.related_assertions().unwrap();
++        assert_eq!(references.len(), 2);
++        for (reference, label) in references
++            .iter()
++            .zip(["c2pa.soft-binding__1", "c2pa.soft-binding__2"])
++        {
++            assert_eq!(
++                reference.url(),
++                format!("self#jumbf=c2pa.assertions/{label}")
++            );
++            let target = claim
++                .claim_assertion_store()
++                .iter()
++                .find(|a| a.label() == label)
++                .unwrap();
++            assert_eq!(reference.hash(), target.hash());
++            // This recomputes the serialized assertion-box digest, including its
++            // final label and actual salt, rather than checking a nonempty hash.
++            let recomputed = Claim::calc_assertion_box_hash(
++                label,
++                target.assertion(),
++                target.salt().clone(),
++                claim.alg(),
++            )?;
++            assert_eq!(reference.hash(), recomputed);
++        }
++        assert_ne!(references[0].hash(), references[1].hash());
++        let gathered = Actions::from_assertion(claim.gathered_action_assertions()[0].assertion())?;
++        assert_eq!(gathered.actions()[0].action(), "c2pa.color_adjustments");
++        Ok(())
++    }
++
++    #[test]
++    fn test_related_assertion_labels_reject_invalid_targets() -> Result<()> {
++        for labels in [
++            json!([]),
++            json!([""]),
++            json!(["c2pa.soft-binding", "c2pa.soft-binding"]),
++            json!(["c2pa.soft-binding__10"]),
++            json!(["c2pa.actions.v2"]),
++            json!(["c2pa.ingredient.v3"]),
++            json!(["c2pa.hash.data"]),
++            json!([42]),
++            json!(null),
++            json!("c2pa.soft-binding"),
++        ] {
++            let builder = Builder::from_context(test_context()).with_definition(json!({
++                "assertions": [
++                    {"label": "c2pa.actions.v2", "created": true, "data": {"actions": [
++                        {"action": "c2pa.watermarked.bound", "parameters": {"relatedAssertionLabels": labels}}
++                    ]}},
++                    {"label": "c2pa.soft-binding", "data": {"alg": "org.test.watermark"}}
++                ]
++            }).to_string())?;
++            assert!(
++                matches!(builder.to_claim(), Err(Error::BadParam(_))),
++                "accepted invalid labels: {labels}"
++            );
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn test_related_assertion_labels_preserve_existing_hashed_references() -> Result<()> {
++        let mut claim = Claim::new("test", None, 2).with_context(test_context().into_shared());
++        let first = claim.add_assertion(&User::new("org.test.first", r#"{"value":1}"#))?;
++        let second = claim.add_assertion(&User::new("org.test.second", r#"{"value":2}"#))?;
++        let mut action: Action = serde_json::from_value(json!({
++            "action": "c2pa.watermarked.bound", "parameters": {
++                "relatedAssertions": [first], "relatedAssertionLabels": ["org.test.second"]
++            }
++        }))?;
++        let mut assertion_map = HashMap::new();
++        assertion_map.insert("org.test.second".to_string(), second.clone());
++        Builder::resolve_related_assertion_labels(&mut action, &assertion_map)?;
++        let refs = action.related_assertions().unwrap();
++        assert_eq!(refs.len(), 2);
++        assert_eq!(refs[0].url(), first.url());
++        assert_eq!(refs[0].hash(), first.hash());
++        assert_eq!(refs[1].url(), second.url());
++        assert_eq!(refs[1].hash(), second.hash());
++        assert!(action
++            .get_parameter::<Vec<String>>("relatedAssertionLabels")
++            .is_none());
++        assert!(!action
++            .parameters()
++            .unwrap()
++            .common
++            .contains_key("relatedAssertions"));
++        Ok(())
++    }
++
++    #[test]
++    fn test_related_assertion_labels_do_not_change_existing_only_action() -> Result<()> {
++        let mut claim = Claim::new("test", None, 2).with_context(test_context().into_shared());
++        let uri = claim.add_assertion(&User::new("org.test.first", r#"{"value":1}"#))?;
++        let mut action: Action = serde_json::from_value(json!({
++            "action": "c2pa.watermarked.bound", "parameters": {"relatedAssertions": [uri]}
++        }))?;
++        let original = serde_json::to_value(&action)?;
++        Builder::resolve_related_assertion_labels(&mut action, &HashMap::new())?;
++        assert_eq!(serde_json::to_value(&action)?, original);
++        Ok(())
++    }
++
+     // Tests for the experimental `filter_actions` / `filter_ingredients` API. Kept in a
+     // feature-gated submodule so the whole suite compiles only when the feature is enabled.
+     #[cfg(feature = "unstable_builder_filter")]
