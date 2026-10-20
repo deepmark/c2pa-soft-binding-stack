@@ -1,5 +1,5 @@
 # ---------- build stage ----------
-FROM python:3.11-slim AS builder
+FROM python:3.14-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -32,7 +32,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # ---------- runtime stage ----------
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \

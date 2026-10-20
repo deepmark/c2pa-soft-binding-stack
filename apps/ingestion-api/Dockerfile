@@ -1,5 +1,5 @@
 # ---------- native C2PA reference support ----------
-FROM rust:1.96.0-bookworm AS c2pa-native
+FROM rust:1.99.1-bookworm AS c2pa-native
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl patch pkg-config libssl-dev \
@@ -8,7 +8,7 @@ COPY native /native
 RUN bash /native/build-c2pa.sh /build /opt/c2pa
 
 # ---------- build stage ----------
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 WORKDIR /app
 
@@ -28,7 +28,7 @@ COPY src ./src
 RUN pip install . --no-deps
 
 # ---------- runtime stage ----------
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
