@@ -1,5 +1,5 @@
 # ---------- native C2PA reference support ----------
-FROM rust:1.96.0-bookworm AS c2pa-native
+FROM rust:1.99.1-bookworm AS c2pa-native
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl patch pkg-config libssl-dev \
