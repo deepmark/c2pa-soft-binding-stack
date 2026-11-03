@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
     configure_logging()
     logger.info("Starting %s v%s", settings.api_title, settings.api_version)
     await MongoDB.connect()
-    logger.info("Connected to MongoDB at %s", settings.mongodb_url)
+    logger.info("Connected to MongoDB db=%s", settings.mongodb_database)
     try:
         yield
     finally:
