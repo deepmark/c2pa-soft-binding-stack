@@ -1,21 +1,21 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 329e089..890c3e6 100644
+index 50b1e42..3868d2f 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -11,7 +11,7 @@ members = [
  
  # members in this workspace can share this version setting
  [workspace.package]
--version = "0.91.0"
-+version = "0.91.0+deepmark.1"
+-version = "0.91.11"
++version = "0.91.11+deepmark.1"
  
  [workspace.dependencies]
- c2pa = { path = "sdk", version = "0.91.0", default-features = false }
+ c2pa = { path = "sdk", version = "0.91.11", default-features = false }
 diff --git a/sdk/src/builder.rs b/sdk/src/builder.rs
-index a92c2f0..16d0c03 100644
+index e29e660..17898e0 100644
 --- a/sdk/src/builder.rs
 +++ b/sdk/src/builder.rs
-@@ -1617,7 +1617,61 @@ impl Builder {
+@@ -1634,7 +1634,61 @@ impl Builder {
          Builder::new().with_archive(stream)
      }
  
@@ -78,7 +78,7 @@ index a92c2f0..16d0c03 100644
      fn to_claim(&self) -> Result<Claim> {
          // utility function to add created or gathered assertions
          fn add_assertion(
-@@ -1775,10 +1829,21 @@ impl Builder {
+@@ -1792,10 +1846,21 @@ impl Builder {
          // holds the inception action, and a gathered-list assertion). Only the first one may
          // carry an inception, so clear this once we have seen an actions assertion.
          let mut allow_inception = true;
@@ -103,9 +103,9 @@ index a92c2f0..16d0c03 100644
                  l if l.starts_with(Actions::LABEL) => {
                      found_actions = true;
  
-@@ -1869,6 +1934,9 @@ impl Builder {
-                         allow_inception,
+@@ -1842,6 +1907,9 @@ impl Builder {
                      )?;
+                     self.resolve_action_icons(&mut actions, &mut claim)?;
                      allow_inception = false;
 +                    for action in actions.actions_mut() {
 +                        Self::resolve_related_assertion_labels(action, &assertion_map)?;
@@ -113,7 +113,7 @@ index a92c2f0..16d0c03 100644
  
                      add_assertion(&mut claim, &actions, manifest_assertion.created())
                  }
-@@ -1913,11 +1981,19 @@ impl Builder {
+@@ -1886,12 +1954,20 @@ impl Builder {
                      ),
                  },
              }?;
@@ -127,13 +127,14 @@ index a92c2f0..16d0c03 100644
          if !found_actions {
              let mut actions = Actions::new();
              self.add_actions_assertion_settings(&ingredient_map, &mut actions, true)?;
+             self.resolve_action_icons(&mut actions, &mut claim)?;
 +            for action in actions.actions_mut() {
 +                Self::resolve_related_assertion_labels(action, &assertion_map)?;
 +            }
  
              if !actions.actions().is_empty() {
                  // Per spec, only the actions assertion carrying the manifest's inception
-@@ -11529,6 +11605,145 @@ mod tests {
+@@ -11928,6 +12004,145 @@ mod tests {
          assert_send(future);
      }
  
