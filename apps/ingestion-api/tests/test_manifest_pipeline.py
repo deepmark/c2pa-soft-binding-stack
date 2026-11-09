@@ -537,7 +537,7 @@ def test_signed_audio_tampering_fails_integrity(
 def test_unpatched_native_sdk_is_rejected(
     monkeypatch: pytest.MonkeyPatch, signing_service: SigningService,
 ):
-    monkeypatch.setattr("ingestion_api.services.manifest.sdk_version", lambda: "0.91.0")
+    monkeypatch.setattr("ingestion_api.services.manifest.sdk_version", lambda: "0.91.11")
     signer = signing_service.release_signer()
     try:
         with pytest.raises(RuntimeError, match="requires native SDK"):

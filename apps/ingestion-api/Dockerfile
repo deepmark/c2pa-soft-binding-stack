@@ -50,7 +50,7 @@ COPY --from=c2pa-native /opt/c2pa /opt/c2pa
 COPY docker-entrypoint.sh /usr/local/bin/ingestion-entrypoint
 
 RUN chmod 0755 /usr/local/bin/ingestion-entrypoint
-RUN python -c "import c2pa; assert c2pa.sdk_version() == '0.91.0+deepmark.1', c2pa.sdk_version()"
+RUN python -c "import c2pa; assert c2pa.sdk_version() == '0.91.11+deepmark.1', c2pa.sdk_version()"
 
 # Volume will be owned by appuser via the init container / entrypoint fix
 VOLUME /var/lib/ingestion-api/storage
