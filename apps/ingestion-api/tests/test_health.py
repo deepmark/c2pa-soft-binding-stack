@@ -201,6 +201,24 @@ async def test_ready_503_when_mongo_down(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("patch_mongo", [_patch_mongo_ok, _patch_mongo_down])
+async def test_ready_never_exposes_mongodb_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, patch_mongo,
+):
+    monkeypatch.setattr(settings, "mongodb_url", "mongodb+srv://user:s3cret-pw@db.example.net/")
+    patch_mongo(monkeypatch)
+    _patch_credentials_present(monkeypatch, tmp_path, present=True)
+    app = _build_app(_StubSigningService(is_loaded=True))
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        r = await c.get("/ready")
+
+    assert "s3cret-pw" not in r.text
+    assert "url" not in r.json()["mongodb"]
+
+
+@pytest.mark.asyncio
 async def test_ready_503_when_signing_not_loaded(
     monkeypatch: pytest.MonkeyPatch, tmp_path,
 ):

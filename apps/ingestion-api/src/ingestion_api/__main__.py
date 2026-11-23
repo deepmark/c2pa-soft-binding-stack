@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting %s v%s", settings.api_title, settings.api_version)
 
     await MongoDB.connect()
-    logger.info("Connected to MongoDB at %s db=%s", settings.mongodb_url, settings.mongodb_database)
+    logger.info("Connected to MongoDB db=%s", settings.mongodb_database)
 
     if settings.resolution_push_enabled:
         logger.info("Resolution-api auto-push ENABLED -> %s", settings.resolution_api_url)

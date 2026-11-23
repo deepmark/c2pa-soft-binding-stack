@@ -195,11 +195,13 @@ async def health_deep(request: Request) -> JSONResponse:
 
 
 async def _check_mongo() -> dict[str, Any]:
-    """Bounded MongoDB ``ping``. Never raises."""
+    """Bounded MongoDB ``ping``. Never raises.
+
+    Never include ``mongodb_url``: it carries credentials and these probes are public.
+    """
     if MongoDB.client is None:
         return {
             "ok": False,
-            "url": settings.mongodb_url,
             "database": settings.mongodb_database,
             "error": "MongoDB not connected",
         }
@@ -210,21 +212,18 @@ async def _check_mongo() -> dict[str, Any]:
         )
         return {
             "ok": True,
-            "url": settings.mongodb_url,
             "database": settings.mongodb_database,
             "error": None,
         }
     except asyncio.TimeoutError:
         return {
             "ok": False,
-            "url": settings.mongodb_url,
             "database": settings.mongodb_database,
             "error": f"ping timed out after {settings.ready_mongo_timeout_s}s",
         }
     except Exception as exc:  # noqa: BLE001
         return {
             "ok": False,
-            "url": settings.mongodb_url,
             "database": settings.mongodb_database,
             "error": str(exc),
         }
