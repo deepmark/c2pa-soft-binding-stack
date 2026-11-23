@@ -90,7 +90,7 @@ SOFT_BINDING_LABEL = "c2pa.soft-binding"
 # The upstream Builder cannot resolve relatedAssertions. Our pinned native
 # patch resolves labels using the actual salted assertion hashes before signing.
 # Reject an unpatched library, which would silently retain the temporary field.
-_REFERENCE_SDK_VERSION = "0.91.0+deepmark.1"
+_REFERENCE_SDK_VERSION = "0.91.11+deepmark.1"
 
 # Verify settings shared by Reader (post-sign) and Builder (during
 # ingredient validation). Common rationale:

@@ -6,7 +6,7 @@ For the full stack (compose, resolution-api, plugins) see the [top-level README]
 
 ## Run
 
-The Dockerfile builds the required patched C2PA SDK (`0.91.0+deepmark.1`) automatically. For local Linux development, install Rust 1.96.0, a C compiler, OpenSSL development headers, `pkg-config`, `curl`, and `patch`, then build the dependency before starting Python:
+The Dockerfile builds the required patched C2PA SDK (`0.91.11+deepmark.1`) automatically. For local Linux development, install Rust 1.96.0, a C compiler, OpenSSL development headers, `pkg-config`, `curl`, and `patch`, then build the dependency before starting Python:
 
 ```bash
 pip install -e ".[dev]"

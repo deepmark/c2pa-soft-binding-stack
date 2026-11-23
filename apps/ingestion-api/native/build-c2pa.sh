@@ -11,8 +11,8 @@ C2PA_NATIVE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p -- "$1" "$2"
 C2PA_BUILD_DIR="$(cd -- "$1" && pwd)"
 C2PA_OUTPUT_DIR="$(cd -- "$2" && pwd)"
-C2PA_REVISION=e7cc666c3409bdaf4cea8e49046dfbf8290dff89
-C2PA_ARCHIVE_SHA256=2597e7a98823f290032ba45b949e729c2cc6deee875961e0b843641a13ef5db1
+C2PA_REVISION=7bb32d67b984af5cff064ead2a3a538e696ef70d
+C2PA_ARCHIVE_SHA256=c9b4781d50296769df28eb841854452f8afaeb9fb72117fe25dc06d617c55b81
 C2PA_ARCHIVE="$C2PA_BUILD_DIR/$C2PA_REVISION.tar.gz"
 
 if [[ ! -f "$C2PA_ARCHIVE" ]]; then
@@ -35,4 +35,4 @@ CARGO_TARGET_DIR="$C2PA_BUILD_DIR/target" cargo +1.96.0 build \
   --locked --release -p c2pa-c-ffi --jobs "${C2PA_BUILD_JOBS:-4}"
 install -m 0755 "$C2PA_BUILD_DIR/target/release/libc2pa_c.so" \
   "$C2PA_OUTPUT_DIR/libc2pa_c.so"
-printf 'Built native SDK 0.91.0+deepmark.1: %s/libc2pa_c.so\n' "$C2PA_OUTPUT_DIR"
+printf 'Built native SDK 0.91.11+deepmark.1: %s/libc2pa_c.so\n' "$C2PA_OUTPUT_DIR"
