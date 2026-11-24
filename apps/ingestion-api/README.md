@@ -81,6 +81,8 @@ Settings: `src/ingestion_api/core/config.py`. Override via env vars or `.env`.
 | `SIGNING_CREDENTIALS_BASE_URL` | C2PA fixture URL | Base URL for `<alg>_certs.pem` and `<alg>_private.key` |
 | `RESOLUTION_PUSH_ENABLED` | `true` | Auto-push to resolution-api |
 | `RESOLUTION_API_URL` | _(required when push enabled)_ | Resolution-api base URL |
+| `RESOLUTION_API_KEY` | _(empty)_ | Sent as `X-API-Key` to the resolution-api store routes |
+| `API_KEY` | _(empty)_ | Required as `X-API-Key` on every ingestion route. Empty leaves them open; set it in any deployment |
 | `RESOLUTION_MAX_RETRIES` | `1` | Retries on transient failure (5xx/timeout) |
 | `RESOLUTION_RETRY_BACKOFF_S` | `0.5` | Initial backoff (doubles each retry) |
 | `RESOLUTION_REQUEST_TIMEOUT_S` | `10.0` | HTTP timeout for push calls |

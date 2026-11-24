@@ -33,10 +33,11 @@ import os
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from ingestion_api.adapters.publisher import ResolutionPushClient
+from ingestion_api.auth import require_api_key
 from ingestion_api.core.config import settings
 from ingestion_api.core.credentials import MissingSigningMaterialError
 from ingestion_api.core.logging import configure_logging, get_logger
@@ -57,6 +58,8 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     configure_logging()
     logger.info("Starting %s v%s", settings.api_title, settings.api_version)
+    if not settings.api_key:
+        logger.warning("API_KEY is empty: ingestion routes accept unauthenticated requests")
 
     await MongoDB.connect()
     logger.info("Connected to MongoDB db=%s", settings.mongodb_database)
@@ -183,7 +186,7 @@ app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=settings.forwarded_allo
 app.add_middleware(RequestIDMiddleware)
 
 app.include_router(health.router)
-app.include_router(ingestion.router)
+app.include_router(ingestion.router, dependencies=[Depends(require_api_key)])
 
 
 @app.get("/", include_in_schema=False)

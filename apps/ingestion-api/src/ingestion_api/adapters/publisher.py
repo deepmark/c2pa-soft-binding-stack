@@ -154,6 +154,8 @@ class ResolutionPushClient:
         base: dict[str, str] | None, request_id: str | None,
     ) -> dict[str, str]:
         headers = dict(base or {})
+        if settings.resolution_api_key:
+            headers["X-API-Key"] = settings.resolution_api_key
         if request_id:
             headers[REQUEST_ID_HEADER] = request_id
         return headers

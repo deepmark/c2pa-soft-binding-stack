@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     )
 
 
+    # Required as X-API-Key on the manifest/binding store routes. Empty = open (local development only).
+    api_key: str = ""
+
     # Limits
     max_download_size_bytes: int = 10 * 1024 * 1024  # 10 MB — /matches/byReference
     max_upload_size_bytes: int = 10 * 1024 * 1024    # 10 MB — /matches/byContent

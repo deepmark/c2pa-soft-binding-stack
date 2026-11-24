@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     # Set ``RESOLUTION_PUSH_ENABLED=false`` for standalone use.
     resolution_push_enabled: bool = True
     resolution_api_url: str = ""
+    # Sent as X-API-Key to the resolution-api store routes.
+    resolution_api_key: str = ""
+
+    # Required as X-API-Key on every ingestion route. Empty = open (local development only).
+    api_key: str = ""
     resolution_request_timeout_s: float = Field(default=10.0, gt=0)
     # Per-call retry policy.
     # Each HTTP request (POST /manifests and each POST /bindings)
