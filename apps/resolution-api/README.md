@@ -51,6 +51,7 @@ Settings: `src/resolution_api/core/config.py`. Override via env vars or `.env`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MONGODB_URL` | `mongodb://localhost:27017` | MongoDB connection string |
+| `API_KEY` | _(empty)_ | Required as `X-API-Key` on `POST/DELETE /manifests` and `POST/PUT /bindings`. Empty leaves them open; set it in any deployment |
 | `MONGODB_DATABASE` | `c2pa` | MongoDB database name |
 | `MANIFESTS_COLLECTION` | `manifests` | Stored manifest metadata collection |
 | `SOFT_BINDINGS_COLLECTION` | `soft_bindings` | Binding lookup collection |

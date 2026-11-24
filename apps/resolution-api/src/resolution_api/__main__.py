@@ -10,8 +10,9 @@ import os
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
+from resolution_api.auth import require_api_key
 from resolution_api.core.config import settings
 from resolution_api.core.database import MongoDB
 from resolution_api.core.logging import configure_logging, get_logger
@@ -24,6 +25,8 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     configure_logging()
     logger.info("Starting %s v%s", settings.api_title, settings.api_version)
+    if not settings.api_key:
+        logger.warning("API_KEY is empty: manifest and binding store routes accept unauthenticated writes")
     await MongoDB.connect()
     logger.info("Connected to MongoDB db=%s", settings.mongodb_database)
     try:
@@ -42,7 +45,7 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(query.router)
-app.include_router(store.router)
+app.include_router(store.router, dependencies=[Depends(require_api_key)])
 app.include_router(fetch.router)
 app.include_router(service.router)
 
